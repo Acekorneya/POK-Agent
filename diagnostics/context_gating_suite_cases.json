@@ -1,0 +1,126 @@
+{
+  "version": "1.0",
+  "description": "Synthetic desktop-observation context-gating test cases: given a busy fused UIA+OCR target list (grounding.rs's build_targets output shape) and a task, which targets are actually worth including in the primary model's prompt. Tests whether the existing DecisionPurpose::ContextSelection noul-per-candidate mechanism (already used for code/archive/memory context) can prune a large target list better than grounding.rs's current keyword-substring heuristic (task_terms/target_rank), without new Rust code -- targets are just reframed as DecisionCandidate(kind: Context) the same way code/archive/memory candidates already are.",
+  "cases": [
+    {
+      "id": "scene_01_discord_busy_server",
+      "task": "Click the Study Hall voice channel in the Sample Hub server",
+      "targets": [
+        {"id": "t1", "name": "Direct Messages", "role": "button", "relevant": false},
+        {"id": "t2", "name": "Sample Hub Server", "role": "button", "relevant": false},
+        {"id": "t3", "name": "Example Guild Server", "role": "button", "relevant": false},
+        {"id": "t4", "name": "Explore Discoverable Servers", "role": "button", "relevant": false},
+        {"id": "t5", "name": "information", "role": "header", "relevant": false},
+        {"id": "t6", "name": "announcements", "role": "link", "relevant": false},
+        {"id": "t7", "name": "rules-and-faq", "role": "link", "relevant": false},
+        {"id": "t8", "name": "general-chat", "role": "link", "relevant": false},
+        {"id": "t9", "name": "Voice Channel Study Hall", "role": "link", "relevant": true},
+        {"id": "t10", "name": "Voice Channel Stage", "role": "link", "relevant": false},
+        {"id": "t11", "name": "dev-chat", "role": "link", "relevant": false},
+        {"id": "t12", "name": "research", "role": "link", "relevant": false},
+        {"id": "t13", "name": "support", "role": "link", "relevant": false},
+        {"id": "t14", "name": "Mute", "role": "button", "relevant": false},
+        {"id": "t15", "name": "Deafen", "role": "button", "relevant": false},
+        {"id": "t16", "name": "User Settings", "role": "button", "relevant": false},
+        {"id": "t17", "name": "Member List", "role": "button", "relevant": false},
+        {"id": "t18", "name": "Search Bar", "role": "edit", "relevant": false},
+        {"id": "t19", "name": "Inbox", "role": "button", "relevant": false},
+        {"id": "t20", "name": "Help", "role": "button", "relevant": false},
+        {"id": "t21", "name": "Send Message Input", "role": "edit", "relevant": false},
+        {"id": "t22", "name": "Gift Nitro", "role": "button", "relevant": false},
+        {"id": "t23", "name": "Open GIF Picker", "role": "button", "relevant": false},
+        {"id": "t24", "name": "Open Sticker Picker", "role": "button", "relevant": false},
+        {"id": "t25", "name": "Add Reaction", "role": "button", "relevant": false},
+        {"id": "t26", "name": "Close Window", "role": "button", "relevant": false}
+      ]
+    },
+    {
+      "id": "scene_02_checkout_page",
+      "task": "Click the checkout button to complete the purchase",
+      "targets": [
+        {"id": "t1", "name": "Continue Shopping", "role": "link", "relevant": false},
+        {"id": "t2", "name": "Apply Coupon", "role": "button", "relevant": false},
+        {"id": "t3", "name": "Edit Shipping Address", "role": "button", "relevant": false},
+        {"id": "t4", "name": "Save Payment Method", "role": "checkbox", "relevant": false},
+        {"id": "t5", "name": "Gift Wrap Options", "role": "link", "relevant": false},
+        {"id": "t6", "name": "Place Order", "role": "button", "relevant": true},
+        {"id": "t7", "name": "Terms and Conditions", "role": "link", "relevant": false},
+        {"id": "t8", "name": "Customer Support Chat", "role": "button", "relevant": false},
+        {"id": "t9", "name": "Remove Item", "role": "button", "relevant": false},
+        {"id": "t10", "name": "Save Cart for Later", "role": "link", "relevant": false},
+        {"id": "t11", "name": "Order Summary total $84.20", "role": "text", "relevant": true},
+        {"id": "t12", "name": "Estimated delivery Sept 28", "role": "text", "relevant": false},
+        {"id": "t13", "name": "Newsletter signup", "role": "checkbox", "relevant": false},
+        {"id": "t14", "name": "Recently viewed items", "role": "link", "relevant": false},
+        {"id": "t15", "name": "Return policy", "role": "link", "relevant": false}
+      ]
+    },
+    {
+      "id": "scene_03_file_explorer_recent_files",
+      "task": "Open the budget spreadsheet budget_2026.xlsx and tell me the total in the last row",
+      "targets": [
+        {"id": "t1", "name": "This PC", "role": "tree item", "relevant": false},
+        {"id": "t2", "name": "Desktop", "role": "tree item", "relevant": false},
+        {"id": "t3", "name": "Documents", "role": "tree item", "relevant": false},
+        {"id": "t4", "name": "Downloads", "role": "tree item", "relevant": false},
+        {"id": "t5", "name": "vacation_photos.zip", "role": "list item", "relevant": false},
+        {"id": "t6", "name": "budget_2026.xlsx", "role": "list item", "relevant": true},
+        {"id": "t7", "name": "resume_draft.docx", "role": "list item", "relevant": false},
+        {"id": "t8", "name": "meeting_notes.txt", "role": "list item", "relevant": false},
+        {"id": "t9", "name": "Sort by name", "role": "button", "relevant": false},
+        {"id": "t10", "name": "View options", "role": "button", "relevant": false},
+        {"id": "t11", "name": "New folder", "role": "button", "relevant": false},
+        {"id": "t12", "name": "Search box", "role": "edit", "relevant": false},
+        {"id": "t13", "name": "Properties", "role": "button", "relevant": false},
+        {"id": "t14", "name": "Address bar", "role": "edit", "relevant": false},
+        {"id": "t15", "name": "Back", "role": "button", "relevant": false},
+        {"id": "t16", "name": "Forward", "role": "button", "relevant": false},
+        {"id": "t17", "name": "Refresh", "role": "button", "relevant": false},
+        {"id": "t18", "name": "old_budget_2025.xlsx", "role": "list item", "relevant": false}
+      ]
+    },
+    {
+      "id": "scene_04_code_editor_error_state",
+      "task": "Fix the compile error shown in the editor",
+      "targets": [
+        {"id": "t1", "name": "File", "role": "menu item", "relevant": false},
+        {"id": "t2", "name": "Edit", "role": "menu item", "relevant": false},
+        {"id": "t3", "name": "View", "role": "menu item", "relevant": false},
+        {"id": "t4", "name": "session.rs", "role": "tab item", "relevant": false},
+        {"id": "t5", "name": "expected `;`, found `}` at line 142", "role": "text", "relevant": true},
+        {"id": "t6", "name": "let result = compute(x)", "role": "text", "relevant": true},
+        {"id": "t7", "name": "Problems panel", "role": "button", "relevant": false},
+        {"id": "t8", "name": "Terminal", "role": "button", "relevant": false},
+        {"id": "t9", "name": "Source Control", "role": "button", "relevant": false},
+        {"id": "t10", "name": "Extensions", "role": "button", "relevant": false},
+        {"id": "t11", "name": "Minimap", "role": "text", "relevant": false},
+        {"id": "t12", "name": "Line 142, Column 24", "role": "text", "relevant": true},
+        {"id": "t13", "name": "Run", "role": "button", "relevant": false},
+        {"id": "t14", "name": "Debug", "role": "button", "relevant": false},
+        {"id": "t15", "name": "Split Editor", "role": "button", "relevant": false},
+        {"id": "t16", "name": "Settings gear icon", "role": "button", "relevant": false}
+      ]
+    },
+    {
+      "id": "scene_05_email_inbox_reply",
+      "task": "Reply to the email from my manager about the outage report",
+      "targets": [
+        {"id": "t1", "name": "Compose", "role": "button", "relevant": false},
+        {"id": "t2", "name": "Inbox folder", "role": "tree item", "relevant": false},
+        {"id": "t3", "name": "Sent folder", "role": "tree item", "relevant": false},
+        {"id": "t4", "name": "Newsletter: Weekly digest", "role": "list item", "relevant": false},
+        {"id": "t5", "name": "Manager: Outage report - please review", "role": "list item", "relevant": true},
+        {"id": "t6", "name": "Calendar invite: Sprint planning", "role": "list item", "relevant": false},
+        {"id": "t7", "name": "Reply", "role": "button", "relevant": true},
+        {"id": "t8", "name": "Reply All", "role": "button", "relevant": false},
+        {"id": "t9", "name": "Forward", "role": "button", "relevant": false},
+        {"id": "t10", "name": "Archive", "role": "button", "relevant": false},
+        {"id": "t11", "name": "Delete", "role": "button", "relevant": false},
+        {"id": "t12", "name": "Mark as unread", "role": "button", "relevant": false},
+        {"id": "t13", "name": "Snooze", "role": "button", "relevant": false},
+        {"id": "t14", "name": "Search mail", "role": "edit", "relevant": false},
+        {"id": "t15", "name": "Filter", "role": "button", "relevant": false}
+      ]
+    }
+  ]
+}

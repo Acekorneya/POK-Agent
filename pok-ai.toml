@@ -1,0 +1,141 @@
+data_dir = ""
+diagnostics_dir = "diagnostics"
+default_provider = "lm_studio"
+default_model = "google/gemma-4-26b-a4b-qat"
+max_turns = 128
+command_timeout_seconds = 120
+# Delay between oversized native text-input batches; ordinary text is sent in one batch.
+input_text_inter_key_pause_ms = 50
+# Use a number from 0 to 2, or "server_default" to omit temperature from API requests.
+agent_temperature = "server_default"
+vision_max_edge = 1280
+visual_history_limit = 1
+uia_element_limit = 512
+desktop_enrichment_timeout_ms = 2000
+desktop_deep_enrichment_timeout_ms = 10000
+# Work in the agent's own window while you keep using another one. Captures
+# and accessibility actions reach that window without bringing it forward;
+# real mouse/keyboard input waits until you are idle, then brings it forward.
+background_desktop_work = true
+model_target_limit = 128
+fusion_iou_threshold = 0.1
+ocr_containment_threshold = 0.6
+# Optional hosted fast path for one bounded, fully specified action before the
+# local LLM runs. Disabled by default because compact task/UI state leaves the device.
+[decision_router]
+enabled = false
+backend = "jev"
+endpoint = "https://api.typesafe.ai/v1/systemone"
+model = "jev-1.13.0"
+api_key_env = "TYPESAFE_API_KEY"
+timeout_ms = 750
+max_candidates = 30
+min_selected_probability = 0.30
+min_operation_confidence = 0.50
+min_confidence = 0.75
+min_terminal_probability = 0.60
+min_terminal_confidence = 0.60
+max_refinement_attempts = 3
+max_stagnant_refinements = 2
+min_refinement_confidence_gain = 0.05
+max_step_actions = 60
+search_url = "https://www.google.com/search"
+# delegated (default): the primary model calls fast_actions with a subgoal and
+# done_when; the router matches targets and checks completion.
+# router_first: legacy mode where the router proposes every next action
+# before the primary model (kept for A/B comparison).
+mode = "delegated"
+min_completion_probability = 0.60
+# Whether the fast model may pick targets / judge unquoted conditions that local
+# grounding cannot decide. Unset = trusted only for JEV (the router question
+# bench found local backends confidently wrong). Set true to test Laya, Zeiger
+# or llm_choice backends in delegated mode.
+# trust_model_targets = true
+# trust_model_conditions = true
+
+[decision_router.laya]
+endpoint = "http://127.0.0.1:43127/v1/systemone"
+model = "convaiinnovations/laya-typed-decisions"
+token_env = "POK_LAYA_TOKEN"
+min_free_vram_mb = 2048
+device = "auto"
+# Combined gate: a confident target can compensate a clustering-band
+# operation score. op >= 0.35 and target >= 0.90 beat both the prior
+# independent 0.45/0.50 gate and a speculative-committee alternative on a
+# 12-case real+synthetic suite. See docs/decision-router-backends.md.
+min_operation_probability = 0.35
+min_target_probability = 0.90
+# Laya-specific override of the shared decision_router.min_terminal_probability
+# (0.60, still used by JEV): a correct DONE decision was observed at 0.5986,
+# missing the shared threshold by 0.0014.
+min_terminal_probability = 0.55
+
+# Small OpenAI-compatible LLM as a fast decision backend (backend = "llm_choice").
+# Start scripts/llm_choice_sidecar.py on this loopback port; it forwards each
+# typed choice question to the configured model (for example on LM Studio).
+[decision_router.llm_choice]
+endpoint = "http://127.0.0.1:43211/v1/systemone"
+model = "lfm2.5-8b-a1b"
+token_env = "POK_LLM_CHOICE_TOKEN"
+
+# Optional cross-model second opinion for a Laya decision the combined gate
+# above didn't clear: a different local model judges Laya's specific picked
+# candidate (reversible/cheap/evidenced, promotes only on unanimous "yes").
+# Testing found this beats both Laya and JEV judging themselves, with zero
+# dangerous false positives. Disabled by default: requires a second local
+# sidecar (e.g. php-ai/zeiger-0.6b) running independently; this harness does
+# not launch or manage it yet. See docs/decision-router-backends.md.
+[decision_router.judge]
+enabled = false
+endpoint = "http://127.0.0.1:43399/v1/systemone"
+model = "php-ai/zeiger-0.6b"
+token_env = "POK_JUDGE_TOKEN"
+timeout_ms = 5000
+
+[providers.lm_studio]
+protocol = "openai_compatible"
+base_url = "http://127.0.0.1:1234/v1"
+data_boundary = "local_device"
+api_key_env = "LM_STUDIO_API_KEY"
+
+[providers.ollama]
+protocol = "openai_compatible"
+base_url = "http://127.0.0.1:11434/v1"
+data_boundary = "local_device"
+api_key_env = "OLLAMA_API_KEY"
+
+[providers.gemini]
+protocol = "openai_compatible"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai/"
+data_boundary = "external_service"
+api_key_env = "GEMINI_API_KEY"
+
+[providers.openai]
+protocol = "openai_compatible"
+base_url = "https://api.openai.com/v1"
+data_boundary = "external_service"
+api_key_env = "OPENAI_API_KEY"
+
+[providers.openrouter]
+protocol = "openai_compatible"
+base_url = "https://openrouter.ai/api/v1"
+data_boundary = "external_service"
+api_key_env = "OPENROUTER_API_KEY"
+
+[providers.groq]
+protocol = "openai_compatible"
+base_url = "https://api.groq.com/openai/v1"
+data_boundary = "external_service"
+api_key_env = "GROQ_API_KEY"
+
+[providers.grok]
+protocol = "openai_compatible"
+base_url = "https://api.x.ai/v1"
+data_boundary = "external_service"
+api_key_env = "GROK_API_KEY"
+
+[providers.anthropic]
+protocol = "anthropic_messages"
+base_url = "https://api.anthropic.com/v1"
+data_boundary = "external_service"
+api_key_env = "ANTHROPIC_API_KEY"

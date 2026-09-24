@@ -1,0 +1,49 @@
+{
+ "version": "1.0",
+ "description": "Read-only live computer-use tasks for scripts/live_bench.py. Each prompt forces on-screen navigation (no shortcuts) so router architectures can differ; answer_regex checks the final answer.",
+ "tasks": [
+  {
+   "id": "book",
+   "prompt": "Using the managed browser, open https://doc.rust-lang.org/book/ and then navigate only by clicking links in the page table of contents (do not type other URLs) to chapter 4, Understanding Ownership. Tell me the title of the first section of chapter 4.",
+   "answer_regex": "(?i)what is ownership",
+   "reset": []
+  },
+  {
+   "id": "display",
+   "prompt": "Open Windows Settings on its home page, then navigate only by clicking in the Settings window (no ms-settings links or commands) to System > Display > Advanced display, and tell me the refresh rate shown there.",
+   "answer_regex": "(?i)\\b\\d{2,3}(\\.\\d+)?\\s*hz\\b",
+   "reset": [
+    "close_settings"
+   ]
+  },
+  {
+   "id": "progfiles",
+   "prompt": "Open File Explorer, then navigate only by clicking in the Explorer window (no commands or typed paths) to This PC > Local Disk (C:) > Program Files, and tell me the first three folder names listed.",
+   "answer_regex": "(?is)adobe.*amazon.*amd",
+   "reset": [
+    "close_explorer"
+   ]
+  },
+  {
+   "id": "discord",
+   "prompt": "Discord is already open; do not close, restart, or reopen it, and never join or click any voice channel. By clicking in the Discord window, switch to the {discord_server_a} server and read the latest messages in its general text channel, then switch to the {discord_server_b} server and read the latest messages in its general text channel. Tell me who posted the most recent message in each server's general channel and what it was about.",
+   "answer_regex": "(?is)({discord_server_a}.*{discord_server_b}|{discord_server_b}.*{discord_server_a})",
+   "requires_process": "Discord",
+   "reset": []
+  },
+  {
+   "id": "word-save",
+   "prompt": "Using Microsoft Word, create a new blank document and type these two lines exactly: first line 'POK-Ai typing test line one', second line 'Second line of the test'. Then save the document as pok-ai-word-test.docx in my Documents folder and tell me the full path it was saved to.",
+   "answer_regex": "(?i)pok-ai-word-test\\.docx",
+   "verify_file": "%USERPROFILE%\\Documents\\pok-ai-word-test.docx",
+   "verify_contains": [
+    "POK-Ai typing test line one",
+    "Second line of the test"
+   ],
+   "cleanup_processes": [
+    "WINWORD"
+   ],
+   "reset": []
+  }
+ ]
+}

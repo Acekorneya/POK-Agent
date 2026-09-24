@@ -1,0 +1,38 @@
+POK-Ai
+Copyright 2026 POK-Ai contributors
+
+This product includes software developed by the POK-Ai project and its
+contributors.
+
+Redistributions of this software or derivative works must retain this NOTICE
+attribution in accordance with Section 4(d) of the Apache License, Version 2.0.
+
+This project was designed with reference to the Apache-2.0-licensed Grok Build
+repository. No source from the unofficial Claude Code extraction is copied into
+this project; it was consulted only for high-level architectural patterns.
+
+Microsoft UFO (MIT License) was consulted for high-level patterns around
+combining Windows UI Automation and visual/OCR grounding. POK-Ai's implementation
+is an independent Rust design and does not copy UFO source code.
+
+The default local decision-router model, convaiinnovations/laya-typed-decisions
+(https://huggingface.co/convaiinnovations/laya-typed-decisions), is licensed
+Apache-2.0 and is not bundled with this repository; `scripts/setup-laya.ps1`
+downloads it separately from Hugging Face at install time, pinned to a
+validated revision. It is built on the ModernBERT-large encoder by Answer.AI
+and LightOn. An alternative checkpoint, Luni/laya-grounded
+(https://huggingface.co/Luni/laya-grounded), can be installed instead by
+passing `-Repo` to `scripts/setup-laya.ps1`; it is licensed CC-BY-NC-4.0
+(non-commercial), so anyone building a commercial product on top of POK-Ai
+must not select it and should keep the Apache-2.0 default (see
+`docs/decision-router-backends.md`).
+
+The optional local cross-model judge, php-ai/zeiger-0.6b
+(https://huggingface.co/php-ai/zeiger-0.6b), is licensed CC-BY-SA-4.0 (weights)
+and is disabled by default. It is not bundled with this repository;
+`scripts/setup-zeiger.ps1` downloads it separately from Hugging Face at
+install time, pinned to a validated revision. CC-BY-SA-4.0 requires that
+adaptations of the weights themselves (not POK-Ai's own source code, which
+this NOTICE does not extend to) be shared under the same license if
+redistributed; downloading and running the checkpoint locally does not
+require anything of POK-Ai's own Apache-2.0 codebase.

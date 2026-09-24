@@ -1,0 +1,8 @@
+# Keep source files consistent between WSL and native Windows Git.
+* text=auto eol=lf
+
+*.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.db binary

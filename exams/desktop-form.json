@@ -1,0 +1,20 @@
+[
+  {
+    "id": "desktop-form-01",
+    "title": "Complete a deterministic shipping form",
+    "kind": "desktop",
+    "prompt": "Open {{EXAM_URL}} in the provided POK-Ai Brain Exam window. Set Customer name to Ada Lovelace, Order ID to POK-1843, Service to Priority, Package count to 2, Notes to local-model exam, and submit the request. Confirm that the success message appears.",
+    "workspace": "apps/exam-fixture",
+    "weight": 1.0,
+    "max_turns": 20,
+    "allowed_window_title": "POK-Ai Brain Exam",
+    "allowed_process": "msedge.exe",
+    "assertions": [
+      { "type": "json_equals", "path": "state.json", "pointer": "/customer", "value": "Ada Lovelace" },
+      { "type": "json_equals", "path": "state.json", "pointer": "/order", "value": "POK-1843" },
+      { "type": "json_equals", "path": "state.json", "pointer": "/service", "value": "Priority" },
+      { "type": "json_equals", "path": "state.json", "pointer": "/packages", "value": "2" }
+    ]
+  }
+]
+

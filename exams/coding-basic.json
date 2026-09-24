@@ -1,0 +1,14 @@
+[
+  {
+    "id": "coding-repair-01",
+    "title": "Find and repair a calculation bug",
+    "kind": "coding",
+    "prompt": "Inspect this repository, find why the calculator tests fail, make the smallest correct edit, and run the tests until they pass.",
+    "workspace": "exams/fixtures/python-calculator",
+    "weight": 1.0,
+    "max_turns": 12,
+    "assertions": [
+      { "type": "file_contains", "path": "calculator.py", "text": "subtotal * (1 + tax_rate)" }
+    ]
+  }
+]

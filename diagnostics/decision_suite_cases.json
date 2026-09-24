@@ -1,0 +1,1486 @@
+{
+  "version": "1.0",
+  "description": "POK-Ai Decision Router Diagnostic Benchmark Suite",
+  "cases": [
+    {
+      "id": "case_01_time_query_clock",
+      "category": "system_tool",
+      "source_session": "00898e9d-cb2d-4e67-889d-4188b87f0f14",
+      "turn": 1,
+      "task": "what time is right now",
+      "current_step": "Query the current local time from the system clock",
+      "state": {
+        "active_window": null,
+        "foreground_window": null
+      },
+      "candidates": [
+        {
+          "id": "get_current_time",
+          "tool": "get_current_time",
+          "arguments": {},
+          "description": "Read the current local date, time, weekday, and timezone from the harness clock",
+          "kind": "action",
+          "local_score": 1.0
+        },
+        {
+          "id": "list_visible_windows",
+          "tool": "list_windows",
+          "arguments": {},
+          "description": "List visible desktop windows to identify the application relevant to the task",
+          "kind": "action",
+          "local_score": 0.7
+        },
+        {
+          "id": "jev_blocked",
+          "tool": "__blocked__",
+          "arguments": {},
+          "description": "No offered reversible structured action can safely advance the task; hand control to the primary model",
+          "kind": "action",
+          "local_score": 0.0
+        }
+      ],
+      "expected": {
+        "operation": "GET_CURRENT_TIME",
+        "target": "get_current_time"
+      },
+      "historical_jev": {
+        "operation": "GET_CURRENT_TIME",
+        "target": "get_current_time",
+        "confidence": 1.0,
+        "probability": 0.9998,
+        "elapsed_ms": 129
+      }
+    },
+    {
+      "id": "case_02_window_discovery",
+      "category": "window_discovery",
+      "source_session": "59ceb6a5-3fa3-4475-b18c-c01465f67e07",
+      "turn": 1,
+      "task": "can you tell me who is in the Example Guild Voice Channels",
+      "current_step": "Locate the Discord application window on the desktop",
+      "state": {
+        "active_window": null,
+        "foreground_window": "explorer.exe"
+      },
+      "candidates": [
+        {
+          "id": "list_visible_windows",
+          "tool": "list_windows",
+          "arguments": {},
+          "description": "List visible desktop windows to identify the application relevant to the task",
+          "kind": "action",
+          "local_score": 0.7
+        },
+        {
+          "id": "get_current_time",
+          "tool": "get_current_time",
+          "arguments": {},
+          "description": "Read the current local date, time, weekday, and timezone from the harness clock",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "jev_blocked",
+          "tool": "__blocked__",
+          "arguments": {},
+          "description": "No offered reversible structured action can safely advance the task; hand control to the primary model",
+          "kind": "action",
+          "local_score": 0.0
+        }
+      ],
+      "expected": {
+        "operation": "LIST_WINDOWS",
+        "target": "list_visible_windows"
+      },
+      "historical_jev": {
+        "operation": "LIST_WINDOWS",
+        "target": "list_visible_windows",
+        "confidence": 0.96,
+        "probability": 0.995,
+        "elapsed_ms": 109
+      }
+    },
+    {
+      "id": "case_03_discord_window_activate",
+      "category": "window_activation",
+      "source_session": "1c8c6ec0-2ad9-48cf-829f-a8e0c690b829",
+      "turn": 1,
+      "task": "Can you tell me who is on discord in the Sample Hub discord and can you tell me who is steaming in",
+      "current_step": "Switch foreground focus to the Discord application window",
+      "state": {
+        "active_window": null,
+        "foreground_window": "WindowsTerminal.exe"
+      },
+      "candidates": [
+        {
+          "id": "activate_window_0",
+          "tool": "activate_window",
+          "arguments": {
+            "window_id": "0x10024"
+          },
+          "description": "\"Study Hall | Sample Hub - Discord\" (Discord.exe window)",
+          "kind": "action",
+          "local_score": 0.95
+        },
+        {
+          "id": "activate_window_1",
+          "tool": "activate_window",
+          "arguments": {
+            "window_id": "0x10028"
+          },
+          "description": "\"Visual Studio Code\" (Code.exe window)",
+          "kind": "action",
+          "local_score": 0.3
+        },
+        {
+          "id": "activate_window_2",
+          "tool": "activate_window",
+          "arguments": {
+            "window_id": "0x10032"
+          },
+          "description": "\"Google Chrome\" (chrome.exe window)",
+          "kind": "action",
+          "local_score": 0.3
+        },
+        {
+          "id": "activate_window_3",
+          "tool": "activate_window",
+          "arguments": {
+            "window_id": "0x10036"
+          },
+          "description": "\"Windows Terminal\" (WindowsTerminal.exe window)",
+          "kind": "action",
+          "local_score": 0.2
+        },
+        {
+          "id": "activate_window_4",
+          "tool": "activate_window",
+          "arguments": {
+            "window_id": "0x10040"
+          },
+          "description": "\"File Explorer\" (explorer.exe window)",
+          "kind": "action",
+          "local_score": 0.2
+        },
+        {
+          "id": "activate_window_5",
+          "tool": "activate_window",
+          "arguments": {
+            "window_id": "0x10044"
+          },
+          "description": "\"Spotify Premium\" (Spotify.exe window)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "activate_window_6",
+          "tool": "activate_window",
+          "arguments": {
+            "window_id": "0x10048"
+          },
+          "description": "\"Task Manager\" (Taskmgr.exe window)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "jev_blocked",
+          "tool": "__blocked__",
+          "arguments": {},
+          "description": "No offered reversible structured action can safely advance the task; hand control to the primary model",
+          "kind": "action",
+          "local_score": 0.0
+        }
+      ],
+      "expected": {
+        "operation": "ACTIVATE_WINDOW",
+        "target": "activate_window_0"
+      },
+      "historical_jev": {
+        "operation": "ACTIVATE_WINDOW",
+        "target": "activate_window_0",
+        "confidence": 0.96,
+        "probability": 0.992,
+        "elapsed_ms": 157
+      }
+    },
+    {
+      "id": "case_04_discord_click_high_cardinality",
+      "category": "target_click_high_cardinality",
+      "source_session": "8f6a0956-9e15-4ffb-8ac7-c9ee0f541c82",
+      "turn": 4,
+      "task": "Can you tell me who is on discord in the Sample Hub discord and can you tell me who is steaming in",
+      "current_step": "Click the Study Hall voice channel in Sample Hub server",
+      "state": {
+        "active_window": "Discord.exe",
+        "foreground_window": "Discord.exe"
+      },
+      "candidates": [
+        {
+          "id": "click_0",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "0"
+          },
+          "description": "\"Direct Messages\" (button, enabled, moderately task relevant)",
+          "kind": "action",
+          "local_score": 0.3
+        },
+        {
+          "id": "click_1",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "1"
+          },
+          "description": "\"Sample Hub Server\" (button, enabled, strongly task relevant)",
+          "kind": "action",
+          "local_score": 0.7
+        },
+        {
+          "id": "click_2",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "2"
+          },
+          "description": "\"Example Guild Server\" (button, enabled, weakly task relevant)",
+          "kind": "action",
+          "local_score": 0.2
+        },
+        {
+          "id": "click_3",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "3"
+          },
+          "description": "\"Explore Discoverable Servers\" (button, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_4",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "4"
+          },
+          "description": "\"information\" (header, enabled, moderately task relevant)",
+          "kind": "action",
+          "local_score": 0.3
+        },
+        {
+          "id": "click_5",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "5"
+          },
+          "description": "\"announcements\" (link, enabled, moderately task relevant)",
+          "kind": "action",
+          "local_score": 0.4
+        },
+        {
+          "id": "click_6",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "6"
+          },
+          "description": "\"rules-and-faq\" (link, enabled, weakly task relevant)",
+          "kind": "action",
+          "local_score": 0.2
+        },
+        {
+          "id": "click_7",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "7"
+          },
+          "description": "\"general-chat\" (link, enabled, moderately task relevant)",
+          "kind": "action",
+          "local_score": 0.5
+        },
+        {
+          "id": "click_8",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "8"
+          },
+          "description": "\"Voice Channel Study Hall\" (link, enabled, strongly task relevant)",
+          "kind": "action",
+          "local_score": 0.95
+        },
+        {
+          "id": "click_9",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "9"
+          },
+          "description": "\"Voice Channel Stage\" (link, enabled, moderately task relevant)",
+          "kind": "action",
+          "local_score": 0.4
+        },
+        {
+          "id": "click_10",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "10"
+          },
+          "description": "\"dev-chat\" (link, enabled, weakly task relevant)",
+          "kind": "action",
+          "local_score": 0.2
+        },
+        {
+          "id": "click_11",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "11"
+          },
+          "description": "\"research\" (link, enabled, weakly task relevant)",
+          "kind": "action",
+          "local_score": 0.2
+        },
+        {
+          "id": "click_12",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "12"
+          },
+          "description": "\"support\" (link, enabled, weakly task relevant)",
+          "kind": "action",
+          "local_score": 0.2
+        },
+        {
+          "id": "click_13",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "13"
+          },
+          "description": "\"Mute\" (button, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_14",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "14"
+          },
+          "description": "\"Deafen\" (button, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_15",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "15"
+          },
+          "description": "\"User Settings\" (button, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_16",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "16"
+          },
+          "description": "\"Member List\" (button, enabled, moderately task relevant)",
+          "kind": "action",
+          "local_score": 0.4
+        },
+        {
+          "id": "click_17",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "17"
+          },
+          "description": "\"Search Bar\" (edit, enabled, weakly task relevant)",
+          "kind": "action",
+          "local_score": 0.2
+        },
+        {
+          "id": "click_18",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "18"
+          },
+          "description": "\"Inbox\" (button, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_19",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "19"
+          },
+          "description": "\"Help\" (button, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_20",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "20"
+          },
+          "description": "\"Send Message Input\" (edit, enabled, weakly task relevant)",
+          "kind": "action",
+          "local_score": 0.2
+        },
+        {
+          "id": "click_21",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "21"
+          },
+          "description": "\"Gift Nitro\" (button, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_22",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "22"
+          },
+          "description": "\"Open GIF Picker\" (button, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_23",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "23"
+          },
+          "description": "\"Open Sticker Picker\" (button, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_24",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "24"
+          },
+          "description": "\"Add Reaction\" (button, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_25",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "25"
+          },
+          "description": "\"Close Window\" (button, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.0
+        },
+        {
+          "id": "jev_done",
+          "tool": "__done__",
+          "arguments": {},
+          "description": "Current verified evidence is sufficient; stop the fast action loop and let the primary model explain the result to the user",
+          "kind": "action",
+          "local_score": 0.0
+        },
+        {
+          "id": "jev_blocked",
+          "tool": "__blocked__",
+          "arguments": {},
+          "description": "No offered reversible structured action can safely advance the task; hand control to the primary model",
+          "kind": "action",
+          "local_score": 0.0
+        }
+      ],
+      "expected": {
+        "operation": "CLICK",
+        "target": "click_8"
+      },
+      "historical_jev": {
+        "operation": "CLICK",
+        "target": "click_8",
+        "confidence": 0.99,
+        "probability": 0.998,
+        "elapsed_ms": 235
+      }
+    },
+    {
+      "id": "case_05_browser_search_query",
+      "category": "web_navigation",
+      "source_session": "e8720b24-43be-48a6-b55e-6645e36b4e54",
+      "turn": 1,
+      "task": "any headline news that i should be know about today",
+      "current_step": "Search the web for today's top headline news",
+      "state": {
+        "active_window": null,
+        "foreground_window": null
+      },
+      "candidates": [
+        {
+          "id": "search_web_for_request",
+          "tool": "managed_browser_open",
+          "arguments": {
+            "url": "https://duckduckgo.com/?q=any+headline+news+that+i+should+be+know+about+today"
+          },
+          "description": "Search the web in the isolated managed browser using the complete user request",
+          "kind": "action",
+          "local_score": 0.9
+        },
+        {
+          "id": "list_visible_windows",
+          "tool": "list_windows",
+          "arguments": {},
+          "description": "List visible desktop windows to identify the application relevant to the task",
+          "kind": "action",
+          "local_score": 0.5
+        },
+        {
+          "id": "get_current_time",
+          "tool": "get_current_time",
+          "arguments": {},
+          "description": "Read the current local date, time, weekday, and timezone from the harness clock",
+          "kind": "action",
+          "local_score": 0.2
+        },
+        {
+          "id": "jev_blocked",
+          "tool": "__blocked__",
+          "arguments": {},
+          "description": "No offered reversible structured action can safely advance the task; hand control to the primary model",
+          "kind": "action",
+          "local_score": 0.0
+        }
+      ],
+      "expected": {
+        "operation": "SEARCH_WEB",
+        "target": "search_web_for_request"
+      },
+      "historical_jev": {
+        "operation": "SEARCH_WEB",
+        "target": "search_web_for_request",
+        "confidence": 0.95,
+        "probability": 0.985,
+        "elapsed_ms": 114
+      }
+    },
+    {
+      "id": "case_06_evidence_focus_inspection",
+      "category": "evidence_reading",
+      "source_session": "e8720b24-43be-48a6-b55e-6645e36b4e54",
+      "turn": 2,
+      "task": "Can you tell me what people are talking about in the Sample Hub general discord",
+      "current_step": "Inspect the visible chat messages in the general channel",
+      "state": {
+        "active_window": "Discord.exe",
+        "foreground_window": "Discord.exe"
+      },
+      "candidates": [
+        {
+          "id": "evidence_0",
+          "tool": "focus_evidence",
+          "arguments": {
+            "text": "unread messages in #general: discussing JEV vs LAYA router benchmarks"
+          },
+          "description": "\"unread messages in #general\" (link, visible, strongly task relevant)",
+          "kind": "evidence",
+          "local_score": 0.9
+        },
+        {
+          "id": "click_1",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "12"
+          },
+          "description": "\"Mute Channel\" (button, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_2",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "15"
+          },
+          "description": "\"User Settings\" (button, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "jev_done",
+          "tool": "__done__",
+          "arguments": {},
+          "description": "Current verified evidence is sufficient; stop the fast action loop and let the primary model explain the result to the user",
+          "kind": "action",
+          "local_score": 0.0
+        },
+        {
+          "id": "jev_blocked",
+          "tool": "__blocked__",
+          "arguments": {},
+          "description": "No offered reversible structured action can safely advance the task; hand control to the primary model",
+          "kind": "action",
+          "local_score": 0.0
+        }
+      ],
+      "expected": {
+        "operation": "FOCUS_EVIDENCE",
+        "target": "evidence_0"
+      },
+      "historical_jev": {
+        "operation": "FOCUS_EVIDENCE",
+        "target": "evidence_0",
+        "confidence": 0.72,
+        "probability": 0.86,
+        "elapsed_ms": 285
+      }
+    },
+    {
+      "id": "case_07_task_completion_done",
+      "category": "task_completion",
+      "source_session": "00898e9d-cb2d-4e67-889d-4188b87f0f14",
+      "turn": 2,
+      "task": "what time is right now",
+      "current_step": "Verified clock evidence has been observed: Sunday, September 20, 2026 9:15 PM PDT",
+      "state": {
+        "active_window": null,
+        "foreground_window": null,
+        "evidence_observed": "Sunday, September 20, 2026 9:15 PM PDT"
+      },
+      "candidates": [
+        {
+          "id": "jev_done",
+          "tool": "__done__",
+          "arguments": {},
+          "description": "Current verified evidence is sufficient (observed: Sunday, September 20, 2026 9:15 PM PDT); stop the fast action loop and let the primary model explain the result to the user",
+          "kind": "action",
+          "local_score": 1.0
+        },
+        {
+          "id": "jev_blocked",
+          "tool": "__blocked__",
+          "arguments": {},
+          "description": "No offered reversible structured action can safely advance the task; hand control to the primary model",
+          "kind": "action",
+          "local_score": 0.0
+        }
+      ],
+      "expected": {
+        "operation": "DONE",
+        "target": "jev_done"
+      },
+      "historical_jev": {
+        "operation": "DONE",
+        "target": "jev_done",
+        "confidence": 0.95,
+        "probability": 0.991,
+        "elapsed_ms": 104
+      }
+    },
+    {
+      "id": "case_09_bootstrap_list_windows_clustering_band",
+      "category": "clustering_band_should_promote",
+      "source_session": "159c3da1-102b-4de8-adca-ecc2dcfddfbd",
+      "turn": 1,
+      "task": "Look at the Discord window and tell me the most recent visible message and who sent it. Do not click or type anything, just observe.",
+      "current_step": "Identify the Discord application window on the desktop before any observation exists",
+      "state": {
+        "active_window": null,
+        "foreground_window": null
+      },
+      "candidates": [
+        {
+          "id": "list_visible_windows",
+          "tool": "list_windows",
+          "arguments": {},
+          "description": "List visible desktop windows to identify the application relevant to the task",
+          "kind": "action",
+          "local_score": 0.7
+        },
+        {
+          "id": "jev_done",
+          "tool": "__done__",
+          "arguments": {},
+          "description": "Current verified evidence is sufficient; stop the fast action loop and let the primary model explain the result to the user",
+          "kind": "action",
+          "local_score": 0.0
+        },
+        {
+          "id": "jev_blocked",
+          "tool": "__blocked__",
+          "arguments": {},
+          "description": "No offered reversible structured action can safely advance the task; hand control to the primary model",
+          "kind": "action",
+          "local_score": 0.0
+        }
+      ],
+      "expected": {
+        "operation": "LIST_WINDOWS",
+        "target": "list_visible_windows"
+      },
+      "historical_jev": {
+        "operation": "LIST_WINDOWS",
+        "target": "list_visible_windows",
+        "confidence": 0.0357,
+        "probability": 0.4291,
+        "elapsed_ms": 69
+      },
+      "clustering_band": {
+        "note": "Real trace: bootstrap list_windows is the harness's only structured candidate before any observation exists, so it is essentially always correct by construction; Laya's operation_probability (0.4291) still landed below the 0.45 gate and deferred to the LLM.",
+        "historical_operation_probability": 0.4291,
+        "historical_target_probability": 1.0,
+        "operation_group_size": 1,
+        "should_promote": true
+      }
+    },
+    {
+      "id": "case_10_notepad_existing_tab_clustering_band",
+      "category": "clustering_band_should_promote",
+      "source_session": "35d2263d-524b-46ee-ad83-b176795a0a7e",
+      "turn": 3,
+      "task": "Open Notepad.",
+      "current_step": "Notepad is already open on monitor 3 with a modified, unsaved tab visible",
+      "state": {
+        "active_window": null,
+        "foreground_window": null
+      },
+      "candidates": [
+        {
+          "id": "evidence_0",
+          "tool": "focus_evidence",
+          "arguments": {
+            "text": "Open. Modified."
+          },
+          "description": "\"Open. Modified.\" (tab item, visible evidence, task relevant)",
+          "kind": "evidence",
+          "local_score": 0.6
+        },
+        {
+          "id": "jev_done",
+          "tool": "__done__",
+          "arguments": {},
+          "description": "Current verified evidence is sufficient; stop the fast action loop and let the primary model explain the result to the user",
+          "kind": "action",
+          "local_score": 0.0
+        },
+        {
+          "id": "jev_blocked",
+          "tool": "__blocked__",
+          "arguments": {},
+          "description": "No offered reversible structured action can safely advance the task; hand control to the primary model",
+          "kind": "action",
+          "local_score": 0.0
+        }
+      ],
+      "expected": {
+        "operation": "FOCUS_EVIDENCE",
+        "target": "evidence_0"
+      },
+      "historical_jev": {
+        "operation": "FOCUS_EVIDENCE",
+        "target": "evidence_0",
+        "confidence": 0.0113,
+        "probability": 0.4938,
+        "elapsed_ms": 345
+      },
+      "clustering_band": {
+        "note": "Real trace: the only visible tab is an already-open, task-relevant Notepad document, matching what the primary model itself later reasoned toward (activating the existing Notepad window). operation_probability (0.4938) still missed the 0.45 gate.",
+        "historical_operation_probability": 0.4938,
+        "historical_target_probability": 1.0,
+        "operation_group_size": 1,
+        "should_promote": true
+      }
+    },
+    {
+      "id": "case_11_task_mismatched_window_clustering_band",
+      "category": "clustering_band_should_not_promote",
+      "source_session": "718f9e08-23b2-4d21-b574-bf97e64cbeaa",
+      "turn": 1,
+      "task": "Open the text file at C:\\Users\\person\\AppData\\Local\\POK-Ai\\POK-Ai-abtest\\scratch\\test.txt in a text editor, add a new line at the end that says 'agent was here', and save the file.",
+      "current_step": "Identify the application window relevant to editing test.txt among many open windows",
+      "state": {
+        "active_window": null,
+        "foreground_window": null
+      },
+      "candidates": [
+        {
+          "id": "activate_window_3",
+          "tool": "activate_window",
+          "arguments": {
+            "window_id": "49180:HANDLE(0x1f2a0)"
+          },
+          "description": "\"POK Voice\" (pok-voice-desktop.exe window)",
+          "kind": "action",
+          "local_score": 0.3
+        },
+        {
+          "id": "activate_window_5",
+          "tool": "activate_window",
+          "arguments": {
+            "window_id": "49260:HANDLE(0x2165e)"
+          },
+          "description": "\"*Before (Python Sidecar via HTTP) - Notepad\" (Notepad.exe window)",
+          "kind": "action",
+          "local_score": 0.4
+        },
+        {
+          "id": "list_visible_windows",
+          "tool": "list_windows",
+          "arguments": {},
+          "description": "List visible desktop windows to identify the application relevant to the task",
+          "kind": "action",
+          "local_score": 0.5
+        },
+        {
+          "id": "jev_blocked",
+          "tool": "__blocked__",
+          "arguments": {},
+          "description": "No offered reversible structured action can safely advance the task; hand control to the primary model",
+          "kind": "action",
+          "local_score": 0.0
+        }
+      ],
+      "expected": {
+        "operation": "ACTIVATE_WINDOW",
+        "target": "activate_window_5"
+      },
+      "historical_jev": {
+        "operation": "ACTIVATE_WINDOW",
+        "target": "activate_window_3",
+        "confidence": 0.0499,
+        "probability": 0.4694,
+        "elapsed_ms": 357
+      },
+      "clustering_band": {
+        "note": "Real trace: among 28 open windows Laya's top ACTIVATE_WINDOW pick was \"POK Voice\", unrelated to a task about editing a text file, despite a near-certain target_probability once ACTIVATE_WINDOW was chosen as the operation. This is the case that should NOT be promoted: high target_probability inside a wrong operation choice.",
+        "historical_operation_probability": 0.4694,
+        "historical_target_probability": 0.9694,
+        "operation_group_size": 2,
+        "should_promote": false
+      }
+    },
+    {
+      "id": "case_12_task_mismatched_evidence_clustering_band",
+      "category": "clustering_band_should_not_promote",
+      "source_session": "718f9e08-23b2-4d21-b574-bf97e64cbeaa",
+      "turn": 1,
+      "task": "Open the text file at C:\\Users\\person\\AppData\\Local\\POK-Ai\\POK-Ai-abtest\\scratch\\test.txt in a text editor, add a new line at the end that says 'agent was here', and save the file.",
+      "current_step": "A Notepad window is now focused, showing a list of recently opened files",
+      "state": {
+        "active_window": "Notepad.exe",
+        "foreground_window": "Notepad.exe"
+      },
+      "candidates": [
+        {
+          "id": "evidence_0",
+          "tool": "focus_evidence",
+          "arguments": {
+            "text": "open_router_api.txt"
+          },
+          "description": "\"open_router_api.txt\" (list item, visible evidence, task relevant)",
+          "kind": "evidence",
+          "local_score": 0.4
+        },
+        {
+          "id": "evidence_1",
+          "tool": "focus_evidence",
+          "arguments": {
+            "text": "test.txt"
+          },
+          "description": "\"test.txt\" (list item, visible evidence, strongly task relevant)",
+          "kind": "evidence",
+          "local_score": 0.9
+        },
+        {
+          "id": "jev_blocked",
+          "tool": "__blocked__",
+          "arguments": {},
+          "description": "No offered reversible structured action can safely advance the task; hand control to the primary model",
+          "kind": "action",
+          "local_score": 0.0
+        }
+      ],
+      "expected": {
+        "operation": "FOCUS_EVIDENCE",
+        "target": "evidence_1"
+      },
+      "historical_jev": {
+        "operation": "FOCUS_EVIDENCE",
+        "target": "evidence_0",
+        "confidence": 0.0253,
+        "probability": 0.4103,
+        "elapsed_ms": 419
+      },
+      "clustering_band": {
+        "note": "Real trace: Laya's FOCUS_EVIDENCE pick was an unrelated file (open_router_api.txt) left over from a different task, not the test.txt file the active task actually names. Another case that should NOT be promoted despite target_probability being trivially near-certain within a single-candidate-looking group.",
+        "historical_operation_probability": 0.4103,
+        "historical_target_probability": 1.0,
+        "operation_group_size": 2,
+        "should_promote": false
+      }
+    },
+    {
+      "id": "case_08_deadlock_handoff_blocked",
+      "category": "deadlock_fallback",
+      "source_session": "1c8c6ec0-2ad9-48cf-829f-a8e0c690b829",
+      "turn": 2,
+      "task": "can you check any headline news today that i should know about",
+      "current_step": "Foreground window is Notepad with empty text; no browser or news capabilities available in current structured view",
+      "state": {
+        "active_window": "Notepad.exe",
+        "foreground_window": "Notepad.exe"
+      },
+      "candidates": [
+        {
+          "id": "click_0",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "1"
+          },
+          "description": "\"File\" (menu item, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_1",
+          "tool": "click_target",
+          "arguments": {
+            "target_id": "2"
+          },
+          "description": "\"Edit\" (menu item, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "jev_blocked",
+          "tool": "__blocked__",
+          "arguments": {},
+          "description": "No offered reversible structured action in \"Notepad\" can safely advance the active task; hand control to the primary model",
+          "kind": "action",
+          "local_score": 0.8
+        }
+      ],
+      "expected": {
+        "operation": "BLOCKED",
+        "target": "jev_blocked"
+      },
+      "historical_jev": {
+        "operation": "BLOCKED",
+        "target": "jev_blocked",
+        "confidence": 0.88,
+        "probability": 0.92,
+        "elapsed_ms": 145
+      }
+    },
+    {
+      "id": "case_13_synthetic_forced_single_correct",
+      "category": "clustering_band_synthetic_forced_single",
+      "source_session": "synthetic",
+      "turn": 1,
+      "task": "Check what song is currently playing.",
+      "current_step": "Identify the media application window on the desktop before any observation exists",
+      "state": {
+        "active_window": null,
+        "foreground_window": null
+      },
+      "candidates": [
+        {
+          "id": "list_visible_windows",
+          "tool": "list_windows",
+          "arguments": {},
+          "description": "List visible desktop windows to identify the application relevant to the task",
+          "kind": "action",
+          "local_score": 0.7
+        },
+        {
+          "id": "jev_blocked",
+          "tool": "__blocked__",
+          "arguments": {},
+          "description": "No offered reversible structured action can safely advance the task; hand control to the primary model",
+          "kind": "action",
+          "local_score": 0.0
+        }
+      ],
+      "expected": {
+        "operation": "LIST_WINDOWS",
+        "target": "list_visible_windows"
+      },
+      "historical_jev": null,
+      "clustering_band": {
+        "note": "Synthetic, constructed with certain ground truth by design: identical structural shape to case_09 (bootstrap list_windows is the only non-terminal candidate before any observation exists). Built to test whether a structural bypass (skip the router entirely whenever exactly one non-terminal candidate exists) would be safe here, independent of committee behavior.",
+        "operation_group_size": 1,
+        "should_promote": true
+      }
+    },
+    {
+      "id": "case_14_synthetic_forced_single_evidence_correct",
+      "category": "clustering_band_synthetic_forced_single",
+      "source_session": "synthetic",
+      "turn": 2,
+      "task": "Open the budget spreadsheet budget_2026.xlsx and tell me the total in the last row.",
+      "current_step": "A single recently-opened-file entry is visible in the taskbar jump list",
+      "state": {
+        "active_window": "explorer.exe",
+        "foreground_window": "explorer.exe"
+      },
+      "candidates": [
+        {
+          "id": "evidence_0",
+          "tool": "focus_evidence",
+          "arguments": {
+            "text": "budget_2026.xlsx"
+          },
+          "description": "\"budget_2026.xlsx\" (list item, visible evidence, strongly task relevant)",
+          "kind": "evidence",
+          "local_score": 0.9
+        },
+        {
+          "id": "jev_blocked",
+          "tool": "__blocked__",
+          "arguments": {},
+          "description": "No offered reversible structured action can safely advance the task; hand control to the primary model",
+          "kind": "action",
+          "local_score": 0.0
+        }
+      ],
+      "expected": {
+        "operation": "FOCUS_EVIDENCE",
+        "target": "evidence_0"
+      },
+      "historical_jev": null,
+      "clustering_band": {
+        "note": "Synthetic: a single-candidate FOCUS_EVIDENCE group where the one candidate genuinely matches the task's named file. Pairs with case_15, which is structurally identical (operation_group_size 1) but wrong, to test whether group size alone is a safe bypass signal.",
+        "operation_group_size": 1,
+        "should_promote": true
+      }
+    },
+    {
+      "id": "case_15_synthetic_forced_single_evidence_wrong",
+      "category": "clustering_band_synthetic_forced_single",
+      "source_session": "synthetic",
+      "turn": 2,
+      "task": "Open the budget spreadsheet budget_2026.xlsx and tell me the total in the last row.",
+      "current_step": "A single recently-opened-file entry is visible in the taskbar jump list",
+      "state": {
+        "active_window": "explorer.exe",
+        "foreground_window": "explorer.exe"
+      },
+      "candidates": [
+        {
+          "id": "evidence_0",
+          "tool": "focus_evidence",
+          "arguments": {
+            "text": "vacation_photos.zip"
+          },
+          "description": "\"vacation_photos.zip\" (list item, visible evidence, task relevant)",
+          "kind": "evidence",
+          "local_score": 0.4
+        },
+        {
+          "id": "jev_blocked",
+          "tool": "__blocked__",
+          "arguments": {},
+          "description": "No offered reversible structured action can safely advance the task; hand control to the primary model",
+          "kind": "action",
+          "local_score": 0.0
+        }
+      ],
+      "expected": {
+        "operation": "BLOCKED",
+        "target": "jev_blocked"
+      },
+      "historical_jev": null,
+      "clustering_band": {
+        "note": "Synthetic, deliberately adversarial: the FOCUS_EVIDENCE group still has exactly one candidate (operation_group_size 1, same shape as case_14), but the candidate itself is unrelated to the task's named file. This is the key test for the proposed 'skip the router whenever only one candidate exists' bypass: group size 1 reflects the candidate GENERATOR's precision, not the router's, so a size-1 bypass is only as safe as candidate generation is precise. should_promote is false here even though there is only one option, because the one option is wrong.",
+        "operation_group_size": 1,
+        "should_promote": false
+      }
+    },
+    {
+      "id": "case_16_synthetic_ambiguous_activate_correct",
+      "category": "clustering_band_synthetic_multi_candidate",
+      "source_session": "synthetic",
+      "turn": 1,
+      "task": "Reply to the last message in Slack.",
+      "current_step": "Several application windows are open; identify the one relevant to Slack",
+      "state": {
+        "active_window": null,
+        "foreground_window": "explorer.exe"
+      },
+      "candidates": [
+        {
+          "id": "activate_window_0",
+          "tool": "activate_window",
+          "arguments": {"window_id": "0x2001"},
+          "description": "\"Slack | #general\" (Slack.exe window)",
+          "kind": "action",
+          "local_score": 0.9
+        },
+        {
+          "id": "activate_window_1",
+          "tool": "activate_window",
+          "arguments": {"window_id": "0x2002"},
+          "description": "\"Spotify Premium\" (Spotify.exe window)",
+          "kind": "action",
+          "local_score": 0.2
+        },
+        {
+          "id": "activate_window_2",
+          "tool": "activate_window",
+          "arguments": {"window_id": "0x2003"},
+          "description": "\"Task Manager\" (Taskmgr.exe window)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "jev_blocked",
+          "tool": "__blocked__",
+          "arguments": {},
+          "description": "No offered reversible structured action can safely advance the task; hand control to the primary model",
+          "kind": "action",
+          "local_score": 0.0
+        }
+      ],
+      "expected": {
+        "operation": "ACTIVATE_WINDOW",
+        "target": "activate_window_0"
+      },
+      "historical_jev": null,
+      "clustering_band": {
+        "note": "Synthetic: a genuinely multi-candidate ACTIVATE_WINDOW group (size 3) where the correct target is unambiguous to a human (Slack for a Slack task) but the distractors are plausible enough that a real model could land in the clustering band. Pairs with case_17 (same shape, wrong answer) to test discrimination at moderate cardinality.",
+        "operation_group_size": 3,
+        "should_promote": true
+      }
+    },
+    {
+      "id": "case_17_synthetic_ambiguous_activate_wrong",
+      "category": "clustering_band_synthetic_multi_candidate",
+      "source_session": "synthetic",
+      "turn": 1,
+      "task": "Reply to the last message in Slack.",
+      "current_step": "Several chat application windows are open; identify the one relevant to Slack",
+      "state": {
+        "active_window": null,
+        "foreground_window": "explorer.exe"
+      },
+      "candidates": [
+        {
+          "id": "activate_window_0",
+          "tool": "activate_window",
+          "arguments": {"window_id": "0x3001"},
+          "description": "\"Discord | #general\" (Discord.exe window)",
+          "kind": "action",
+          "local_score": 0.6
+        },
+        {
+          "id": "activate_window_1",
+          "tool": "activate_window",
+          "arguments": {"window_id": "0x3002"},
+          "description": "\"Microsoft Teams | General\" (Teams.exe window)",
+          "kind": "action",
+          "local_score": 0.5
+        },
+        {
+          "id": "activate_window_2",
+          "tool": "activate_window",
+          "arguments": {"window_id": "0x3003"},
+          "description": "\"Slack | #general\" (Slack.exe window)",
+          "kind": "action",
+          "local_score": 0.55
+        },
+        {
+          "id": "jev_blocked",
+          "tool": "__blocked__",
+          "arguments": {},
+          "description": "No offered reversible structured action can safely advance the task; hand control to the primary model",
+          "kind": "action",
+          "local_score": 0.0
+        }
+      ],
+      "expected": {
+        "operation": "ACTIVATE_WINDOW",
+        "target": "activate_window_2"
+      },
+      "historical_jev": null,
+      "clustering_band": {
+        "note": "Synthetic: three similarly-scored chat-app windows (Discord, Teams, Slack) for a Slack-specific task. The 'wrong' outcome this case tests for is the router landing on Discord or Teams instead of Slack in the clustering band -- should_promote is only true if the router's own operation/target answer already picked Slack; scored against whichever candidate it actually picks at run time.",
+        "operation_group_size": 3,
+        "should_promote": "conditional_on_selected_target",
+        "correct_target": "activate_window_2"
+      }
+    },
+    {
+      "id": "case_18_synthetic_high_cardinality_click_correct",
+      "category": "clustering_band_synthetic_high_cardinality",
+      "source_session": "synthetic",
+      "turn": 4,
+      "task": "Click the checkout button to complete the purchase.",
+      "current_step": "A checkout page with many interactive elements is visible",
+      "state": {
+        "active_window": "chrome.exe",
+        "foreground_window": "chrome.exe"
+      },
+      "candidates": [
+        {
+          "id": "click_0",
+          "tool": "click_target",
+          "arguments": {"target_id": "0"},
+          "description": "\"Continue Shopping\" (link, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_1",
+          "tool": "click_target",
+          "arguments": {"target_id": "1"},
+          "description": "\"Apply Coupon\" (button, enabled, weakly task relevant)",
+          "kind": "action",
+          "local_score": 0.2
+        },
+        {
+          "id": "click_2",
+          "tool": "click_target",
+          "arguments": {"target_id": "2"},
+          "description": "\"Edit Shipping Address\" (button, enabled, weakly task relevant)",
+          "kind": "action",
+          "local_score": 0.2
+        },
+        {
+          "id": "click_3",
+          "tool": "click_target",
+          "arguments": {"target_id": "3"},
+          "description": "\"Save Payment Method\" (checkbox, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_4",
+          "tool": "click_target",
+          "arguments": {"target_id": "4"},
+          "description": "\"Gift Wrap Options\" (link, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_5",
+          "tool": "click_target",
+          "arguments": {"target_id": "5"},
+          "description": "\"Place Order\" (button, enabled, strongly task relevant)",
+          "kind": "action",
+          "local_score": 0.95
+        },
+        {
+          "id": "click_6",
+          "tool": "click_target",
+          "arguments": {"target_id": "6"},
+          "description": "\"Terms and Conditions\" (link, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_7",
+          "tool": "click_target",
+          "arguments": {"target_id": "7"},
+          "description": "\"Customer Support Chat\" (button, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_8",
+          "tool": "click_target",
+          "arguments": {"target_id": "8"},
+          "description": "\"Remove Item\" (button, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_9",
+          "tool": "click_target",
+          "arguments": {"target_id": "9"},
+          "description": "\"Save Cart for Later\" (link, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "jev_blocked",
+          "tool": "__blocked__",
+          "arguments": {},
+          "description": "No offered reversible structured action can safely advance the task; hand control to the primary model",
+          "kind": "action",
+          "local_score": 0.0
+        }
+      ],
+      "expected": {
+        "operation": "CLICK",
+        "target": "click_5"
+      },
+      "historical_jev": null,
+      "clustering_band": {
+        "note": "Synthetic, high cardinality (10 CLICK candidates, mirroring the real 26-option Discord scene from case_04): a clear, high-stakes, low-reversibility correct target ('Place Order') among many distractors. Deliberately used as a NEGATIVE-leaning stress test for the committee's 'cheap/reversible' sub-question -- placing an order is not cheap or easily reversible even when it IS the correct action, so this case checks whether the committee's safety-oriented phrasing produces a false 'should not promote' bias against correct-but-consequential actions.",
+        "operation_group_size": 10,
+        "should_promote": false,
+        "should_promote_rationale": "Correct target, but a real purchase is exactly the kind of low-reversibility action that should stay gated on the LLM/user rather than be promoted by a fast heuristic layer, regardless of committee score. This case tests whether the committee's own answers agree that a checkout action is not 'cheap/reversible' even when it is otherwise correct."
+      }
+    },
+    {
+      "id": "case_19_synthetic_high_cardinality_click_wrong",
+      "category": "clustering_band_synthetic_high_cardinality",
+      "source_session": "synthetic",
+      "turn": 4,
+      "task": "Click the checkout button to complete the purchase.",
+      "current_step": "A checkout page with many interactive elements is visible",
+      "state": {
+        "active_window": "chrome.exe",
+        "foreground_window": "chrome.exe"
+      },
+      "candidates": [
+        {
+          "id": "click_0",
+          "tool": "click_target",
+          "arguments": {"target_id": "0"},
+          "description": "\"Continue Shopping\" (link, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_1",
+          "tool": "click_target",
+          "arguments": {"target_id": "1"},
+          "description": "\"Apply Coupon\" (button, enabled, weakly task relevant)",
+          "kind": "action",
+          "local_score": 0.2
+        },
+        {
+          "id": "click_2",
+          "tool": "click_target",
+          "arguments": {"target_id": "2"},
+          "description": "\"Edit Shipping Address\" (button, enabled, weakly task relevant)",
+          "kind": "action",
+          "local_score": 0.2
+        },
+        {
+          "id": "click_3",
+          "tool": "click_target",
+          "arguments": {"target_id": "3"},
+          "description": "\"Remove Item\" (button, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_4",
+          "tool": "click_target",
+          "arguments": {"target_id": "4"},
+          "description": "\"Gift Wrap Options\" (link, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_5",
+          "tool": "click_target",
+          "arguments": {"target_id": "5"},
+          "description": "\"Place Order\" (button, enabled, strongly task relevant)",
+          "kind": "action",
+          "local_score": 0.6
+        },
+        {
+          "id": "click_6",
+          "tool": "click_target",
+          "arguments": {"target_id": "6"},
+          "description": "\"Terms and Conditions\" (link, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_7",
+          "tool": "click_target",
+          "arguments": {"target_id": "7"},
+          "description": "\"Customer Support Chat\" (button, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "click_8",
+          "tool": "click_target",
+          "arguments": {"target_id": "8"},
+          "description": "\"Save Cart for Later\" (button, enabled, weakly task relevant)",
+          "kind": "action",
+          "local_score": 0.5
+        },
+        {
+          "id": "click_9",
+          "tool": "click_target",
+          "arguments": {"target_id": "9"},
+          "description": "\"Save Payment Method\" (checkbox, enabled, unrelated)",
+          "kind": "action",
+          "local_score": 0.1
+        },
+        {
+          "id": "jev_blocked",
+          "tool": "__blocked__",
+          "arguments": {},
+          "description": "No offered reversible structured action can safely advance the task; hand control to the primary model",
+          "kind": "action",
+          "local_score": 0.0
+        }
+      ],
+      "expected": {
+        "operation": "CLICK",
+        "target": "click_5"
+      },
+      "historical_jev": null,
+      "clustering_band": {
+        "note": "Synthetic, high cardinality: identical scene to case_18 but the router's own candidate scoring is engineered to be flatter across a plausible-but-wrong distractor ('Save Cart for Later' at 0.5, close to 'Place Order' at 0.6) so the actually-selected target may not be click_5 at run time. should_promote is false regardless of which candidate is selected -- a purchase action should never be promoted past the primary model at high cardinality with close competing scores.",
+        "operation_group_size": 10,
+        "should_promote": false
+      }
+    },
+    {
+      "id": "case_20_synthetic_wrong_operation_category",
+      "category": "clustering_band_synthetic_wrong_operation",
+      "source_session": "synthetic",
+      "turn": 1,
+      "task": "Check my email for any new messages from my manager.",
+      "current_step": "An email client window is already open and visible on the desktop",
+      "state": {
+        "active_window": null,
+        "foreground_window": "explorer.exe"
+      },
+      "candidates": [
+        {
+          "id": "activate_window_0",
+          "tool": "activate_window",
+          "arguments": {"window_id": "0x4001"},
+          "description": "\"Inbox - Outlook\" (OUTLOOK.exe window)",
+          "kind": "action",
+          "local_score": 0.85
+        },
+        {
+          "id": "search_web_for_request",
+          "tool": "managed_browser_open",
+          "arguments": {"url": "https://duckduckgo.com/?q=check+my+email+for+any+new+messages+from+my+manager"},
+          "description": "Search the web in the isolated managed browser using the complete user request",
+          "kind": "action",
+          "local_score": 0.4
+        },
+        {
+          "id": "jev_blocked",
+          "tool": "__blocked__",
+          "arguments": {},
+          "description": "No offered reversible structured action can safely advance the task; hand control to the primary model",
+          "kind": "action",
+          "local_score": 0.0
+        }
+      ],
+      "expected": {
+        "operation": "ACTIVATE_WINDOW",
+        "target": "activate_window_0"
+      },
+      "historical_jev": null,
+      "clustering_band": {
+        "note": "Synthetic: tests an operation-CATEGORY error rather than a wrong-target-within-the-right-operation error. An already-open Outlook window makes SEARCH_WEB categorically wrong here (searching the web cannot read someone's email), not just a worse candidate. should_promote is true only when the router's own operation answer is ACTIVATE_WINDOW; if it picks SEARCH_WEB in the clustering band, that is the specific failure mode this case exists to catch, and should never be promoted.",
+        "operation_group_size": 2,
+        "should_promote": "conditional_on_selected_operation",
+        "correct_operation": "ACTIVATE_WINDOW"
+      }
+    }
+  ]
+}

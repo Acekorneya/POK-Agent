@@ -1,0 +1,8 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Only core window/event permissions; filesystem and shell remain in the Rust policy layer.",
+  "windows": ["main"],
+  "permissions": ["core:default", "core:event:default"]
+}
+

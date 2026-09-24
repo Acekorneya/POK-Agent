@@ -1,0 +1,91 @@
+# Rust, Node, and frontend build output at any workspace depth.
+target/
+target-*/
+node_modules/
+dist/
+*.db
+*.db-shm
+*.db-wal
+*.log
+.env
+/diagnostics/*
+!/diagnostics/README.md
+!/diagnostics/decision_suite_cases.json
+!/diagnostics/context_gating_suite_cases.json
+!/diagnostics/router_question_suite.json
+
+# Python bytecode/venvs from the local benchmark and sidecar scripts.
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# OS and editor cruft.
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+
+# Ad-hoc scratch output that has landed in the repo root by accident before
+# (an unrelated scratch script, a Windows folder-listing dump, a pasted
+# screenshot) — none of these belong in version control; real project
+# screenshots/assets belong under docs/ or apps/desktop/src-tauri/icons/, not
+# the repo root.
+/*.png
+/*.jpg
+/*.jpeg
+/*.csv
+/tmp_*.py
+/downloads_listing*
+/artifacts/
+
+# Documents and agent verification copies. Test runs save Word/Office files
+# and agents sometimes copy a user's file into the workspace to inspect it;
+# personal documents (resumes, cover letters) have been committed by accident
+# before. Fixtures that need a document belong in tests as generated data.
+*.doc
+*.docx
+*.xls
+*.xlsx
+*.ppt
+*.pptx
+*.pdf
+/*.txt
+/.artifact-inspection/
+/.verification/
+/verified*/
+
+# Session traces anywhere (they carry prompts, OCR, and screen text).
+*.jsonl
+
+# AI coding-assistant configuration, memory, and instruction files. These
+# tools are used to develop the project but are not part of it.
+AGENTS.md
+CLAUDE.md
+CLAUDE.local.md
+GEMINI.md
+CODEX.md
+QWEN.md
+.claude/
+.codex/
+.cursor/
+.cursorrules
+.gemini/
+.aider*
+.windsurf/
+.windsurfrules
+.clinerules
+.cline/
+.roo/
+.roomodes
+.continue/
+.kiro/
+.openhands/
+.opencode/
+.qwen/
+.junie/
+.amazonq/
+.augment/
+.trae/
+.github/copilot-instructions.md

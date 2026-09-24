@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>POK-Ai Brain Exam</title>
+  <style>
+    :root { font-family: Segoe UI, sans-serif; background:#eef3f5; color:#14232a; }
+    body { margin:0; display:grid; place-items:center; min-height:100vh; }
+    main { width:680px; background:white; border-radius:16px; padding:32px; box-shadow:0 24px 70px #29465133; }
+    h1 { margin:0 0 6px } p { color:#58717b } .grid { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+    label { display:grid; gap:6px; font-weight:600; } input,select { padding:11px; border:1px solid #9bb0b8; border-radius:7px; font-size:15px; }
+    .wide { grid-column:1/-1 } button { margin-top:22px; padding:12px 20px; background:#087f5b; color:white; border:0; border-radius:8px; font-weight:700; }
+    #success { display:none; padding:15px; margin-top:18px; background:#d8f5e8; border:1px solid #68c59f; border-radius:8px; }
+  </style>
+</head>
+<body><main>
+  <small>DETERMINISTIC DESKTOP FIXTURE</small><h1>Shipping request</h1><p>Complete the request using the values in your task.</p>
+  <form id="exam-form" class="grid">
+    <label>Customer name<input id="customer" name="customer" autocomplete="off" /></label>
+    <label>Order ID<input id="order" name="order" autocomplete="off" /></label>
+    <label>Service<select id="service" name="service"><option value="">Choose…</option><option>Ground</option><option>Priority</option><option>Express</option></select></label>
+    <label>Package count<input id="packages" name="packages" type="number" min="1" max="9" /></label>
+    <label class="wide">Notes<input id="notes" name="notes" autocomplete="off" /></label>
+    <button id="submit" type="submit">Submit request</button>
+  </form><div id="success" role="status">Request recorded successfully.</div>
+  <script>
+    document.querySelector("form").addEventListener("submit", async (event) => {
+      event.preventDefault(); const data=Object.fromEntries(new FormData(event.target));
+      const response=await fetch("/api/state",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify(data)});
+      if(response.ok) document.querySelector("#success").style.display="block";
+    });
+  </script>
+</main></body></html>
+

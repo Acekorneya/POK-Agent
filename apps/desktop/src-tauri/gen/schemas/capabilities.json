@@ -1,0 +1,1 @@
+{"default":{"identifier":"default","description":"Only core window/event permissions; filesystem and shell remain in the Rust policy layer.","local":true,"windows":["main"],"permissions":["core:default","core:event:default"]}}

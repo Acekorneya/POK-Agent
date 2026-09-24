@@ -1,0 +1,5664 @@
+{
+ "version": "1.0",
+ "description": "POK-Ai router question suite: completion checks, target picks and condition choices from real captures",
+ "cases": [
+  {
+   "kind": "completion",
+   "id": "done_home_not_system",
+   "goal": "open System settings",
+   "condition": "the System settings page is open",
+   "state": {
+    "window": {
+     "application": "ApplicationFrameHost.exe",
+     "title": "Settings"
+    },
+    "visible": [
+     "Home (list item, selected)",
+     "System (list item)",
+     "Bluetooth & devices (list item)",
+     "Network & internet (list item)",
+     "Personalization (list item)",
+     "Apps (list item)",
+     "Accounts (list item)",
+     "Time & language (list item)",
+     "Gaming (list item)",
+     "Accessibility (list item)",
+     "Privacy & security (list item)",
+     "Windows Update (list item)",
+     "Recommended settings (text)",
+     "Display (list item)",
+     "Installed apps (list item)",
+     "Lock screen (list item)",
+     "Windows Update Attention needed (button)",
+     "Ethernet 2 Connected (button)",
+     "Bluetooth devices (text)",
+     "Add device (button)",
+     "View all devices (button)",
+     "Personalize your device (text)",
+     "Windows (light), 1 images (list item)",
+     "Glow, 4 images (list item)"
+    ]
+   },
+   "expected": "no"
+  },
+  {
+   "kind": "completion",
+   "id": "done_home_quoted_bluetooth",
+   "goal": "open Bluetooth settings",
+   "condition": "\"Bluetooth & devices\" is visible",
+   "state": {
+    "window": {
+     "application": "ApplicationFrameHost.exe",
+     "title": "Settings"
+    },
+    "visible": [
+     "Home (list item, selected)",
+     "System (list item)",
+     "Bluetooth & devices (list item)",
+     "Network & internet (list item)",
+     "Personalization (list item)",
+     "Apps (list item)",
+     "Accounts (list item)",
+     "Time & language (list item)",
+     "Gaming (list item)",
+     "Accessibility (list item)",
+     "Privacy & security (list item)",
+     "Windows Update (list item)",
+     "Recommended settings (text)",
+     "Display (list item)",
+     "Installed apps (list item)",
+     "Lock screen (list item)",
+     "Windows Update Attention needed (button)",
+     "Ethernet 2 Connected (button)",
+     "Bluetooth devices (text)",
+     "Add device (button)",
+     "View all devices (button)",
+     "Personalize your device (text)",
+     "Windows (light), 1 images (list item)",
+     "Glow, 4 images (list item)"
+    ]
+   },
+   "expected": "yes"
+  },
+  {
+   "kind": "completion",
+   "id": "done_home_update_attention",
+   "goal": "check Windows Update",
+   "condition": "Windows Update needs attention",
+   "state": {
+    "window": {
+     "application": "ApplicationFrameHost.exe",
+     "title": "Settings"
+    },
+    "visible": [
+     "Home (list item, selected)",
+     "System (list item)",
+     "Bluetooth & devices (list item)",
+     "Network & internet (list item)",
+     "Personalization (list item)",
+     "Apps (list item)",
+     "Accounts (list item)",
+     "Time & language (list item)",
+     "Gaming (list item)",
+     "Accessibility (list item)",
+     "Privacy & security (list item)",
+     "Windows Update (list item)",
+     "Recommended settings (text)",
+     "Display (list item)",
+     "Installed apps (list item)",
+     "Lock screen (list item)",
+     "Windows Update Attention needed (button)",
+     "Ethernet 2 Connected (button)",
+     "Bluetooth devices (text)",
+     "Add device (button)",
+     "View all devices (button)",
+     "Personalize your device (text)",
+     "Windows (light), 1 images (list item)",
+     "Glow, 4 images (list item)"
+    ]
+   },
+   "expected": "yes"
+  },
+  {
+   "kind": "completion",
+   "id": "done_display_open",
+   "goal": "open Display settings",
+   "condition": "the Display settings page is open",
+   "state": {
+    "window": {
+     "application": "ApplicationFrameHost.exe",
+     "title": "Settings"
+    },
+    "visible": [
+     "System (breadcrumb bar item)",
+     "Display (breadcrumb bar item)",
+     "Home (list item)",
+     "System (list item, selected)",
+     "Bluetooth & devices (list item)",
+     "Personalization (list item)",
+     "Multiple displays (group)",
+     "Identify (button)",
+     "Brightness & color (text)",
+     "Night light (toggle switch)",
+     "Color profile (text)",
+     "HDR (text)",
+     "Scale & layout (text)",
+     "Scale (combo box)",
+     "100% (Recommended) (list item)",
+     "Display resolution (combo box)",
+     "2560 × 1440 (Recommended) (list item)",
+     "Show more settings (button)",
+     "Apps (list item)",
+     "Accounts (list item)",
+     "Gaming (list item)",
+     "Accessibility (list item)",
+     "Privacy & security (list item)",
+     "Windows Update (list item)"
+    ]
+   },
+   "expected": "yes"
+  },
+  {
+   "kind": "completion",
+   "id": "done_display_not_advanced",
+   "goal": "open Advanced display",
+   "condition": "the Advanced display page is open",
+   "state": {
+    "window": {
+     "application": "ApplicationFrameHost.exe",
+     "title": "Settings"
+    },
+    "visible": [
+     "System (breadcrumb bar item)",
+     "Display (breadcrumb bar item)",
+     "Home (list item)",
+     "System (list item, selected)",
+     "Bluetooth & devices (list item)",
+     "Personalization (list item)",
+     "Multiple displays (group)",
+     "Identify (button)",
+     "Brightness & color (text)",
+     "Night light (toggle switch)",
+     "Color profile (text)",
+     "HDR (text)",
+     "Scale & layout (text)",
+     "Scale (combo box)",
+     "100% (Recommended) (list item)",
+     "Display resolution (combo box)",
+     "2560 × 1440 (Recommended) (list item)",
+     "Show more settings (button)",
+     "Apps (list item)",
+     "Accounts (list item)",
+     "Gaming (list item)",
+     "Accessibility (list item)",
+     "Privacy & security (list item)",
+     "Windows Update (list item)"
+    ]
+   },
+   "expected": "no"
+  },
+  {
+   "kind": "completion",
+   "id": "done_display_quoted_advanced",
+   "goal": "open Advanced display",
+   "condition": "breadcrumb \"Advanced display\" is visible",
+   "state": {
+    "window": {
+     "application": "ApplicationFrameHost.exe",
+     "title": "Settings"
+    },
+    "visible": [
+     "System (breadcrumb bar item)",
+     "Display (breadcrumb bar item)",
+     "Home (list item)",
+     "System (list item, selected)",
+     "Bluetooth & devices (list item)",
+     "Personalization (list item)",
+     "Multiple displays (group)",
+     "Identify (button)",
+     "Brightness & color (text)",
+     "Night light (toggle switch)",
+     "Color profile (text)",
+     "HDR (text)",
+     "Scale & layout (text)",
+     "Scale (combo box)",
+     "100% (Recommended) (list item)",
+     "Display resolution (combo box)",
+     "2560 × 1440 (Recommended) (list item)",
+     "Show more settings (button)",
+     "Apps (list item)",
+     "Accounts (list item)",
+     "Gaming (list item)",
+     "Accessibility (list item)",
+     "Privacy & security (list item)",
+     "Windows Update (list item)"
+    ]
+   },
+   "expected": "no"
+  },
+  {
+   "kind": "completion",
+   "id": "done_display_resolution",
+   "goal": "read the resolution",
+   "condition": "the display resolution is 2560 × 1440",
+   "state": {
+    "window": {
+     "application": "ApplicationFrameHost.exe",
+     "title": "Settings"
+    },
+    "visible": [
+     "System (breadcrumb bar item)",
+     "Display (breadcrumb bar item)",
+     "Home (list item)",
+     "System (list item, selected)",
+     "Bluetooth & devices (list item)",
+     "Personalization (list item)",
+     "Multiple displays (group)",
+     "Identify (button)",
+     "Brightness & color (text)",
+     "Night light (toggle switch)",
+     "Color profile (text)",
+     "HDR (text)",
+     "Scale & layout (text)",
+     "Scale (combo box)",
+     "100% (Recommended) (list item)",
+     "Display resolution (combo box)",
+     "2560 × 1440 (Recommended) (list item)",
+     "Show more settings (button)",
+     "Apps (list item)",
+     "Accounts (list item)",
+     "Gaming (list item)",
+     "Accessibility (list item)",
+     "Privacy & security (list item)",
+     "Windows Update (list item)"
+    ]
+   },
+   "expected": "yes"
+  },
+  {
+   "kind": "completion",
+   "id": "done_advanced_open",
+   "goal": "open Advanced display",
+   "condition": "the Advanced display page is open",
+   "state": {
+    "window": {
+     "application": "ApplicationFrameHost.exe",
+     "title": "Settings"
+    },
+    "visible": [
+     "System (breadcrumb bar item)",
+     "Display (breadcrumb bar item)",
+     "Advanced display (breadcrumb bar item)",
+     "Advanced display (text)",
+     "Select a display to view or change its settings (combo box)",
+     "Display information (group)",
+     "Desktop mode (text)",
+     "2560 × 1440, 165 Hz (text)",
+     "Active signal mode (text)",
+     "Variable refresh rate (text)",
+     "Not Supported (text)",
+     "Bit depth (text)",
+     "8-bit (text)",
+     "Color format (text)",
+     "RGB (text)",
+     "Refresh rate (group)",
+     "Refresh rate (combo box)",
+     "Choose a refresh rate (text)",
+     "165 Hz (list item)",
+     "More about refresh rate (link)",
+     "Dynamic refresh rate isn't supported (text)",
+     "Home (list item)",
+     "System (list item)",
+     "Display adapter properties for Display 1 (link)"
+    ]
+   },
+   "expected": "yes"
+  },
+  {
+   "kind": "completion",
+   "id": "done_advanced_rate_shown",
+   "goal": "read the refresh rate",
+   "condition": "the refresh rate is shown",
+   "state": {
+    "window": {
+     "application": "ApplicationFrameHost.exe",
+     "title": "Settings"
+    },
+    "visible": [
+     "System (breadcrumb bar item)",
+     "Display (breadcrumb bar item)",
+     "Advanced display (breadcrumb bar item)",
+     "Advanced display (text)",
+     "Select a display to view or change its settings (combo box)",
+     "Display information (group)",
+     "Desktop mode (text)",
+     "2560 × 1440, 165 Hz (text)",
+     "Active signal mode (text)",
+     "Variable refresh rate (text)",
+     "Not Supported (text)",
+     "Bit depth (text)",
+     "8-bit (text)",
+     "Color format (text)",
+     "RGB (text)",
+     "Refresh rate (group)",
+     "Refresh rate (combo box)",
+     "Choose a refresh rate (text)",
+     "165 Hz (list item)",
+     "More about refresh rate (link)",
+     "Dynamic refresh rate isn't supported (text)",
+     "Home (list item)",
+     "System (list item)",
+     "Display adapter properties for Display 1 (link)"
+    ]
+   },
+   "expected": "yes"
+  },
+  {
+   "kind": "completion",
+   "id": "done_advanced_not_night_light",
+   "goal": "open Night light",
+   "condition": "the Night light settings page is open",
+   "state": {
+    "window": {
+     "application": "ApplicationFrameHost.exe",
+     "title": "Settings"
+    },
+    "visible": [
+     "System (breadcrumb bar item)",
+     "Display (breadcrumb bar item)",
+     "Advanced display (breadcrumb bar item)",
+     "Advanced display (text)",
+     "Select a display to view or change its settings (combo box)",
+     "Display information (group)",
+     "Desktop mode (text)",
+     "2560 × 1440, 165 Hz (text)",
+     "Active signal mode (text)",
+     "Variable refresh rate (text)",
+     "Not Supported (text)",
+     "Bit depth (text)",
+     "8-bit (text)",
+     "Color format (text)",
+     "RGB (text)",
+     "Refresh rate (group)",
+     "Refresh rate (combo box)",
+     "Choose a refresh rate (text)",
+     "165 Hz (list item)",
+     "More about refresh rate (link)",
+     "Dynamic refresh rate isn't supported (text)",
+     "Home (list item)",
+     "System (list item)",
+     "Display adapter properties for Display 1 (link)"
+    ]
+   },
+   "expected": "no"
+  },
+  {
+   "kind": "completion",
+   "id": "done_advanced_quoted_rate",
+   "goal": "read the refresh rate",
+   "condition": "\"Refresh rate\" and \"165 Hz\" are visible",
+   "state": {
+    "window": {
+     "application": "ApplicationFrameHost.exe",
+     "title": "Settings"
+    },
+    "visible": [
+     "System (breadcrumb bar item)",
+     "Display (breadcrumb bar item)",
+     "Advanced display (breadcrumb bar item)",
+     "Advanced display (text)",
+     "Select a display to view or change its settings (combo box)",
+     "Display information (group)",
+     "Desktop mode (text)",
+     "2560 × 1440, 165 Hz (text)",
+     "Active signal mode (text)",
+     "Variable refresh rate (text)",
+     "Not Supported (text)",
+     "Bit depth (text)",
+     "8-bit (text)",
+     "Color format (text)",
+     "RGB (text)",
+     "Refresh rate (group)",
+     "Refresh rate (combo box)",
+     "Choose a refresh rate (text)",
+     "165 Hz (list item)",
+     "More about refresh rate (link)",
+     "Dynamic refresh rate isn't supported (text)",
+     "Home (list item)",
+     "System (list item)",
+     "Display adapter properties for Display 1 (link)"
+    ]
+   },
+   "expected": "yes"
+  },
+  {
+   "kind": "completion",
+   "id": "done_error_dialog",
+   "goal": "open Settings",
+   "condition": "the Settings app is open",
+   "state": {
+    "window": {
+     "application": "explorer.exe",
+     "title": "Settings"
+    },
+    "visible": [
+     "Close (button)",
+     "Settings (text)",
+     "Windows cannot find 'Settings'. Make sure you typed the name correctly, and then try again. (text)",
+     "OK (button)"
+    ]
+   },
+   "expected": "no"
+  },
+  {
+   "kind": "completion",
+   "id": "done_thispc_not_program_files",
+   "goal": "open Program Files",
+   "condition": "the Program Files folder is open",
+   "state": {
+    "window": {
+     "application": "explorer.exe",
+     "title": "This PC - File Explorer"
+    },
+    "visible": [
+     "This PC (tab item)",
+     "Address Bar (edit)",
+     "Search This PC (edit)",
+     "This PC (9 items) (group)",
+     "Local Disk (C:) (list item)",
+     "1TB SSD (D:) (list item)",
+     "500GB_SSD (E:) (list item)",
+     "GameDrive (F:) (list item)",
+     "GameDriveHDD (G:) (list item)",
+     "NZB (H:) (list item)",
+     "Crucial_SSD_2 (I:) (list item)",
+     "980 SSD (J:) (list item)",
+     "USB (L:) (list item)",
+     "Home (tree item)",
+     "Gallery (tree item)",
+     "OneDrive (tree item)",
+     "Downloads (pinned) (tree item)",
+     "Documents (pinned) (tree item)",
+     "Pictures (pinned) (tree item)",
+     "This PC (tree item)",
+     "Network (tree item)",
+     "Space used (edit)",
+     "Available space (edit)",
+     "Details (app bar button)"
+    ]
+   },
+   "expected": "no"
+  },
+  {
+   "kind": "completion",
+   "id": "done_thispc_lists_drives",
+   "goal": "open This PC",
+   "condition": "This PC is open and lists drives",
+   "state": {
+    "window": {
+     "application": "explorer.exe",
+     "title": "This PC - File Explorer"
+    },
+    "visible": [
+     "This PC (tab item)",
+     "Address Bar (edit)",
+     "Search This PC (edit)",
+     "This PC (9 items) (group)",
+     "Local Disk (C:) (list item)",
+     "1TB SSD (D:) (list item)",
+     "500GB_SSD (E:) (list item)",
+     "GameDrive (F:) (list item)",
+     "GameDriveHDD (G:) (list item)",
+     "NZB (H:) (list item)",
+     "Crucial_SSD_2 (I:) (list item)",
+     "980 SSD (J:) (list item)",
+     "USB (L:) (list item)",
+     "Home (tree item)",
+     "Gallery (tree item)",
+     "OneDrive (tree item)",
+     "Downloads (pinned) (tree item)",
+     "Documents (pinned) (tree item)",
+     "Pictures (pinned) (tree item)",
+     "This PC (tree item)",
+     "Network (tree item)",
+     "Space used (edit)",
+     "Available space (edit)",
+     "Details (app bar button)"
+    ]
+   },
+   "expected": "yes"
+  },
+  {
+   "kind": "completion",
+   "id": "done_thispc_usb",
+   "goal": "find a USB drive",
+   "condition": "a USB drive is listed",
+   "state": {
+    "window": {
+     "application": "explorer.exe",
+     "title": "This PC - File Explorer"
+    },
+    "visible": [
+     "This PC (tab item)",
+     "Address Bar (edit)",
+     "Search This PC (edit)",
+     "This PC (9 items) (group)",
+     "Local Disk (C:) (list item)",
+     "1TB SSD (D:) (list item)",
+     "500GB_SSD (E:) (list item)",
+     "GameDrive (F:) (list item)",
+     "GameDriveHDD (G:) (list item)",
+     "NZB (H:) (list item)",
+     "Crucial_SSD_2 (I:) (list item)",
+     "980 SSD (J:) (list item)",
+     "USB (L:) (list item)",
+     "Home (tree item)",
+     "Gallery (tree item)",
+     "OneDrive (tree item)",
+     "Downloads (pinned) (tree item)",
+     "Documents (pinned) (tree item)",
+     "Pictures (pinned) (tree item)",
+     "This PC (tree item)",
+     "Network (tree item)",
+     "Space used (edit)",
+     "Available space (edit)",
+     "Details (app bar button)"
+    ]
+   },
+   "expected": "yes"
+  },
+  {
+   "kind": "completion",
+   "id": "done_c_open",
+   "goal": "open the C: drive",
+   "condition": "the Local Disk (C:) folder is open",
+   "state": {
+    "window": {
+     "application": "explorer.exe",
+     "title": "Local Disk (C:) - File Explorer"
+    },
+    "visible": [
+     "Local Disk (C:) (tab item)",
+     "This PC (split button)",
+     "Local Disk (C:) (split button)",
+     "Search Local Disk (C:) (edit)",
+     "$WinREAgent (list item)",
+     "AMD (list item)",
+     "Autodesk (list item)",
+     "inetpub (list item)",
+     "Intel (list item)",
+     "MSI (list item)",
+     "NVIDIA Corporation (list item)",
+     "PerfLogs (list item)",
+     "Program Files (list item)",
+     "Program Files (x86) (list item)",
+     "ProgramData (list item)",
+     "tmp (list item)",
+     "Users (list item)",
+     "Windows (list item)",
+     "XboxGames (list item)",
+     "Home (tree item)",
+     "This PC (tree item)",
+     "Local Disk (C:) (tree item)",
+     "Name (split button)",
+     "Date modified (split button)"
+    ]
+   },
+   "expected": "yes"
+  },
+  {
+   "kind": "completion",
+   "id": "done_c_listed_not_open",
+   "goal": "open Program Files",
+   "condition": "the Program Files folder is open",
+   "state": {
+    "window": {
+     "application": "explorer.exe",
+     "title": "Local Disk (C:) - File Explorer"
+    },
+    "visible": [
+     "Local Disk (C:) (tab item)",
+     "This PC (split button)",
+     "Local Disk (C:) (split button)",
+     "Search Local Disk (C:) (edit)",
+     "$WinREAgent (list item)",
+     "AMD (list item)",
+     "Autodesk (list item)",
+     "inetpub (list item)",
+     "Intel (list item)",
+     "MSI (list item)",
+     "NVIDIA Corporation (list item)",
+     "PerfLogs (list item)",
+     "Program Files (list item)",
+     "Program Files (x86) (list item)",
+     "ProgramData (list item)",
+     "tmp (list item)",
+     "Users (list item)",
+     "Windows (list item)",
+     "XboxGames (list item)",
+     "Home (tree item)",
+     "This PC (tree item)",
+     "Local Disk (C:) (tree item)",
+     "Name (split button)",
+     "Date modified (split button)"
+    ]
+   },
+   "expected": "no"
+  },
+  {
+   "kind": "completion",
+   "id": "done_c_not_windows",
+   "goal": "open the Windows folder",
+   "condition": "the Windows folder is open",
+   "state": {
+    "window": {
+     "application": "explorer.exe",
+     "title": "Local Disk (C:) - File Explorer"
+    },
+    "visible": [
+     "Local Disk (C:) (tab item)",
+     "This PC (split button)",
+     "Local Disk (C:) (split button)",
+     "Search Local Disk (C:) (edit)",
+     "$WinREAgent (list item)",
+     "AMD (list item)",
+     "Autodesk (list item)",
+     "inetpub (list item)",
+     "Intel (list item)",
+     "MSI (list item)",
+     "NVIDIA Corporation (list item)",
+     "PerfLogs (list item)",
+     "Program Files (list item)",
+     "Program Files (x86) (list item)",
+     "ProgramData (list item)",
+     "tmp (list item)",
+     "Users (list item)",
+     "Windows (list item)",
+     "XboxGames (list item)",
+     "Home (tree item)",
+     "This PC (tree item)",
+     "Local Disk (C:) (tree item)",
+     "Name (split button)",
+     "Date modified (split button)"
+    ]
+   },
+   "expected": "no"
+  },
+  {
+   "kind": "completion",
+   "id": "done_pf_open",
+   "goal": "open Program Files",
+   "condition": "the Program Files folder is open",
+   "state": {
+    "window": {
+     "application": "explorer.exe",
+     "title": "Program Files - File Explorer"
+    },
+    "visible": [
+     "Program Files (tab item)",
+     "This PC (split button)",
+     "Local Disk (C:) (split button)",
+     "Program Files (split button)",
+     "Program Files (78 items) (group)",
+     "Adobe (list item)",
+     "Amazon (list item)",
+     "AMD (list item)",
+     "Application Verifier (list item)",
+     "Autodesk (list item)",
+     "AutoHotkey (list item)",
+     "Bambu Studio (list item)",
+     "Blender Foundation (list item)",
+     "cFosSpeed (list item)",
+     "Common Files (list item)",
+     "Docker (list item)",
+     "dotnet (list item)",
+     "Git (list item)",
+     "HWiNFO64 (list item)",
+     "Intel (list item)",
+     "Kodi (list item)",
+     "LLVM (list item)",
+     "Up to \"Local Disk (C:)\" (Alt + Up Arrow) (app bar button)",
+     "Search Program Files (edit)"
+    ]
+   },
+   "expected": "yes"
+  },
+  {
+   "kind": "completion",
+   "id": "done_pf_quoted_adobe",
+   "goal": "open Program Files",
+   "condition": "\"Adobe\" is visible",
+   "state": {
+    "window": {
+     "application": "explorer.exe",
+     "title": "Program Files - File Explorer"
+    },
+    "visible": [
+     "Program Files (tab item)",
+     "This PC (split button)",
+     "Local Disk (C:) (split button)",
+     "Program Files (split button)",
+     "Program Files (78 items) (group)",
+     "Adobe (list item)",
+     "Amazon (list item)",
+     "AMD (list item)",
+     "Application Verifier (list item)",
+     "Autodesk (list item)",
+     "AutoHotkey (list item)",
+     "Bambu Studio (list item)",
+     "Blender Foundation (list item)",
+     "cFosSpeed (list item)",
+     "Common Files (list item)",
+     "Docker (list item)",
+     "dotnet (list item)",
+     "Git (list item)",
+     "HWiNFO64 (list item)",
+     "Intel (list item)",
+     "Kodi (list item)",
+     "LLVM (list item)",
+     "Up to \"Local Disk (C:)\" (Alt + Up Arrow) (app bar button)",
+     "Search Program Files (edit)"
+    ]
+   },
+   "expected": "yes"
+  },
+  {
+   "kind": "completion",
+   "id": "done_pf_count",
+   "goal": "open Program Files",
+   "condition": "the folder shows 78 items",
+   "state": {
+    "window": {
+     "application": "explorer.exe",
+     "title": "Program Files - File Explorer"
+    },
+    "visible": [
+     "Program Files (tab item)",
+     "This PC (split button)",
+     "Local Disk (C:) (split button)",
+     "Program Files (split button)",
+     "Program Files (78 items) (group)",
+     "Adobe (list item)",
+     "Amazon (list item)",
+     "AMD (list item)",
+     "Application Verifier (list item)",
+     "Autodesk (list item)",
+     "AutoHotkey (list item)",
+     "Bambu Studio (list item)",
+     "Blender Foundation (list item)",
+     "cFosSpeed (list item)",
+     "Common Files (list item)",
+     "Docker (list item)",
+     "dotnet (list item)",
+     "Git (list item)",
+     "HWiNFO64 (list item)",
+     "Intel (list item)",
+     "Kodi (list item)",
+     "LLVM (list item)",
+     "Up to \"Local Disk (C:)\" (Alt + Up Arrow) (app bar button)",
+     "Search Program Files (edit)"
+    ]
+   },
+   "expected": "yes"
+  },
+  {
+   "kind": "completion",
+   "id": "done_book_index_not_ch4",
+   "goal": "open chapter 4",
+   "condition": "the chapter 4 Understanding Ownership page is open",
+   "state": {
+    "page": {
+     "url": "https://doc.rust-lang.org/book/",
+     "title": "The Rust Programming Language - The Rust Programming Language",
+     "text_start": "The Rust Programming Language Foreword Introduction 1. Getting Started 1.1. Installation 1.2. Hello, World! 1.3. Hello, Cargo! 2. Programming a Guessing Game 3. Common Programming Concepts"
+    }
+   },
+   "expected": "no"
+  },
+  {
+   "kind": "completion",
+   "id": "done_book_ch4",
+   "goal": "open chapter 4",
+   "condition": "the chapter 4 Understanding Ownership page is open",
+   "state": {
+    "page": {
+     "url": "https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html",
+     "title": "Understanding Ownership - The Rust Programming Language",
+     "text_start": "The Rust Programming Language Foreword Introduction 1. Getting Started 1.1. Installation 1.2. Hello, World! 1.3. Hello, Cargo! 2. Programming a Guessing Game 3. Common Programming Concepts"
+    }
+   },
+   "expected": "yes"
+  },
+  {
+   "kind": "completion",
+   "id": "done_book_ch4_not_4_1",
+   "goal": "open section 4.1",
+   "condition": "the What is Ownership? section page is open",
+   "state": {
+    "page": {
+     "url": "https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html",
+     "title": "Understanding Ownership - The Rust Programming Language",
+     "text_start": "The Rust Programming Language Foreword Introduction 1. Getting Started 1.1. Installation 1.2. Hello, World! 1.3. Hello, Cargo! 2. Programming a Guessing Game 3. Common Programming Concepts"
+    }
+   },
+   "expected": "no"
+  },
+  {
+   "kind": "completion",
+   "id": "done_book_4_1",
+   "goal": "open section 4.1",
+   "condition": "the What is Ownership? section page is open",
+   "state": {
+    "page": {
+     "url": "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html",
+     "title": "What is Ownership? - The Rust Programming Language",
+     "text_start": "The Rust Programming Language Foreword Introduction 1. Getting Started 1.1. Installation 1.2. Hello, World! 1.3. Hello, Cargo! 2. Programming a Guessing Game 3. Common Programming Concepts"
+    }
+   },
+   "expected": "yes"
+  },
+  {
+   "kind": "completion",
+   "id": "done_book_quoted_url",
+   "goal": "open chapter 4",
+   "condition": "the URL contains \"ch04\"",
+   "state": {
+    "page": {
+     "url": "https://doc.rust-lang.org/book/",
+     "title": "The Rust Programming Language - The Rust Programming Language",
+     "text_start": "The Rust Programming Language Foreword Introduction 1. Getting Started 1.1. Installation 1.2. Hello, World! 1.3. Hello, Cargo! 2. Programming a Guessing Game 3. Common Programming Concepts"
+    }
+   },
+   "expected": "no"
+  },
+  {
+   "kind": "completion",
+   "id": "done_book_not_search",
+   "goal": "search the web",
+   "condition": "a search results page is open",
+   "state": {
+    "page": {
+     "url": "https://doc.rust-lang.org/book/",
+     "title": "The Rust Programming Language - The Rust Programming Language",
+     "text_start": "The Rust Programming Language Foreword Introduction 1. Getting Started 1.1. Installation 1.2. Hello, World! 1.3. Hello, Cargo! 2. Programming a Guessing Game 3. Common Programming Concepts"
+    }
+   },
+   "expected": "no"
+  },
+  {
+   "kind": "target",
+   "id": "pick_home_quoted_system",
+   "goal": "open System settings",
+   "hint": "list item \"System\"",
+   "candidates": [
+    {
+     "id": "click_0",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "0",
+      "expected_label": "Home",
+      "button": "left"
+     },
+     "description": "\"Home\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_1",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "1",
+      "expected_label": "System",
+      "button": "left"
+     },
+     "description": "\"System\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_2",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "2",
+      "expected_label": "Bluetooth & devices",
+      "button": "left"
+     },
+     "description": "\"Bluetooth & devices\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_3",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "3",
+      "expected_label": "Network & internet",
+      "button": "left"
+     },
+     "description": "\"Network & internet\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_4",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "4",
+      "expected_label": "Personalization",
+      "button": "left"
+     },
+     "description": "\"Personalization\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_5",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "5",
+      "expected_label": "Apps",
+      "button": "left"
+     },
+     "description": "\"Apps\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_6",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "6",
+      "expected_label": "Accounts",
+      "button": "left"
+     },
+     "description": "\"Accounts\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_7",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "7",
+      "expected_label": "Time & language",
+      "button": "left"
+     },
+     "description": "\"Time & language\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_8",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "8",
+      "expected_label": "Gaming",
+      "button": "left"
+     },
+     "description": "\"Gaming\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_9",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "9",
+      "expected_label": "Accessibility",
+      "button": "left"
+     },
+     "description": "\"Accessibility\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_10",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "10",
+      "expected_label": "Privacy & security",
+      "button": "left"
+     },
+     "description": "\"Privacy & security\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_11",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "11",
+      "expected_label": "Windows Update",
+      "button": "left"
+     },
+     "description": "\"Windows Update\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_12",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "12",
+      "expected_label": "Display",
+      "button": "left"
+     },
+     "description": "\"Display\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_13",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "13",
+      "expected_label": "Installed apps",
+      "button": "left"
+     },
+     "description": "\"Installed apps\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_14",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "14",
+      "expected_label": "Lock screen",
+      "button": "left"
+     },
+     "description": "\"Lock screen\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_15",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "15",
+      "expected_label": "Windows (light), 1 images",
+      "button": "left"
+     },
+     "description": "\"Windows (light), 1 images\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_16",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "16",
+      "expected_label": "Glow, 4 images",
+      "button": "left"
+     },
+     "description": "\"Glow, 4 images\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    }
+   ],
+   "state": {
+    "window": {
+     "application": "ApplicationFrameHost.exe",
+     "title": "Settings"
+    }
+   },
+   "expected": "click_1"
+  },
+  {
+   "kind": "target",
+   "id": "pick_home_plain_system",
+   "goal": "open System settings",
+   "hint": "System in the left sidebar",
+   "candidates": [
+    {
+     "id": "click_0",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "0",
+      "expected_label": "Home",
+      "button": "left"
+     },
+     "description": "\"Home\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_1",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "1",
+      "expected_label": "System",
+      "button": "left"
+     },
+     "description": "\"System\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_2",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "2",
+      "expected_label": "Bluetooth & devices",
+      "button": "left"
+     },
+     "description": "\"Bluetooth & devices\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_3",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "3",
+      "expected_label": "Network & internet",
+      "button": "left"
+     },
+     "description": "\"Network & internet\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_4",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "4",
+      "expected_label": "Personalization",
+      "button": "left"
+     },
+     "description": "\"Personalization\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_5",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "5",
+      "expected_label": "Apps",
+      "button": "left"
+     },
+     "description": "\"Apps\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_6",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "6",
+      "expected_label": "Accounts",
+      "button": "left"
+     },
+     "description": "\"Accounts\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_7",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "7",
+      "expected_label": "Time & language",
+      "button": "left"
+     },
+     "description": "\"Time & language\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_8",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "8",
+      "expected_label": "Gaming",
+      "button": "left"
+     },
+     "description": "\"Gaming\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_9",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "9",
+      "expected_label": "Accessibility",
+      "button": "left"
+     },
+     "description": "\"Accessibility\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_10",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "10",
+      "expected_label": "Privacy & security",
+      "button": "left"
+     },
+     "description": "\"Privacy & security\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_11",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "11",
+      "expected_label": "Windows Update",
+      "button": "left"
+     },
+     "description": "\"Windows Update\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_12",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "12",
+      "expected_label": "Display",
+      "button": "left"
+     },
+     "description": "\"Display\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_13",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "13",
+      "expected_label": "Installed apps",
+      "button": "left"
+     },
+     "description": "\"Installed apps\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_14",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "14",
+      "expected_label": "Lock screen",
+      "button": "left"
+     },
+     "description": "\"Lock screen\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_15",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "15",
+      "expected_label": "Windows (light), 1 images",
+      "button": "left"
+     },
+     "description": "\"Windows (light), 1 images\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_16",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "16",
+      "expected_label": "Glow, 4 images",
+      "button": "left"
+     },
+     "description": "\"Glow, 4 images\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    }
+   ],
+   "state": {
+    "window": {
+     "application": "ApplicationFrameHost.exe",
+     "title": "Settings"
+    }
+   },
+   "expected": "click_1"
+  },
+  {
+   "kind": "target",
+   "id": "pick_home_semantic_wallpaper",
+   "goal": "change the desktop background picture",
+   "hint": "",
+   "candidates": [
+    {
+     "id": "click_0",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "0",
+      "expected_label": "Home",
+      "button": "left"
+     },
+     "description": "\"Home\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_1",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "1",
+      "expected_label": "System",
+      "button": "left"
+     },
+     "description": "\"System\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_2",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "2",
+      "expected_label": "Bluetooth & devices",
+      "button": "left"
+     },
+     "description": "\"Bluetooth & devices\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_3",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "3",
+      "expected_label": "Network & internet",
+      "button": "left"
+     },
+     "description": "\"Network & internet\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_4",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "4",
+      "expected_label": "Personalization",
+      "button": "left"
+     },
+     "description": "\"Personalization\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_5",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "5",
+      "expected_label": "Apps",
+      "button": "left"
+     },
+     "description": "\"Apps\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_6",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "6",
+      "expected_label": "Accounts",
+      "button": "left"
+     },
+     "description": "\"Accounts\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_7",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "7",
+      "expected_label": "Time & language",
+      "button": "left"
+     },
+     "description": "\"Time & language\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_8",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "8",
+      "expected_label": "Gaming",
+      "button": "left"
+     },
+     "description": "\"Gaming\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_9",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "9",
+      "expected_label": "Accessibility",
+      "button": "left"
+     },
+     "description": "\"Accessibility\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_10",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "10",
+      "expected_label": "Privacy & security",
+      "button": "left"
+     },
+     "description": "\"Privacy & security\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_11",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "11",
+      "expected_label": "Windows Update",
+      "button": "left"
+     },
+     "description": "\"Windows Update\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_12",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "12",
+      "expected_label": "Display",
+      "button": "left"
+     },
+     "description": "\"Display\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_13",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "13",
+      "expected_label": "Installed apps",
+      "button": "left"
+     },
+     "description": "\"Installed apps\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_14",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "14",
+      "expected_label": "Lock screen",
+      "button": "left"
+     },
+     "description": "\"Lock screen\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_15",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "15",
+      "expected_label": "Windows (light), 1 images",
+      "button": "left"
+     },
+     "description": "\"Windows (light), 1 images\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_16",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "16",
+      "expected_label": "Glow, 4 images",
+      "button": "left"
+     },
+     "description": "\"Glow, 4 images\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    }
+   ],
+   "state": {
+    "window": {
+     "application": "ApplicationFrameHost.exe",
+     "title": "Settings"
+    }
+   },
+   "expected": "click_4"
+  },
+  {
+   "kind": "target",
+   "id": "pick_home_semantic_updates",
+   "goal": "check for operating system updates",
+   "hint": "",
+   "candidates": [
+    {
+     "id": "click_0",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "0",
+      "expected_label": "Home",
+      "button": "left"
+     },
+     "description": "\"Home\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_1",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "1",
+      "expected_label": "System",
+      "button": "left"
+     },
+     "description": "\"System\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_2",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "2",
+      "expected_label": "Bluetooth & devices",
+      "button": "left"
+     },
+     "description": "\"Bluetooth & devices\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_3",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "3",
+      "expected_label": "Network & internet",
+      "button": "left"
+     },
+     "description": "\"Network & internet\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_4",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "4",
+      "expected_label": "Personalization",
+      "button": "left"
+     },
+     "description": "\"Personalization\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_5",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "5",
+      "expected_label": "Apps",
+      "button": "left"
+     },
+     "description": "\"Apps\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_6",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "6",
+      "expected_label": "Accounts",
+      "button": "left"
+     },
+     "description": "\"Accounts\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_7",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "7",
+      "expected_label": "Time & language",
+      "button": "left"
+     },
+     "description": "\"Time & language\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_8",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "8",
+      "expected_label": "Gaming",
+      "button": "left"
+     },
+     "description": "\"Gaming\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_9",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "9",
+      "expected_label": "Accessibility",
+      "button": "left"
+     },
+     "description": "\"Accessibility\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_10",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "10",
+      "expected_label": "Privacy & security",
+      "button": "left"
+     },
+     "description": "\"Privacy & security\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_11",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "11",
+      "expected_label": "Windows Update",
+      "button": "left"
+     },
+     "description": "\"Windows Update\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_12",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "12",
+      "expected_label": "Display",
+      "button": "left"
+     },
+     "description": "\"Display\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_13",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "13",
+      "expected_label": "Installed apps",
+      "button": "left"
+     },
+     "description": "\"Installed apps\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_14",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "14",
+      "expected_label": "Lock screen",
+      "button": "left"
+     },
+     "description": "\"Lock screen\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_15",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "15",
+      "expected_label": "Windows (light), 1 images",
+      "button": "left"
+     },
+     "description": "\"Windows (light), 1 images\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_16",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "16",
+      "expected_label": "Glow, 4 images",
+      "button": "left"
+     },
+     "description": "\"Glow, 4 images\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    }
+   ],
+   "state": {
+    "window": {
+     "application": "ApplicationFrameHost.exe",
+     "title": "Settings"
+    }
+   },
+   "expected": "click_11"
+  },
+  {
+   "kind": "target",
+   "id": "pick_home_semantic_headphones",
+   "goal": "pair new wireless headphones",
+   "hint": "",
+   "candidates": [
+    {
+     "id": "click_0",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "0",
+      "expected_label": "Home",
+      "button": "left"
+     },
+     "description": "\"Home\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_1",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "1",
+      "expected_label": "System",
+      "button": "left"
+     },
+     "description": "\"System\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_2",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "2",
+      "expected_label": "Bluetooth & devices",
+      "button": "left"
+     },
+     "description": "\"Bluetooth & devices\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_3",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "3",
+      "expected_label": "Network & internet",
+      "button": "left"
+     },
+     "description": "\"Network & internet\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_4",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "4",
+      "expected_label": "Personalization",
+      "button": "left"
+     },
+     "description": "\"Personalization\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_5",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "5",
+      "expected_label": "Apps",
+      "button": "left"
+     },
+     "description": "\"Apps\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_6",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "6",
+      "expected_label": "Accounts",
+      "button": "left"
+     },
+     "description": "\"Accounts\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_7",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "7",
+      "expected_label": "Time & language",
+      "button": "left"
+     },
+     "description": "\"Time & language\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_8",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "8",
+      "expected_label": "Gaming",
+      "button": "left"
+     },
+     "description": "\"Gaming\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_9",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "9",
+      "expected_label": "Accessibility",
+      "button": "left"
+     },
+     "description": "\"Accessibility\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_10",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "10",
+      "expected_label": "Privacy & security",
+      "button": "left"
+     },
+     "description": "\"Privacy & security\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_11",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "11",
+      "expected_label": "Windows Update",
+      "button": "left"
+     },
+     "description": "\"Windows Update\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_12",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "12",
+      "expected_label": "Display",
+      "button": "left"
+     },
+     "description": "\"Display\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_13",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "13",
+      "expected_label": "Installed apps",
+      "button": "left"
+     },
+     "description": "\"Installed apps\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_14",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "14",
+      "expected_label": "Lock screen",
+      "button": "left"
+     },
+     "description": "\"Lock screen\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_15",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "15",
+      "expected_label": "Windows (light), 1 images",
+      "button": "left"
+     },
+     "description": "\"Windows (light), 1 images\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_16",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "16",
+      "expected_label": "Glow, 4 images",
+      "button": "left"
+     },
+     "description": "\"Glow, 4 images\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    }
+   ],
+   "state": {
+    "window": {
+     "application": "ApplicationFrameHost.exe",
+     "title": "Settings"
+    }
+   },
+   "expected": "click_2"
+  },
+  {
+   "kind": "target",
+   "id": "pick_home_semantic_language",
+   "goal": "change the keyboard input language",
+   "hint": "",
+   "candidates": [
+    {
+     "id": "click_0",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "0",
+      "expected_label": "Home",
+      "button": "left"
+     },
+     "description": "\"Home\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_1",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "1",
+      "expected_label": "System",
+      "button": "left"
+     },
+     "description": "\"System\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_2",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "2",
+      "expected_label": "Bluetooth & devices",
+      "button": "left"
+     },
+     "description": "\"Bluetooth & devices\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_3",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "3",
+      "expected_label": "Network & internet",
+      "button": "left"
+     },
+     "description": "\"Network & internet\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_4",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "4",
+      "expected_label": "Personalization",
+      "button": "left"
+     },
+     "description": "\"Personalization\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_5",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "5",
+      "expected_label": "Apps",
+      "button": "left"
+     },
+     "description": "\"Apps\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_6",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "6",
+      "expected_label": "Accounts",
+      "button": "left"
+     },
+     "description": "\"Accounts\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_7",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "7",
+      "expected_label": "Time & language",
+      "button": "left"
+     },
+     "description": "\"Time & language\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_8",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "8",
+      "expected_label": "Gaming",
+      "button": "left"
+     },
+     "description": "\"Gaming\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_9",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "9",
+      "expected_label": "Accessibility",
+      "button": "left"
+     },
+     "description": "\"Accessibility\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_10",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "10",
+      "expected_label": "Privacy & security",
+      "button": "left"
+     },
+     "description": "\"Privacy & security\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_11",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "11",
+      "expected_label": "Windows Update",
+      "button": "left"
+     },
+     "description": "\"Windows Update\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_12",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "12",
+      "expected_label": "Display",
+      "button": "left"
+     },
+     "description": "\"Display\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_13",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "13",
+      "expected_label": "Installed apps",
+      "button": "left"
+     },
+     "description": "\"Installed apps\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_14",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "14",
+      "expected_label": "Lock screen",
+      "button": "left"
+     },
+     "description": "\"Lock screen\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_15",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "15",
+      "expected_label": "Windows (light), 1 images",
+      "button": "left"
+     },
+     "description": "\"Windows (light), 1 images\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_16",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "16",
+      "expected_label": "Glow, 4 images",
+      "button": "left"
+     },
+     "description": "\"Glow, 4 images\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    }
+   ],
+   "state": {
+    "window": {
+     "application": "ApplicationFrameHost.exe",
+     "title": "Settings"
+    }
+   },
+   "expected": "click_7"
+  },
+  {
+   "kind": "target",
+   "id": "pick_thispc_c",
+   "goal": "open the C: drive",
+   "hint": "Local Disk (C:)",
+   "candidates": [
+    {
+     "id": "click_0",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "0",
+      "expected_label": "This PC",
+      "button": "left"
+     },
+     "description": "\"This PC\" (tab item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_1",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "1",
+      "expected_label": "Local Disk (C:)",
+      "button": "left"
+     },
+     "description": "\"Local Disk (C:)\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_2",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "2",
+      "expected_label": "1TB SSD (D:)",
+      "button": "left"
+     },
+     "description": "\"1TB SSD (D:)\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_3",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "3",
+      "expected_label": "500GB_SSD (E:)",
+      "button": "left"
+     },
+     "description": "\"500GB_SSD (E:)\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_4",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "4",
+      "expected_label": "GameDrive (F:)",
+      "button": "left"
+     },
+     "description": "\"GameDrive (F:)\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_5",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "5",
+      "expected_label": "GameDriveHDD (G:)",
+      "button": "left"
+     },
+     "description": "\"GameDriveHDD (G:)\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_6",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "6",
+      "expected_label": "NZB (H:)",
+      "button": "left"
+     },
+     "description": "\"NZB (H:)\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_7",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "7",
+      "expected_label": "Crucial_SSD_2 (I:)",
+      "button": "left"
+     },
+     "description": "\"Crucial_SSD_2 (I:)\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_8",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "8",
+      "expected_label": "980 SSD (J:)",
+      "button": "left"
+     },
+     "description": "\"980 SSD (J:)\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_9",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "9",
+      "expected_label": "USB (L:)",
+      "button": "left"
+     },
+     "description": "\"USB (L:)\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    }
+   ],
+   "state": {
+    "window": {
+     "application": "explorer.exe",
+     "title": "This PC - File Explorer"
+    }
+   },
+   "expected": "click_1"
+  },
+  {
+   "kind": "target",
+   "id": "pick_thispc_semantic_usb",
+   "goal": "open the removable USB stick",
+   "hint": "",
+   "candidates": [
+    {
+     "id": "click_0",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "0",
+      "expected_label": "This PC",
+      "button": "left"
+     },
+     "description": "\"This PC\" (tab item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_1",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "1",
+      "expected_label": "Local Disk (C:)",
+      "button": "left"
+     },
+     "description": "\"Local Disk (C:)\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_2",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "2",
+      "expected_label": "1TB SSD (D:)",
+      "button": "left"
+     },
+     "description": "\"1TB SSD (D:)\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_3",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "3",
+      "expected_label": "500GB_SSD (E:)",
+      "button": "left"
+     },
+     "description": "\"500GB_SSD (E:)\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_4",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "4",
+      "expected_label": "GameDrive (F:)",
+      "button": "left"
+     },
+     "description": "\"GameDrive (F:)\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_5",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "5",
+      "expected_label": "GameDriveHDD (G:)",
+      "button": "left"
+     },
+     "description": "\"GameDriveHDD (G:)\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_6",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "6",
+      "expected_label": "NZB (H:)",
+      "button": "left"
+     },
+     "description": "\"NZB (H:)\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_7",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "7",
+      "expected_label": "Crucial_SSD_2 (I:)",
+      "button": "left"
+     },
+     "description": "\"Crucial_SSD_2 (I:)\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_8",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "8",
+      "expected_label": "980 SSD (J:)",
+      "button": "left"
+     },
+     "description": "\"980 SSD (J:)\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_9",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "9",
+      "expected_label": "USB (L:)",
+      "button": "left"
+     },
+     "description": "\"USB (L:)\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    }
+   ],
+   "state": {
+    "window": {
+     "application": "explorer.exe",
+     "title": "This PC - File Explorer"
+    }
+   },
+   "expected": "click_9"
+  },
+  {
+   "kind": "target",
+   "id": "pick_c_program_files",
+   "goal": "open the Program Files folder",
+   "hint": "\"Program Files\"",
+   "candidates": [
+    {
+     "id": "click_0",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "0",
+      "expected_label": "Local Disk (C:)",
+      "button": "left"
+     },
+     "description": "\"Local Disk (C:)\" (tab item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_1",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "1",
+      "expected_label": "$WinREAgent",
+      "button": "left"
+     },
+     "description": "\"$WinREAgent\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_2",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "2",
+      "expected_label": "AMD",
+      "button": "left"
+     },
+     "description": "\"AMD\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_3",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "3",
+      "expected_label": "Autodesk",
+      "button": "left"
+     },
+     "description": "\"Autodesk\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_4",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "4",
+      "expected_label": "inetpub",
+      "button": "left"
+     },
+     "description": "\"inetpub\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_5",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "5",
+      "expected_label": "Intel",
+      "button": "left"
+     },
+     "description": "\"Intel\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_6",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "6",
+      "expected_label": "MSI",
+      "button": "left"
+     },
+     "description": "\"MSI\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_7",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "7",
+      "expected_label": "NVIDIA Corporation",
+      "button": "left"
+     },
+     "description": "\"NVIDIA Corporation\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_8",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "8",
+      "expected_label": "PerfLogs",
+      "button": "left"
+     },
+     "description": "\"PerfLogs\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_9",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "9",
+      "expected_label": "Program Files",
+      "button": "left"
+     },
+     "description": "\"Program Files\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_10",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "10",
+      "expected_label": "Program Files (x86)",
+      "button": "left"
+     },
+     "description": "\"Program Files (x86)\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_11",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "11",
+      "expected_label": "ProgramData",
+      "button": "left"
+     },
+     "description": "\"ProgramData\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_12",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "12",
+      "expected_label": "tmp",
+      "button": "left"
+     },
+     "description": "\"tmp\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_13",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "13",
+      "expected_label": "Users",
+      "button": "left"
+     },
+     "description": "\"Users\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_14",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "14",
+      "expected_label": "Windows",
+      "button": "left"
+     },
+     "description": "\"Windows\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_15",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "15",
+      "expected_label": "XboxGames",
+      "button": "left"
+     },
+     "description": "\"XboxGames\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    }
+   ],
+   "state": {
+    "window": {
+     "application": "explorer.exe",
+     "title": "Local Disk (C:) - File Explorer"
+    }
+   },
+   "expected": "click_9"
+  },
+  {
+   "kind": "target",
+   "id": "pick_c_semantic_32bit",
+   "goal": "open the folder for 32-bit programs",
+   "hint": "",
+   "candidates": [
+    {
+     "id": "click_0",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "0",
+      "expected_label": "Local Disk (C:)",
+      "button": "left"
+     },
+     "description": "\"Local Disk (C:)\" (tab item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_1",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "1",
+      "expected_label": "$WinREAgent",
+      "button": "left"
+     },
+     "description": "\"$WinREAgent\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_2",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "2",
+      "expected_label": "AMD",
+      "button": "left"
+     },
+     "description": "\"AMD\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_3",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "3",
+      "expected_label": "Autodesk",
+      "button": "left"
+     },
+     "description": "\"Autodesk\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_4",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "4",
+      "expected_label": "inetpub",
+      "button": "left"
+     },
+     "description": "\"inetpub\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_5",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "5",
+      "expected_label": "Intel",
+      "button": "left"
+     },
+     "description": "\"Intel\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_6",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "6",
+      "expected_label": "MSI",
+      "button": "left"
+     },
+     "description": "\"MSI\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_7",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "7",
+      "expected_label": "NVIDIA Corporation",
+      "button": "left"
+     },
+     "description": "\"NVIDIA Corporation\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_8",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "8",
+      "expected_label": "PerfLogs",
+      "button": "left"
+     },
+     "description": "\"PerfLogs\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_9",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "9",
+      "expected_label": "Program Files",
+      "button": "left"
+     },
+     "description": "\"Program Files\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_10",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "10",
+      "expected_label": "Program Files (x86)",
+      "button": "left"
+     },
+     "description": "\"Program Files (x86)\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_11",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "11",
+      "expected_label": "ProgramData",
+      "button": "left"
+     },
+     "description": "\"ProgramData\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_12",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "12",
+      "expected_label": "tmp",
+      "button": "left"
+     },
+     "description": "\"tmp\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_13",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "13",
+      "expected_label": "Users",
+      "button": "left"
+     },
+     "description": "\"Users\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_14",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "14",
+      "expected_label": "Windows",
+      "button": "left"
+     },
+     "description": "\"Windows\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_15",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "15",
+      "expected_label": "XboxGames",
+      "button": "left"
+     },
+     "description": "\"XboxGames\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    }
+   ],
+   "state": {
+    "window": {
+     "application": "explorer.exe",
+     "title": "Local Disk (C:) - File Explorer"
+    }
+   },
+   "expected": "click_10"
+  },
+  {
+   "kind": "target",
+   "id": "pick_c_semantic_profiles",
+   "goal": "open the folder with user profiles",
+   "hint": "",
+   "candidates": [
+    {
+     "id": "click_0",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "0",
+      "expected_label": "Local Disk (C:)",
+      "button": "left"
+     },
+     "description": "\"Local Disk (C:)\" (tab item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_1",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "1",
+      "expected_label": "$WinREAgent",
+      "button": "left"
+     },
+     "description": "\"$WinREAgent\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_2",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "2",
+      "expected_label": "AMD",
+      "button": "left"
+     },
+     "description": "\"AMD\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_3",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "3",
+      "expected_label": "Autodesk",
+      "button": "left"
+     },
+     "description": "\"Autodesk\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_4",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "4",
+      "expected_label": "inetpub",
+      "button": "left"
+     },
+     "description": "\"inetpub\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_5",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "5",
+      "expected_label": "Intel",
+      "button": "left"
+     },
+     "description": "\"Intel\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_6",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "6",
+      "expected_label": "MSI",
+      "button": "left"
+     },
+     "description": "\"MSI\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_7",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "7",
+      "expected_label": "NVIDIA Corporation",
+      "button": "left"
+     },
+     "description": "\"NVIDIA Corporation\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_8",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "8",
+      "expected_label": "PerfLogs",
+      "button": "left"
+     },
+     "description": "\"PerfLogs\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_9",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "9",
+      "expected_label": "Program Files",
+      "button": "left"
+     },
+     "description": "\"Program Files\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_10",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "10",
+      "expected_label": "Program Files (x86)",
+      "button": "left"
+     },
+     "description": "\"Program Files (x86)\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_11",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "11",
+      "expected_label": "ProgramData",
+      "button": "left"
+     },
+     "description": "\"ProgramData\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_12",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "12",
+      "expected_label": "tmp",
+      "button": "left"
+     },
+     "description": "\"tmp\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_13",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "13",
+      "expected_label": "Users",
+      "button": "left"
+     },
+     "description": "\"Users\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_14",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "14",
+      "expected_label": "Windows",
+      "button": "left"
+     },
+     "description": "\"Windows\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_15",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "15",
+      "expected_label": "XboxGames",
+      "button": "left"
+     },
+     "description": "\"XboxGames\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    }
+   ],
+   "state": {
+    "window": {
+     "application": "explorer.exe",
+     "title": "Local Disk (C:) - File Explorer"
+    }
+   },
+   "expected": "click_13"
+  },
+  {
+   "kind": "target",
+   "id": "pick_pf_git",
+   "goal": "open the Git folder",
+   "hint": "Git",
+   "candidates": [
+    {
+     "id": "click_0",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "0",
+      "expected_label": "Program Files",
+      "button": "left"
+     },
+     "description": "\"Program Files\" (tab item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_1",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "1",
+      "expected_label": "Adobe",
+      "button": "left"
+     },
+     "description": "\"Adobe\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_2",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "2",
+      "expected_label": "Amazon",
+      "button": "left"
+     },
+     "description": "\"Amazon\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_3",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "3",
+      "expected_label": "AMD",
+      "button": "left"
+     },
+     "description": "\"AMD\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_4",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "4",
+      "expected_label": "Application Verifier",
+      "button": "left"
+     },
+     "description": "\"Application Verifier\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_5",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "5",
+      "expected_label": "Autodesk",
+      "button": "left"
+     },
+     "description": "\"Autodesk\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_6",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "6",
+      "expected_label": "AutoHotkey",
+      "button": "left"
+     },
+     "description": "\"AutoHotkey\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_7",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "7",
+      "expected_label": "Bambu Studio",
+      "button": "left"
+     },
+     "description": "\"Bambu Studio\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_8",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "8",
+      "expected_label": "Blender Foundation",
+      "button": "left"
+     },
+     "description": "\"Blender Foundation\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_9",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "9",
+      "expected_label": "cFosSpeed",
+      "button": "left"
+     },
+     "description": "\"cFosSpeed\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_10",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "10",
+      "expected_label": "Common Files",
+      "button": "left"
+     },
+     "description": "\"Common Files\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_11",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "11",
+      "expected_label": "Docker",
+      "button": "left"
+     },
+     "description": "\"Docker\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_12",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "12",
+      "expected_label": "dotnet",
+      "button": "left"
+     },
+     "description": "\"dotnet\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_13",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "13",
+      "expected_label": "Git",
+      "button": "left"
+     },
+     "description": "\"Git\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_14",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "14",
+      "expected_label": "HWiNFO64",
+      "button": "left"
+     },
+     "description": "\"HWiNFO64\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_15",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "15",
+      "expected_label": "Intel",
+      "button": "left"
+     },
+     "description": "\"Intel\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_16",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "16",
+      "expected_label": "Kodi",
+      "button": "left"
+     },
+     "description": "\"Kodi\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_17",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "17",
+      "expected_label": "LLVM",
+      "button": "left"
+     },
+     "description": "\"LLVM\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    }
+   ],
+   "state": {
+    "window": {
+     "application": "explorer.exe",
+     "title": "Program Files - File Explorer"
+    }
+   },
+   "expected": "click_13"
+  },
+  {
+   "kind": "target",
+   "id": "pick_pf_semantic_blender",
+   "goal": "open the folder of the Blender 3D app",
+   "hint": "",
+   "candidates": [
+    {
+     "id": "click_0",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "0",
+      "expected_label": "Program Files",
+      "button": "left"
+     },
+     "description": "\"Program Files\" (tab item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_1",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "1",
+      "expected_label": "Adobe",
+      "button": "left"
+     },
+     "description": "\"Adobe\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_2",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "2",
+      "expected_label": "Amazon",
+      "button": "left"
+     },
+     "description": "\"Amazon\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_3",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "3",
+      "expected_label": "AMD",
+      "button": "left"
+     },
+     "description": "\"AMD\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_4",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "4",
+      "expected_label": "Application Verifier",
+      "button": "left"
+     },
+     "description": "\"Application Verifier\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_5",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "5",
+      "expected_label": "Autodesk",
+      "button": "left"
+     },
+     "description": "\"Autodesk\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_6",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "6",
+      "expected_label": "AutoHotkey",
+      "button": "left"
+     },
+     "description": "\"AutoHotkey\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_7",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "7",
+      "expected_label": "Bambu Studio",
+      "button": "left"
+     },
+     "description": "\"Bambu Studio\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_8",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "8",
+      "expected_label": "Blender Foundation",
+      "button": "left"
+     },
+     "description": "\"Blender Foundation\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_9",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "9",
+      "expected_label": "cFosSpeed",
+      "button": "left"
+     },
+     "description": "\"cFosSpeed\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_10",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "10",
+      "expected_label": "Common Files",
+      "button": "left"
+     },
+     "description": "\"Common Files\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_11",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "11",
+      "expected_label": "Docker",
+      "button": "left"
+     },
+     "description": "\"Docker\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_12",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "12",
+      "expected_label": "dotnet",
+      "button": "left"
+     },
+     "description": "\"dotnet\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_13",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "13",
+      "expected_label": "Git",
+      "button": "left"
+     },
+     "description": "\"Git\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_14",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "14",
+      "expected_label": "HWiNFO64",
+      "button": "left"
+     },
+     "description": "\"HWiNFO64\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_15",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "15",
+      "expected_label": "Intel",
+      "button": "left"
+     },
+     "description": "\"Intel\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_16",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "16",
+      "expected_label": "Kodi",
+      "button": "left"
+     },
+     "description": "\"Kodi\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_17",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "17",
+      "expected_label": "LLVM",
+      "button": "left"
+     },
+     "description": "\"LLVM\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    }
+   ],
+   "state": {
+    "window": {
+     "application": "explorer.exe",
+     "title": "Program Files - File Explorer"
+    }
+   },
+   "expected": "click_8"
+  },
+  {
+   "kind": "target",
+   "id": "pick_pf_semantic_3dprint",
+   "goal": "open the 3D printer slicer app folder",
+   "hint": "",
+   "candidates": [
+    {
+     "id": "click_0",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "0",
+      "expected_label": "Program Files",
+      "button": "left"
+     },
+     "description": "\"Program Files\" (tab item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_1",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "1",
+      "expected_label": "Adobe",
+      "button": "left"
+     },
+     "description": "\"Adobe\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_2",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "2",
+      "expected_label": "Amazon",
+      "button": "left"
+     },
+     "description": "\"Amazon\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_3",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "3",
+      "expected_label": "AMD",
+      "button": "left"
+     },
+     "description": "\"AMD\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_4",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "4",
+      "expected_label": "Application Verifier",
+      "button": "left"
+     },
+     "description": "\"Application Verifier\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_5",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "5",
+      "expected_label": "Autodesk",
+      "button": "left"
+     },
+     "description": "\"Autodesk\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_6",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "6",
+      "expected_label": "AutoHotkey",
+      "button": "left"
+     },
+     "description": "\"AutoHotkey\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_7",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "7",
+      "expected_label": "Bambu Studio",
+      "button": "left"
+     },
+     "description": "\"Bambu Studio\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_8",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "8",
+      "expected_label": "Blender Foundation",
+      "button": "left"
+     },
+     "description": "\"Blender Foundation\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_9",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "9",
+      "expected_label": "cFosSpeed",
+      "button": "left"
+     },
+     "description": "\"cFosSpeed\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_10",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "10",
+      "expected_label": "Common Files",
+      "button": "left"
+     },
+     "description": "\"Common Files\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_11",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "11",
+      "expected_label": "Docker",
+      "button": "left"
+     },
+     "description": "\"Docker\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_12",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "12",
+      "expected_label": "dotnet",
+      "button": "left"
+     },
+     "description": "\"dotnet\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_13",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "13",
+      "expected_label": "Git",
+      "button": "left"
+     },
+     "description": "\"Git\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_14",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "14",
+      "expected_label": "HWiNFO64",
+      "button": "left"
+     },
+     "description": "\"HWiNFO64\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_15",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "15",
+      "expected_label": "Intel",
+      "button": "left"
+     },
+     "description": "\"Intel\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_16",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "16",
+      "expected_label": "Kodi",
+      "button": "left"
+     },
+     "description": "\"Kodi\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "click_17",
+     "tool": "click_target",
+     "arguments": {
+      "observation_id": "obs_bench",
+      "target_id": "17",
+      "expected_label": "LLVM",
+      "button": "left"
+     },
+     "description": "\"LLVM\" (list item, enabled, weakly task relevant)",
+     "kind": "action",
+     "local_score": 0.0
+    }
+   ],
+   "state": {
+    "window": {
+     "application": "explorer.exe",
+     "title": "Program Files - File Explorer"
+    }
+   },
+   "expected": "click_7"
+  },
+  {
+   "kind": "target",
+   "id": "pick_book_quoted_ch4",
+   "goal": "open chapter 4",
+   "hint": "link \"4. Understanding Ownership\"",
+   "candidates": [
+    {
+     "id": "browser_click_b0",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b0"
+     },
+     "description": "\"The Rust Programming Language\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b1",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b1"
+     },
+     "description": "\"Foreword\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b2",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b2"
+     },
+     "description": "\"Introduction\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b3",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b3"
+     },
+     "description": "\"1. Getting Started\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b4",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b4"
+     },
+     "description": "\"2. Programming a Guessing Game\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b5",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b5"
+     },
+     "description": "\"3. Common Programming Concepts\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b6",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b6"
+     },
+     "description": "\"3.5. Control Flow\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b7",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b7"
+     },
+     "description": "\"4. Understanding Ownership\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b8",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b8"
+     },
+     "description": "\"4.1. What is Ownership?\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b9",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b9"
+     },
+     "description": "\"4.2. References and Borrowing\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b10",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b10"
+     },
+     "description": "\"4.3. The Slice Type\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b11",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b11"
+     },
+     "description": "\"5. Using Structs to Structure Related Data\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b12",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b12"
+     },
+     "description": "\"6. Enums and Pattern Matching\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b13",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b13"
+     },
+     "description": "\"7. Packages, Crates, and Modules\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b14",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b14"
+     },
+     "description": "\"8. Common Collections\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b15",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b15"
+     },
+     "description": "\"9. Error Handling\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b16",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b16"
+     },
+     "description": "\"9.2. Recoverable Errors with Result\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b17",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b17"
+     },
+     "description": "\"10. Generic Types, Traits, and Lifetimes\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b18",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b18"
+     },
+     "description": "\"11. Writing Automated Tests\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b19",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b19"
+     },
+     "description": "\"13. Functional Language Features: Iterators and Closures\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    }
+   ],
+   "state": {
+    "page": {
+     "url": "https://doc.rust-lang.org/book/",
+     "title": "The Rust Programming Language - The Rust Programming Language",
+     "text_start": "The Rust Programming Language Foreword Introduction 1. Getting Started 1.1. Installation 1.2. Hello, World! 1.3. Hello, Cargo! 2. Programming a Guessing Game 3. Common Programming Concepts"
+    }
+   },
+   "expected": "browser_click_b7"
+  },
+  {
+   "kind": "target",
+   "id": "pick_book_plain_ch4",
+   "goal": "open chapter 4",
+   "hint": "Understanding Ownership",
+   "candidates": [
+    {
+     "id": "browser_click_b0",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b0"
+     },
+     "description": "\"The Rust Programming Language\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b1",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b1"
+     },
+     "description": "\"Foreword\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b2",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b2"
+     },
+     "description": "\"Introduction\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b3",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b3"
+     },
+     "description": "\"1. Getting Started\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b4",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b4"
+     },
+     "description": "\"2. Programming a Guessing Game\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b5",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b5"
+     },
+     "description": "\"3. Common Programming Concepts\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b6",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b6"
+     },
+     "description": "\"3.5. Control Flow\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b7",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b7"
+     },
+     "description": "\"4. Understanding Ownership\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b8",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b8"
+     },
+     "description": "\"4.1. What is Ownership?\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b9",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b9"
+     },
+     "description": "\"4.2. References and Borrowing\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b10",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b10"
+     },
+     "description": "\"4.3. The Slice Type\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b11",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b11"
+     },
+     "description": "\"5. Using Structs to Structure Related Data\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b12",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b12"
+     },
+     "description": "\"6. Enums and Pattern Matching\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b13",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b13"
+     },
+     "description": "\"7. Packages, Crates, and Modules\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b14",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b14"
+     },
+     "description": "\"8. Common Collections\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b15",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b15"
+     },
+     "description": "\"9. Error Handling\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b16",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b16"
+     },
+     "description": "\"9.2. Recoverable Errors with Result\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b17",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b17"
+     },
+     "description": "\"10. Generic Types, Traits, and Lifetimes\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b18",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b18"
+     },
+     "description": "\"11. Writing Automated Tests\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b19",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b19"
+     },
+     "description": "\"13. Functional Language Features: Iterators and Closures\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    }
+   ],
+   "state": {
+    "page": {
+     "url": "https://doc.rust-lang.org/book/",
+     "title": "The Rust Programming Language - The Rust Programming Language",
+     "text_start": "The Rust Programming Language Foreword Introduction 1. Getting Started 1.1. Installation 1.2. Hello, World! 1.3. Hello, Cargo! 2. Programming a Guessing Game 3. Common Programming Concepts"
+    }
+   },
+   "expected": "browser_click_b7"
+  },
+  {
+   "kind": "target",
+   "id": "pick_book_semantic_errors",
+   "goal": "open the chapter about handling errors",
+   "hint": "",
+   "candidates": [
+    {
+     "id": "browser_click_b0",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b0"
+     },
+     "description": "\"The Rust Programming Language\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b1",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b1"
+     },
+     "description": "\"Foreword\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b2",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b2"
+     },
+     "description": "\"Introduction\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b3",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b3"
+     },
+     "description": "\"1. Getting Started\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b4",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b4"
+     },
+     "description": "\"2. Programming a Guessing Game\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b5",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b5"
+     },
+     "description": "\"3. Common Programming Concepts\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b6",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b6"
+     },
+     "description": "\"3.5. Control Flow\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b7",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b7"
+     },
+     "description": "\"4. Understanding Ownership\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b8",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b8"
+     },
+     "description": "\"4.1. What is Ownership?\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b9",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b9"
+     },
+     "description": "\"4.2. References and Borrowing\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b10",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b10"
+     },
+     "description": "\"4.3. The Slice Type\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b11",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b11"
+     },
+     "description": "\"5. Using Structs to Structure Related Data\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b12",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b12"
+     },
+     "description": "\"6. Enums and Pattern Matching\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b13",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b13"
+     },
+     "description": "\"7. Packages, Crates, and Modules\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b14",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b14"
+     },
+     "description": "\"8. Common Collections\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b15",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b15"
+     },
+     "description": "\"9. Error Handling\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b16",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b16"
+     },
+     "description": "\"9.2. Recoverable Errors with Result\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b17",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b17"
+     },
+     "description": "\"10. Generic Types, Traits, and Lifetimes\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b18",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b18"
+     },
+     "description": "\"11. Writing Automated Tests\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b19",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b19"
+     },
+     "description": "\"13. Functional Language Features: Iterators and Closures\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    }
+   ],
+   "state": {
+    "page": {
+     "url": "https://doc.rust-lang.org/book/",
+     "title": "The Rust Programming Language - The Rust Programming Language",
+     "text_start": "The Rust Programming Language Foreword Introduction 1. Getting Started 1.1. Installation 1.2. Hello, World! 1.3. Hello, Cargo! 2. Programming a Guessing Game 3. Common Programming Concepts"
+    }
+   },
+   "expected": "browser_click_b15"
+  },
+  {
+   "kind": "target",
+   "id": "pick_book_semantic_tests",
+   "goal": "open the chapter about writing tests",
+   "hint": "",
+   "candidates": [
+    {
+     "id": "browser_click_b0",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b0"
+     },
+     "description": "\"The Rust Programming Language\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b1",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b1"
+     },
+     "description": "\"Foreword\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b2",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b2"
+     },
+     "description": "\"Introduction\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b3",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b3"
+     },
+     "description": "\"1. Getting Started\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b4",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b4"
+     },
+     "description": "\"2. Programming a Guessing Game\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b5",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b5"
+     },
+     "description": "\"3. Common Programming Concepts\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b6",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b6"
+     },
+     "description": "\"3.5. Control Flow\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b7",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b7"
+     },
+     "description": "\"4. Understanding Ownership\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b8",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b8"
+     },
+     "description": "\"4.1. What is Ownership?\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b9",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b9"
+     },
+     "description": "\"4.2. References and Borrowing\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b10",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b10"
+     },
+     "description": "\"4.3. The Slice Type\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b11",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b11"
+     },
+     "description": "\"5. Using Structs to Structure Related Data\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b12",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b12"
+     },
+     "description": "\"6. Enums and Pattern Matching\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b13",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b13"
+     },
+     "description": "\"7. Packages, Crates, and Modules\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b14",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b14"
+     },
+     "description": "\"8. Common Collections\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b15",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b15"
+     },
+     "description": "\"9. Error Handling\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b16",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b16"
+     },
+     "description": "\"9.2. Recoverable Errors with Result\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b17",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b17"
+     },
+     "description": "\"10. Generic Types, Traits, and Lifetimes\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b18",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b18"
+     },
+     "description": "\"11. Writing Automated Tests\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b19",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b19"
+     },
+     "description": "\"13. Functional Language Features: Iterators and Closures\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    }
+   ],
+   "state": {
+    "page": {
+     "url": "https://doc.rust-lang.org/book/",
+     "title": "The Rust Programming Language - The Rust Programming Language",
+     "text_start": "The Rust Programming Language Foreword Introduction 1. Getting Started 1.1. Installation 1.2. Hello, World! 1.3. Hello, Cargo! 2. Programming a Guessing Game 3. Common Programming Concepts"
+    }
+   },
+   "expected": "browser_click_b18"
+  },
+  {
+   "kind": "target",
+   "id": "pick_book_semantic_borrowing",
+   "goal": "learn about references and borrowing",
+   "hint": "",
+   "candidates": [
+    {
+     "id": "browser_click_b0",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b0"
+     },
+     "description": "\"The Rust Programming Language\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b1",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b1"
+     },
+     "description": "\"Foreword\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b2",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b2"
+     },
+     "description": "\"Introduction\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b3",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b3"
+     },
+     "description": "\"1. Getting Started\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b4",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b4"
+     },
+     "description": "\"2. Programming a Guessing Game\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b5",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b5"
+     },
+     "description": "\"3. Common Programming Concepts\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b6",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b6"
+     },
+     "description": "\"3.5. Control Flow\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b7",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b7"
+     },
+     "description": "\"4. Understanding Ownership\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b8",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b8"
+     },
+     "description": "\"4.1. What is Ownership?\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b9",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b9"
+     },
+     "description": "\"4.2. References and Borrowing\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b10",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b10"
+     },
+     "description": "\"4.3. The Slice Type\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b11",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b11"
+     },
+     "description": "\"5. Using Structs to Structure Related Data\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b12",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b12"
+     },
+     "description": "\"6. Enums and Pattern Matching\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b13",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b13"
+     },
+     "description": "\"7. Packages, Crates, and Modules\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b14",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b14"
+     },
+     "description": "\"8. Common Collections\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b15",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b15"
+     },
+     "description": "\"9. Error Handling\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b16",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b16"
+     },
+     "description": "\"9.2. Recoverable Errors with Result\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b17",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b17"
+     },
+     "description": "\"10. Generic Types, Traits, and Lifetimes\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b18",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b18"
+     },
+     "description": "\"11. Writing Automated Tests\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    },
+    {
+     "id": "browser_click_b19",
+     "tool": "managed_browser_click",
+     "arguments": {
+      "snapshot_id": "bench",
+      "target_id": "b19"
+     },
+     "description": "\"13. Functional Language Features: Iterators and Closures\" (browser link, visible)",
+     "kind": "action",
+     "local_score": 0.0
+    }
+   ],
+   "state": {
+    "page": {
+     "url": "https://doc.rust-lang.org/book/",
+     "title": "The Rust Programming Language - The Rust Programming Language",
+     "text_start": "The Rust Programming Language Foreword Introduction 1. Getting Started 1.1. Installation 1.2. Hello, World! 1.3. Hello, Cargo! 2. Programming a Guessing Game 3. Common Programming Concepts"
+    }
+   },
+   "expected": "browser_click_b9"
+  },
+  {
+   "kind": "condition_choice",
+   "id": "branch_home_vs_error",
+   "goal": "open Settings",
+   "options": [
+    [
+     "c0",
+     "the Settings home page is shown"
+    ],
+    [
+     "c1",
+     "an error dialog is shown"
+    ],
+    [
+     "none",
+     "None of the other conditions is true right now"
+    ]
+   ],
+   "state": {
+    "window": {
+     "application": "ApplicationFrameHost.exe",
+     "title": "Settings"
+    },
+    "visible": [
+     "Home (list item, selected)",
+     "System (list item)",
+     "Bluetooth & devices (list item)",
+     "Network & internet (list item)",
+     "Personalization (list item)",
+     "Apps (list item)",
+     "Accounts (list item)",
+     "Time & language (list item)",
+     "Gaming (list item)",
+     "Accessibility (list item)",
+     "Privacy & security (list item)",
+     "Windows Update (list item)",
+     "Recommended settings (text)",
+     "Display (list item)",
+     "Installed apps (list item)",
+     "Lock screen (list item)",
+     "Windows Update Attention needed (button)",
+     "Ethernet 2 Connected (button)",
+     "Bluetooth devices (text)",
+     "Add device (button)",
+     "View all devices (button)",
+     "Personalize your device (text)",
+     "Windows (light), 1 images (list item)",
+     "Glow, 4 images (list item)"
+    ]
+   },
+   "expected": "c0"
+  },
+  {
+   "kind": "condition_choice",
+   "id": "branch_error_dialog",
+   "goal": "open Settings",
+   "options": [
+    [
+     "c0",
+     "the Settings home page is shown"
+    ],
+    [
+     "c1",
+     "an error dialog says the app could not be found"
+    ],
+    [
+     "none",
+     "None of the other conditions is true right now"
+    ]
+   ],
+   "state": {
+    "window": {
+     "application": "explorer.exe",
+     "title": "Settings"
+    },
+    "visible": [
+     "Close (button)",
+     "Settings (text)",
+     "Windows cannot find 'Settings'. Make sure you typed the name correctly, and then try again. (text)",
+     "OK (button)"
+    ]
+   },
+   "expected": "c1"
+  },
+  {
+   "kind": "condition_choice",
+   "id": "branch_display_pages",
+   "goal": "navigate Settings",
+   "options": [
+    [
+     "c0",
+     "the Sound page is open"
+    ],
+    [
+     "c1",
+     "the Display page is open"
+    ],
+    [
+     "c2",
+     "the Home page is open"
+    ],
+    [
+     "none",
+     "None of the other conditions is true right now"
+    ]
+   ],
+   "state": {
+    "window": {
+     "application": "ApplicationFrameHost.exe",
+     "title": "Settings"
+    },
+    "visible": [
+     "System (breadcrumb bar item)",
+     "Display (breadcrumb bar item)",
+     "Home (list item)",
+     "System (list item, selected)",
+     "Bluetooth & devices (list item)",
+     "Personalization (list item)",
+     "Multiple displays (group)",
+     "Identify (button)",
+     "Brightness & color (text)",
+     "Night light (toggle switch)",
+     "Color profile (text)",
+     "HDR (text)",
+     "Scale & layout (text)",
+     "Scale (combo box)",
+     "100% (Recommended) (list item)",
+     "Display resolution (combo box)",
+     "2560 × 1440 (Recommended) (list item)",
+     "Show more settings (button)",
+     "Apps (list item)",
+     "Accounts (list item)",
+     "Gaming (list item)",
+     "Accessibility (list item)",
+     "Privacy & security (list item)",
+     "Windows Update (list item)"
+    ]
+   },
+   "expected": "c1"
+  },
+  {
+   "kind": "condition_choice",
+   "id": "branch_advanced_vs_hdr",
+   "goal": "navigate Settings",
+   "options": [
+    [
+     "c0",
+     "the HDR settings page is open"
+    ],
+    [
+     "c1",
+     "the Advanced display page is open"
+    ],
+    [
+     "none",
+     "None of the other conditions is true right now"
+    ]
+   ],
+   "state": {
+    "window": {
+     "application": "ApplicationFrameHost.exe",
+     "title": "Settings"
+    },
+    "visible": [
+     "System (breadcrumb bar item)",
+     "Display (breadcrumb bar item)",
+     "Advanced display (breadcrumb bar item)",
+     "Advanced display (text)",
+     "Select a display to view or change its settings (combo box)",
+     "Display information (group)",
+     "Desktop mode (text)",
+     "2560 × 1440, 165 Hz (text)",
+     "Active signal mode (text)",
+     "Variable refresh rate (text)",
+     "Not Supported (text)",
+     "Bit depth (text)",
+     "8-bit (text)",
+     "Color format (text)",
+     "RGB (text)",
+     "Refresh rate (group)",
+     "Refresh rate (combo box)",
+     "Choose a refresh rate (text)",
+     "165 Hz (list item)",
+     "More about refresh rate (link)",
+     "Dynamic refresh rate isn't supported (text)",
+     "Home (list item)",
+     "System (list item)",
+     "Display adapter properties for Display 1 (link)"
+    ]
+   },
+   "expected": "c1"
+  },
+  {
+   "kind": "condition_choice",
+   "id": "interrupt_home_signin_none",
+   "goal": "open System",
+   "options": [
+    [
+     "c0",
+     "a sign-in prompt is shown"
+    ],
+    [
+     "none",
+     "None of the other conditions is true right now"
+    ]
+   ],
+   "state": {
+    "window": {
+     "application": "ApplicationFrameHost.exe",
+     "title": "Settings"
+    },
+    "visible": [
+     "Home (list item, selected)",
+     "System (list item)",
+     "Bluetooth & devices (list item)",
+     "Network & internet (list item)",
+     "Personalization (list item)",
+     "Apps (list item)",
+     "Accounts (list item)",
+     "Time & language (list item)",
+     "Gaming (list item)",
+     "Accessibility (list item)",
+     "Privacy & security (list item)",
+     "Windows Update (list item)",
+     "Recommended settings (text)",
+     "Display (list item)",
+     "Installed apps (list item)",
+     "Lock screen (list item)",
+     "Windows Update Attention needed (button)",
+     "Ethernet 2 Connected (button)",
+     "Bluetooth devices (text)",
+     "Add device (button)",
+     "View all devices (button)",
+     "Personalize your device (text)",
+     "Windows (light), 1 images (list item)",
+     "Glow, 4 images (list item)"
+    ]
+   },
+   "expected": "none"
+  },
+  {
+   "kind": "condition_choice",
+   "id": "branch_c_root_vs_pf",
+   "goal": "open Program Files",
+   "options": [
+    [
+     "c0",
+     "the Program Files folder is open"
+    ],
+    [
+     "c1",
+     "the C: drive root folder is open"
+    ],
+    [
+     "none",
+     "None of the other conditions is true right now"
+    ]
+   ],
+   "state": {
+    "window": {
+     "application": "explorer.exe",
+     "title": "Local Disk (C:) - File Explorer"
+    },
+    "visible": [
+     "Local Disk (C:) (tab item)",
+     "This PC (split button)",
+     "Local Disk (C:) (split button)",
+     "Search Local Disk (C:) (edit)",
+     "$WinREAgent (list item)",
+     "AMD (list item)",
+     "Autodesk (list item)",
+     "inetpub (list item)",
+     "Intel (list item)",
+     "MSI (list item)",
+     "NVIDIA Corporation (list item)",
+     "PerfLogs (list item)",
+     "Program Files (list item)",
+     "Program Files (x86) (list item)",
+     "ProgramData (list item)",
+     "tmp (list item)",
+     "Users (list item)",
+     "Windows (list item)",
+     "XboxGames (list item)",
+     "Home (tree item)",
+     "This PC (tree item)",
+     "Local Disk (C:) (tree item)",
+     "Name (split button)",
+     "Date modified (split button)"
+    ]
+   },
+   "expected": "c1"
+  },
+  {
+   "kind": "condition_choice",
+   "id": "branch_pf_contents",
+   "goal": "list programs",
+   "options": [
+    [
+     "c0",
+     "the folder is empty"
+    ],
+    [
+     "c1",
+     "the folder lists installed programs"
+    ],
+    [
+     "none",
+     "None of the other conditions is true right now"
+    ]
+   ],
+   "state": {
+    "window": {
+     "application": "explorer.exe",
+     "title": "Program Files - File Explorer"
+    },
+    "visible": [
+     "Program Files (tab item)",
+     "This PC (split button)",
+     "Local Disk (C:) (split button)",
+     "Program Files (split button)",
+     "Program Files (78 items) (group)",
+     "Adobe (list item)",
+     "Amazon (list item)",
+     "AMD (list item)",
+     "Application Verifier (list item)",
+     "Autodesk (list item)",
+     "AutoHotkey (list item)",
+     "Bambu Studio (list item)",
+     "Blender Foundation (list item)",
+     "cFosSpeed (list item)",
+     "Common Files (list item)",
+     "Docker (list item)",
+     "dotnet (list item)",
+     "Git (list item)",
+     "HWiNFO64 (list item)",
+     "Intel (list item)",
+     "Kodi (list item)",
+     "LLVM (list item)",
+     "Up to \"Local Disk (C:)\" (Alt + Up Arrow) (app bar button)",
+     "Search Program Files (edit)"
+    ]
+   },
+   "expected": "c1"
+  },
+  {
+   "kind": "condition_choice",
+   "id": "branch_thispc_quoted",
+   "goal": "open the C: drive",
+   "options": [
+    [
+     "c0",
+     "\"Local Disk (C:)\" is visible"
+    ],
+    [
+     "c1",
+     "the Program Files folder is open"
+    ],
+    [
+     "none",
+     "None of the other conditions is true right now"
+    ]
+   ],
+   "state": {
+    "window": {
+     "application": "explorer.exe",
+     "title": "This PC - File Explorer"
+    },
+    "visible": [
+     "This PC (tab item)",
+     "Address Bar (edit)",
+     "Search This PC (edit)",
+     "This PC (9 items) (group)",
+     "Local Disk (C:) (list item)",
+     "1TB SSD (D:) (list item)",
+     "500GB_SSD (E:) (list item)",
+     "GameDrive (F:) (list item)",
+     "GameDriveHDD (G:) (list item)",
+     "NZB (H:) (list item)",
+     "Crucial_SSD_2 (I:) (list item)",
+     "980 SSD (J:) (list item)",
+     "USB (L:) (list item)",
+     "Home (tree item)",
+     "Gallery (tree item)",
+     "OneDrive (tree item)",
+     "Downloads (pinned) (tree item)",
+     "Documents (pinned) (tree item)",
+     "Pictures (pinned) (tree item)",
+     "This PC (tree item)",
+     "Network (tree item)",
+     "Space used (edit)",
+     "Available space (edit)",
+     "Details (app bar button)"
+    ]
+   },
+   "expected": "c0"
+  },
+  {
+   "kind": "condition_choice",
+   "id": "interrupt_book_cookie_none",
+   "goal": "read chapter 4",
+   "options": [
+    [
+     "c0",
+     "a cookie consent banner is visible"
+    ],
+    [
+     "none",
+     "None of the other conditions is true right now"
+    ]
+   ],
+   "state": {
+    "page": {
+     "url": "https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html",
+     "title": "Understanding Ownership - The Rust Programming Language",
+     "text_start": "The Rust Programming Language Foreword Introduction 1. Getting Started 1.1. Installation 1.2. Hello, World! 1.3. Hello, Cargo! 2. Programming a Guessing Game 3. Common Programming Concepts"
+    }
+   },
+   "expected": "none"
+  },
+  {
+   "kind": "condition_choice",
+   "id": "branch_book_toc",
+   "goal": "open chapter 4",
+   "options": [
+    [
+     "c0",
+     "the book's table of contents is visible"
+    ],
+    [
+     "c1",
+     "a login form is shown"
+    ],
+    [
+     "none",
+     "None of the other conditions is true right now"
+    ]
+   ],
+   "state": {
+    "page": {
+     "url": "https://doc.rust-lang.org/book/",
+     "title": "The Rust Programming Language - The Rust Programming Language",
+     "text_start": "The Rust Programming Language Foreword Introduction 1. Getting Started 1.1. Installation 1.2. Hello, World! 1.3. Hello, Cargo! 2. Programming a Guessing Game 3. Common Programming Concepts"
+    }
+   },
+   "expected": "c0"
+  },
+  {
+   "kind": "condition_choice",
+   "id": "branch_book_chapter_vs_section",
+   "goal": "open chapter 4",
+   "options": [
+    [
+     "c0",
+     "a chapter overview page is open"
+    ],
+    [
+     "c1",
+     "the book title page is open"
+    ],
+    [
+     "none",
+     "None of the other conditions is true right now"
+    ]
+   ],
+   "state": {
+    "page": {
+     "url": "https://doc.rust-lang.org/book/ch04-00-understanding-ownership.html",
+     "title": "Understanding Ownership - The Rust Programming Language",
+     "text_start": "The Rust Programming Language Foreword Introduction 1. Getting Started 1.1. Installation 1.2. Hello, World! 1.3. Hello, Cargo! 2. Programming a Guessing Game 3. Common Programming Concepts"
+    }
+   },
+   "expected": "c0"
+  }
+ ]
+}
