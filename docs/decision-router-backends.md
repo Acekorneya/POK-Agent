@@ -30,7 +30,7 @@ small adapter file, not touching session/policy/tool code.
 
 The primary model owns planning (which operation, in what order, what
 "done" looks like). Each node of the plan runs in `run_fast_subgoal`
-(`session.rs`):
+(`session/fast_actions.rs`):
 
 1. **Completion check.** `DecisionRouter::check_condition` asks one
    yes/no/unknown `choice` question about `done_when` against evidence from
@@ -150,7 +150,7 @@ Response body:
 ```
 
 `model` is required and is checked against the configured model name
-(`session.rs`'s `model_mismatch` gate) — the adapter must echo back a model
+(the `model_mismatch` gate in `session/decision_router.rs`) — the adapter must echo back a model
 identifier that matches what's configured in `pok-ai.toml`, not a hardcoded
 literal, or every decision will be silently rejected as ineligible. See
 `crates/pok-ai-core/src/config.rs::LayaRouterConfig.model` for the pattern:
@@ -196,7 +196,7 @@ adapter.
    health-poll, stop) — mirror `ensure_laya_started`/`stop_laya` in
    `apps/desktop/src-tauri/src/lib.rs`.
 
-No changes to `session.rs`'s decision loop, eligibility gates, or policy are
+No changes to the session's decision loop, eligibility gates, or policy are
 needed — those already work identically regardless of backend.
 
 ## Benchmarking a candidate before adopting it
@@ -219,7 +219,7 @@ This sends the real two-stage decomposition `decide_once` builds for live
 traffic — one `operation` choice question plus one `target_<OPERATION>`
 choice question per operation group — not a flat single question. An earlier
 version used a flat question and never exercised the actual
-operation-probability gate `session.rs` checks in production, which is why
+operation-probability gate the session checks in production, which is why
 early checkpoint comparisons missed the real clustering-band bottleneck (see
 below). For cases carrying a `clustering_band` block, it also asks a
 3-question committee per operation group and tests several combined
@@ -259,13 +259,13 @@ useful, not statistically definitive; re-run and grow
 
 ## Decision eligibility: structural bypass and the combined probability gate
 
-`session.rs`'s `try_decision_router_action` gates every ordinary (non-DONE/
+`try_decision_router_action` (`session/decision_router.rs`) gates every ordinary (non-DONE/
 BLOCKED) decision before letting it execute directly. Two changes came out
 of testing the router's calibration on real and synthetic clustering-band
 cases (`decision_suite_cases.json`'s `case_09`-`case_20`, `should_promote`
 labels, `operation_group_size`) rather than tuning thresholds by feel:
 
-1. **Structural bypass** (`structural_bypass_candidate` in `session.rs`).
+1. **Structural bypass** (`structural_bypass_candidate` in `session/decision_router.rs`).
    When exactly one non-terminal candidate is offered, no judgment call
    exists — whatever generated the candidate set already decided it's the
    only reversible option — so the router is skipped entirely: no HTTP call,
@@ -487,7 +487,7 @@ proof.
 
 `decide_once`'s generic per-candidate branch (used by
 `DecisionPurpose::ContextSelection` and `EnvironmentRecovery`, e.g.
-`route_optional_context` in `session.rs` for workspace-code/session-archive/
+`route_optional_context` in `session/decision_router.rs` for workspace-code/session-archive/
 memory context selection) asks a `choice` (relevant/irrelevant) question per
 candidate rather than a raw `noul` probability. This changed after testing
 found `noul` degenerate across every backend tried on this kind of
@@ -517,7 +517,7 @@ of targets kept vs. 18%). Laya and zeiger did not beat the heuristic (Laya's
 `choice` answers degenerated to approving everything; zeiger's recall was
 worse than the free heuristic).
 
-This is a real result but was **not wired into `grounding.rs`/`builtins.rs`**.
+This is a real result but was **not wired into `grounding.rs`/`builtins/`**.
 Tracing the actual render path (`model_observation_value`,
 `relevant_targets`, `sparse_annotation_target_ids`) surfaced real complexity
 (screenshot-annotation sparsity and click-target id resolution both depend

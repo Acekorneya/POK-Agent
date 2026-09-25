@@ -21,6 +21,54 @@ Policy ──► Approval broker ──► Typed tool registry
            Windows desktop   Coding tools    Memory / child agents
 ```
 
+## Where the code lives
+
+The two largest areas of `pok-ai-core` are split by responsibility so a change
+touches one focused file. Child modules share their parent's imports
+(`use super::*`) and expose items to siblings with `pub(super)`; only
+`Session`, `AgentEvent`, `SessionObserver`, the `register_*` functions, and the
+`fast_actions` argument types are public.
+
+`crates/pok-ai-core/src/session/` — the agent session:
+
+| File | Responsibility |
+| --- | --- |
+| `mod.rs` | `Session` state, construction, conversation persistence, `run`, logging and event emission, system prompt |
+| `run_loop.rs` | One user turn: model streaming, tool execution, guards, completion checks (`run_inner`) |
+| `events.rs` | `AgentEvent` and `SessionObserver`, the dashboard/CLI event interface |
+| `continuity.rs` | Verified state after each action, the action ledger, goal and commit tracking |
+| `decision_router.rs` | Router-first (System 1) decisions: intent and context routing, next-action picks, refinement, judge review, training-log hookup |
+| `fast_actions.rs` | Delegated `fast_actions` plan trees: steps, branches, interrupts, reads, grounding and fast-model checks |
+| `environment.rs` | Foreground-change recovery, pause checkpoints, waiting for the user, time and authorization context |
+| `context_window.rs` | Compaction and summaries, image pruning, request shaping for strict providers, provider rejection handling |
+| `tool_results.rs` | Bounded tool-result projections, tool-call pairing, fresh-evidence and artifact checks |
+| `model_output.rs` | Recovering malformed or XML-style tool calls, classifying each turn's payload |
+| `intent.rs` | Classifying the request: apps, URLs, commits, live-information, desktop, visual or artifact outcomes |
+| `curation.rs` | Post-turn memory curation and learning procedures and helper tools from verified workflows |
+| `tests.rs` | Session tests |
+
+`crates/pok-ai-core/src/builtins/` — the built-in tools:
+
+| File | Responsibility |
+| --- | --- |
+| `mod.rs` | Tool registration and shared helpers |
+| `capture.rs` | Desktop overview, window/monitor capture, region inspection, visual localization, the observation the model receives |
+| `windows.rs` | Listing, launching, and activating windows; activation recovery |
+| `targeting.rs` | Click targets, localized clicks, pointer moves and drags, raw input, text entry |
+| `input.rs` | The shared input pipeline: observation authority, grounding reconciliation, submission ledger, effect verification, user-idle waits, UI Automation patterns |
+| `scrolling.rs` | Semantic scrolling with pattern, wheel, keyboard, and scrollbar fallbacks |
+| `action_batch.rs` | `execute_action_batch` |
+| `browser_navigation.rs` | Managed-browser navigation and page readiness |
+| `fast_actions_tool.rs` | The `fast_actions` tool and its plan-tree argument types |
+| `planning.rs` | Tool discovery, task plan, clock, questions to the user |
+| `memory_tools.rs` | Facts, memory and session-context search, skills |
+| `tests.rs` | Tool tests |
+
+Other core modules keep one file each: `brain.rs` (provider adapters),
+`decision.rs` (router contract and backends), `router_training.rs` (training
+log), `policy.rs`, `coding.rs`, `memory.rs`, `grounding.rs`, `platform.rs`,
+`agent_window.rs`, `browser.rs`, `config.rs`, `context.rs`, and `tool.rs`.
+
 ## Local-model recovery
 
 The OpenAI-compatible adapter assembles streamed tool-call fragments. Invalid
