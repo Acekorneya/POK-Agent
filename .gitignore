@@ -92,3 +92,8 @@ QWEN.md
 
 # Session diagnostics copied in from other machines for analysis.
 /examplepos/
+
+# Scripts and helpers the agent writes for itself while working in this
+# folder. Its reusable tools belong in the app's data folder (generated tools,
+# skills, memory), not in the source tree.
+/helpers/
