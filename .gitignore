@@ -89,3 +89,6 @@ QWEN.md
 .augment/
 .trae/
 .github/copilot-instructions.md
+
+# Session diagnostics copied in from other machines for analysis.
+/examplepos/

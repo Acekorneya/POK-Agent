@@ -731,6 +731,18 @@ impl OpenAiCompatibleBrain {
         }
     }
 
+    fn host(&self) -> Option<String> {
+        reqwest::Url::parse(&self.base_url)
+            .ok()?
+            .host_str()
+            .map(str::to_ascii_lowercase)
+    }
+
+    fn is_openrouter(&self) -> bool {
+        self.host()
+            .is_some_and(|host| host.ends_with("openrouter.ai"))
+    }
+
     async fn standard_model_info(&self) -> Result<Vec<ModelInfo>> {
         let response = self
             .authorized(self.client.get(format!("{}/models", self.base_url)))
@@ -739,13 +751,66 @@ impl OpenAiCompatibleBrain {
             .map_err(provider_error)?;
         let response = require_success(response).await?;
         let body: Value = response.json().await.map_err(provider_error)?;
-        Ok(body
+        let mut models = body
             .get("data")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
             .filter_map(openai_model_info)
-            .collect())
+            .collect::<Vec<_>>();
+        // xAI lists reasoning levels only in its `language-models` catalog.
+        if self.host().is_some_and(|host| host.ends_with("x.ai")) {
+            self.merge_xai_reasoning(&mut models).await;
+        }
+        Ok(models)
+    }
+
+    async fn merge_xai_reasoning(&self, models: &mut [ModelInfo]) {
+        let Ok(response) = self
+            .authorized(
+                self.client
+                    .get(format!("{}/language-models", self.base_url)),
+            )
+            .send()
+            .await
+        else {
+            return;
+        };
+        let Ok(body) = response.json::<Value>().await else {
+            return;
+        };
+        for entry in body
+            .get("models")
+            .or_else(|| body.get("data"))
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let (efforts, default) = reasoning_metadata(entry);
+            if efforts.is_empty() {
+                continue;
+            }
+            let ids = std::iter::once(entry.get("id"))
+                .chain(
+                    entry
+                        .get("aliases")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .map(Some),
+                )
+                .flatten()
+                .filter_map(Value::as_str)
+                .collect::<Vec<_>>();
+            for model in models
+                .iter_mut()
+                .filter(|model| ids.contains(&model.id.as_str()))
+            {
+                model.reasoning = Some(true);
+                model.reasoning_efforts = efforts.clone();
+                model.reasoning_default = default.clone();
+            }
+        }
     }
 }
 
@@ -840,7 +905,11 @@ impl Brain for OpenAiCompatibleBrain {
     fn stream(&self, request: BrainRequest) -> BrainStream {
         let this = self.clone();
         Box::pin(async_stream::try_stream! {
-            let body = openai_request(&request);
+            let body = if this.is_openrouter() {
+                openrouter_request(&request)
+            } else {
+                openai_request(&request)
+            };
             let response = this.authorized(this.client.post(format!("{}/chat/completions", this.base_url)))
                 .json(&body).send().await.map_err(provider_error)?;
             let response = require_success(response).await?;
@@ -966,10 +1035,22 @@ fn openai_model_info(model: &Value) -> Option<ModelInfo> {
     })
 }
 
+/// A model's reasoning levels and default, from whichever catalog shape the
+/// provider uses:
+/// - LM Studio `capabilities.reasoning.{allowed_options, default}` (`off`/`on`
+///   or named levels);
+/// - OpenRouter `reasoning.{supported_efforts, default_effort, mandatory,
+///   default_enabled}`;
+/// - xAI `capabilities.{reasoning_effort, default_reasoning_effort}`;
+/// - OpenAI-style `reasoning_efforts` / `supported_reasoning_efforts`.
+///
+/// A model that can only switch reasoning on or off gets `off`/`on`.
 fn reasoning_metadata(model: &Value) -> (Vec<String>, Option<String>) {
     let options = model
         .pointer("/capabilities/reasoning/allowed_options")
         .or_else(|| model.pointer("/capabilities/reasoning/efforts"))
+        .or_else(|| model.pointer("/capabilities/reasoning_effort"))
+        .or_else(|| model.pointer("/reasoning/supported_efforts"))
         .or_else(|| model.get("reasoning_efforts"))
         .or_else(|| model.get("supported_reasoning_efforts"))
         .and_then(Value::as_array);
@@ -986,8 +1067,32 @@ fn reasoning_metadata(model: &Value) -> (Vec<String>, Option<String>) {
             efforts.push(effort.to_owned());
         }
     }
+    // OpenRouter: a reasoning model without named levels is an on/off switch,
+    // and one whose reasoning is mandatory cannot be switched off.
+    let openrouter = model.get("reasoning").filter(|value| value.is_object());
+    let mandatory = openrouter
+        .and_then(|reasoning| reasoning.get("mandatory"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if let Some(reasoning) = openrouter
+        && efforts.is_empty()
+        && !mandatory
+    {
+        efforts = vec!["off".into(), "on".into()];
+        let enabled = reasoning
+            .get("default_enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        return (efforts, Some(if enabled { "on" } else { "off" }.into()));
+    }
+    if mandatory {
+        efforts.retain(|effort| effort != "none" && effort != "off");
+    }
+    efforts.sort_by_key(|effort| reasoning_rank(effort));
     let default = model
         .pointer("/capabilities/reasoning/default")
+        .or_else(|| model.pointer("/capabilities/default_reasoning_effort"))
+        .or_else(|| model.pointer("/reasoning/default_effort"))
         .or_else(|| model.get("reasoning_default"))
         .or_else(|| model.get("default_reasoning_effort"))
         .and_then(Value::as_str)
@@ -998,12 +1103,30 @@ fn reasoning_metadata(model: &Value) -> (Vec<String>, Option<String>) {
     (efforts, default)
 }
 
+/// Display order, from no reasoning to the most.
+fn reasoning_rank(effort: &str) -> u8 {
+    match effort {
+        "off" => 0,
+        "none" => 1,
+        // The model's own default, offered next to switching it off.
+        "on" => 2,
+        "minimal" => 3,
+        "low" => 4,
+        "medium" => 5,
+        "high" => 6,
+        "xhigh" => 7,
+        "max" => 8,
+        _ => 9,
+    }
+}
+
 fn canonical_reasoning_effort(effort: &str) -> &str {
     match effort {
-        // LM Studio's native catalog uses public on/off controls, while its
-        // OpenAI-compatible chat endpoint accepts OpenAI reasoning efforts.
-        "off" => "none",
-        "on" => "low",
+        // Catalog spellings of the same level.
+        "extra_high" | "extra-high" | "x-high" => "xhigh",
+        "maximum" => "max",
+        "disabled" => "off",
+        "enabled" => "on",
         other => other,
     }
 }
@@ -1107,8 +1230,28 @@ fn openai_request(request: &BrainRequest) -> Value {
     if let Some(seed) = request.seed {
         body["seed"] = json!(seed);
     }
-    if let Some(effort) = request.reasoning_effort.as_deref() {
-        body["reasoning_effort"] = json!(effort);
+    // `on` means the model's own default reasoning, so nothing is sent; `off`
+    // is the OpenAI-style `none`.
+    match request.reasoning_effort.as_deref() {
+        None | Some("on") => {}
+        Some("off") => body["reasoning_effort"] = json!("none"),
+        Some(effort) => body["reasoning_effort"] = json!(effort),
+    }
+    body
+}
+
+/// OpenRouter takes its unified `reasoning` object; sending the OpenAI-style
+/// `reasoning_effort` as well is rejected for some models.
+fn openrouter_request(request: &BrainRequest) -> Value {
+    let mut body = openai_request(request);
+    if let Some(object) = body.as_object_mut() {
+        object.remove("reasoning_effort");
+    }
+    match request.reasoning_effort.as_deref() {
+        None => {}
+        Some("on") => body["reasoning"] = json!({"enabled": true}),
+        Some("off") => body["reasoning"] = json!({"enabled": false}),
+        Some(effort) => body["reasoning"] = json!({"effort": effort}),
     }
     body
 }
@@ -1476,6 +1619,26 @@ impl Brain for AnthropicBrain {
             .collect())
     }
 
+    async fn model_info(&self) -> Result<Vec<ModelInfo>> {
+        let mut request = self
+            .client
+            .get(format!("{}/models?limit=1000", self.base_url))
+            .header("anthropic-version", "2023-06-01");
+        if let Some(key) = &self.api_key {
+            request = request.header("x-api-key", key);
+        }
+        let response = request.send().await.map_err(provider_error)?;
+        let response = require_success(response).await?;
+        let body: Value = response.json().await.map_err(provider_error)?;
+        Ok(body
+            .get("data")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(anthropic_model_info)
+            .collect())
+    }
+
     fn stream(&self, request: BrainRequest) -> BrainStream {
         let this = self.clone();
         Box::pin(async_stream::try_stream! {
@@ -1540,7 +1703,58 @@ fn anthropic_request(request: &BrainRequest) -> Value {
     if let Some(temperature) = request.temperature {
         body["temperature"] = json!(temperature);
     }
+    match request.reasoning_effort.as_deref() {
+        None | Some("off" | "none") => {}
+        // Models without effort levels think with a fixed token budget.
+        Some("on") => {
+            let max_tokens = request.max_tokens.unwrap_or(64_000);
+            body["thinking"] = json!({
+                "type": "enabled",
+                "budget_tokens": (max_tokens / 2).clamp(1_024, 32_000),
+            });
+        }
+        Some(effort) => body["output_config"] = json!({"effort": effort}),
+    }
     body
+}
+
+/// Model capabilities from the Anthropic Models API: effort levels where the
+/// model has them, otherwise an on/off thinking switch.
+fn anthropic_model_info(model: &Value) -> Option<ModelInfo> {
+    let id = model.get("id")?.as_str()?.to_owned();
+    let capabilities = model.get("capabilities").unwrap_or(&Value::Null);
+    let supported = |pointer: &str| {
+        capabilities
+            .pointer(pointer)
+            .and_then(|value| value.get("supported"))
+            .and_then(Value::as_bool)
+            == Some(true)
+    };
+    let mut efforts = ["low", "medium", "high", "xhigh", "max"]
+        .into_iter()
+        .filter(|level| supported(&format!("/effort/{level}")))
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    if efforts.is_empty() && supported("/thinking/types/enabled") {
+        efforts = vec!["off".into(), "on".into()];
+    }
+    Some(ModelInfo {
+        id,
+        context_length: model.get("max_input_tokens").and_then(Value::as_u64),
+        loaded_context_length: None,
+        max_context_length: model.get("max_input_tokens").and_then(Value::as_u64),
+        vision: capabilities
+            .pointer("/image_input/supported")
+            .and_then(Value::as_bool),
+        tool_use: Some(true),
+        reasoning: capabilities
+            .pointer("/thinking/supported")
+            .and_then(Value::as_bool),
+        supported_parameters: Vec::new(),
+        reasoning_default: None,
+        reasoning_efforts: efforts,
+        loaded: None,
+    })
 }
 
 fn anthropic_message(message: &BrainMessage) -> Value {
@@ -1869,7 +2083,10 @@ mod tests {
         });
         let info = openai_model_info(&model).unwrap();
         assert_eq!(info.reasoning, Some(true));
-        assert_eq!(info.reasoning_efforts, ["none", "low", "medium", "xhigh"]);
+        assert_eq!(
+            info.reasoning_efforts,
+            ["off", "on", "low", "medium", "xhigh"]
+        );
         assert_eq!(info.reasoning_default.as_deref(), Some("xhigh"));
 
         let binary = json!({
@@ -1881,8 +2098,94 @@ mod tests {
             }
         });
         let (efforts, default) = reasoning_metadata(&binary);
-        assert_eq!(efforts, ["none", "low"]);
+        assert_eq!(efforts, ["off", "on"]);
+        assert_eq!(default.as_deref(), Some("on"));
+        // Chat completions: off is "none"; on leaves the model's default.
+        let mut request = BrainRequest {
+            model: "reasoning-model".into(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            temperature: None,
+            max_tokens: None,
+            seed: None,
+            reasoning_effort: Some("off".into()),
+        };
+        assert_eq!(openai_request(&request)["reasoning_effort"], "none");
+        request.reasoning_effort = Some("on".into());
+        assert!(openai_request(&request).get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn provider_catalogs_report_their_reasoning_levels() {
+        // OpenRouter: named levels, a default, and mandatory reasoning.
+        let (efforts, default) = reasoning_metadata(&json!({"reasoning": {
+            "mandatory": true, "default_effort": "max",
+            "supported_efforts": ["max", "xhigh", "high", "medium", "low"]
+        }}));
+        assert_eq!(efforts, ["low", "medium", "high", "xhigh", "max"]);
+        assert_eq!(default.as_deref(), Some("max"));
+        // OpenRouter: reasoning that can only be switched on or off.
+        let (efforts, default) = reasoning_metadata(&json!({"reasoning": {
+            "mandatory": false, "default_enabled": false
+        }}));
+        assert_eq!(efforts, ["off", "on"]);
+        assert_eq!(default.as_deref(), Some("off"));
+        // Mandatory reasoning without levels offers nothing to choose.
+        assert!(
+            reasoning_metadata(&json!({"reasoning": {"mandatory": true}}))
+                .0
+                .is_empty()
+        );
+        // xAI language-models catalog.
+        let (efforts, default) = reasoning_metadata(&json!({"capabilities": {
+            "reasoning_effort": ["none", "low", "medium", "high", "xhigh"],
+            "default_reasoning_effort": "low"
+        }}));
+        assert_eq!(efforts, ["none", "low", "medium", "high", "xhigh"]);
         assert_eq!(default.as_deref(), Some("low"));
+        // Anthropic Models API: effort levels, or a thinking switch.
+        let opus = anthropic_model_info(&json!({"id": "claude-opus-4-6", "capabilities": {
+            "thinking": {"supported": true, "types": {"enabled": {"supported": true}, "adaptive": {"supported": true}}},
+            "effort": {"supported": true, "low": {"supported": true}, "medium": {"supported": true},
+                       "high": {"supported": true}, "xhigh": {"supported": false}, "max": {"supported": true}}
+        }})).unwrap();
+        assert_eq!(opus.reasoning_efforts, ["low", "medium", "high", "max"]);
+        let haiku = anthropic_model_info(&json!({"id": "claude-haiku-4-5", "capabilities": {
+            "thinking": {"supported": true, "types": {"enabled": {"supported": true}, "adaptive": {"supported": false}}},
+            "effort": {"supported": false}
+        }})).unwrap();
+        assert_eq!(haiku.reasoning_efforts, ["off", "on"]);
+    }
+
+    #[test]
+    fn each_protocol_sends_the_level_its_own_way() {
+        let mut request = BrainRequest {
+            model: "model".into(),
+            messages: Vec::new(),
+            tools: Vec::new(),
+            temperature: None,
+            max_tokens: Some(20_000),
+            seed: None,
+            reasoning_effort: Some("high".into()),
+        };
+        let openrouter = openrouter_request(&request);
+        assert_eq!(openrouter["reasoning"], json!({"effort": "high"}));
+        assert!(openrouter.get("reasoning_effort").is_none());
+        assert_eq!(
+            anthropic_request(&request)["output_config"],
+            json!({"effort": "high"})
+        );
+        request.reasoning_effort = Some("off".into());
+        assert_eq!(
+            openrouter_request(&request)["reasoning"],
+            json!({"enabled": false})
+        );
+        assert!(anthropic_request(&request).get("thinking").is_none());
+        request.reasoning_effort = Some("on".into());
+        assert_eq!(
+            anthropic_request(&request)["thinking"],
+            json!({"type": "enabled", "budget_tokens": 10_000})
+        );
     }
 
     #[test]

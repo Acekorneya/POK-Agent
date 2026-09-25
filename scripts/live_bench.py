@@ -64,7 +64,7 @@ ARMS = {
     "laya": {"backend": "laya", "trust": True},
     "laya_judge": {"backend": "laya", "trust": True, "judge": True},
     # A hosted backend needs room for network latency; local backends
-    # already get at least 5 s, so give it the 10 s maximum.
+    # already get at least 12 s, so give it the 10 s hosted maximum.
     "jev": {"backend": "jev", "timeout_ms": 10000},
     "lfm": {"backend": "llm_choice", "trust": True, "llm_endpoint": "http://127.0.0.1:43211/v1/systemone",
             "llm_model": "lfm2.5-8b-a1b"},

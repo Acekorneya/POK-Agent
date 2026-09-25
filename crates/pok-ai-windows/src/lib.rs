@@ -139,6 +139,125 @@ mod typed_lines_tests {
     }
 }
 
+/// What the current keyboard layout lets us type as real keys.
+#[derive(Debug, Clone, Copy)]
+#[cfg_attr(not(windows), allow(dead_code))]
+struct KeyLayout {
+    /// The top-row digit keys produce 0-9 without Shift (not true on AZERTY).
+    digits_unshifted: bool,
+    /// The A-Z virtual keys produce the Latin letters A-Z.
+    latin_letters: bool,
+    caps_lock: bool,
+}
+
+/// One step of typing: a real key press, or characters sent as Unicode.
+#[derive(Debug, PartialEq, Eq)]
+#[cfg_attr(not(windows), allow(dead_code))]
+enum Keystroke {
+    Key { vk: u16, shift: bool },
+    Text(String),
+}
+
+/// Digits, letters and spaces are typed as real key presses, like a person
+/// typing, because many business applications act on key events (a zip code
+/// looked up as its last digit is keyed); text sent as Unicode arrives like a
+/// paste that such handlers never see. Other characters, which may need
+/// layout-specific keys, go as Unicode.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn keystrokes(text: &str, layout: KeyLayout) -> Vec<Keystroke> {
+    let mut strokes = Vec::new();
+    for character in text.chars() {
+        let key = match character {
+            ' ' => Some((0x20, false)),
+            '0'..='9' if layout.digits_unshifted => Some((character as u16, false)),
+            'a'..='z' | 'A'..='Z' if layout.latin_letters => Some((
+                character.to_ascii_uppercase() as u16,
+                character.is_ascii_uppercase() != layout.caps_lock,
+            )),
+            _ => None,
+        };
+        match (key, strokes.last_mut()) {
+            (Some((vk, shift)), _) => strokes.push(Keystroke::Key { vk, shift }),
+            (None, Some(Keystroke::Text(run))) => run.push(character),
+            (None, _) => strokes.push(Keystroke::Text(character.to_string())),
+        }
+    }
+    strokes
+}
+
+#[cfg(test)]
+mod keystroke_tests {
+    use super::{KeyLayout, Keystroke, keystrokes};
+
+    const US: KeyLayout = KeyLayout {
+        digits_unshifted: true,
+        latin_letters: true,
+        caps_lock: false,
+    };
+
+    fn key(vk: u8, shift: bool) -> Keystroke {
+        Keystroke::Key {
+            vk: u16::from(vk),
+            shift,
+        }
+    }
+
+    #[test]
+    fn digits_letters_and_spaces_are_real_keys() {
+        assert_eq!(
+            keystrokes("10001", US),
+            vec![
+                key(b'1', false),
+                key(b'0', false),
+                key(b'0', false),
+                key(b'0', false),
+                key(b'1', false)
+            ]
+        );
+        assert_eq!(
+            keystrokes("Ab 1", US),
+            vec![
+                key(b'A', true),
+                key(b'B', false),
+                key(b' ', false),
+                key(b'1', false)
+            ]
+        );
+    }
+
+    #[test]
+    fn other_characters_are_sent_as_unicode_runs() {
+        assert_eq!(
+            keystrokes("a-b@é", US),
+            vec![
+                key(b'A', false),
+                Keystroke::Text("-".into()),
+                key(b'B', false),
+                Keystroke::Text("@é".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn caps_lock_and_layout_are_respected() {
+        let caps = KeyLayout {
+            caps_lock: true,
+            ..US
+        };
+        // With Caps Lock on, Shift makes a lowercase letter.
+        assert_eq!(
+            keystrokes("aB", caps),
+            vec![key(b'A', true), key(b'B', false)]
+        );
+        // AZERTY-like layouts need Shift for digits: send those as Unicode.
+        let azerty = KeyLayout {
+            digits_unshifted: false,
+            ..US
+        };
+        assert_eq!(keystrokes("12", azerty), vec![Keystroke::Text("12".into())]);
+    }
+}
+
 #[cfg(test)]
 mod start_app_tests {
     use super::resolve_start_app;
@@ -1739,9 +1858,20 @@ mod native {
                 height: u32::try_from(bounds.bottom.saturating_sub(bounds.top)).unwrap_or(0),
             },
             elevated: false,
-            visible: hwnd.IsWindowVisible(),
+            // A cloaked window is not on screen: a modern app's content window
+            // drawn inside its frame (Settings' SystemSettings.exe inside
+            // ApplicationFrameHost), a suspended app, or another virtual
+            // desktop. It cannot be captured or used on its own; the frame is.
+            visible: hwnd.IsWindowVisible() && (hwnd.IsIconic() || !is_cloaked(hwnd)),
             minimized: hwnd.IsIconic(),
         })
+    }
+
+    fn is_cloaked(hwnd: &w::HWND) -> bool {
+        matches!(
+            hwnd.DwmGetWindowAttribute(w::co::DWMWA::CLOAKED),
+            Ok(w::DwmAttr::Cloaked(flags)) if flags.raw() != 0
+        )
     }
 
     fn element_id(element: &UIElement) -> Option<String> {
@@ -2170,6 +2300,54 @@ mod native {
         batches
     }
 
+    /// What the current keyboard layout types without Shift, and Caps Lock.
+    fn current_key_layout() -> super::KeyLayout {
+        let char_of = |vk: u32| w::MapVirtualKey(vk, w::co::MAPVK::VK_TO_CHAR) & 0xFFFF;
+        super::KeyLayout {
+            digits_unshifted: (u32::from(b'0')..=u32::from(b'9')).all(|vk| char_of(vk) == vk),
+            latin_letters: (u32::from(b'A')..=u32::from(b'Z')).all(|vk| char_of(vk) == vk),
+            caps_lock: w::GetKeyState(w::co::VK::CAPITAL).1,
+        }
+    }
+
+    /// Type one batch: real key presses for digits, letters and spaces (so
+    /// the application's key handlers run), Unicode for everything else.
+    fn type_keys(
+        enigo: &mut Enigo,
+        text: &str,
+        layout: super::KeyLayout,
+        pause: std::time::Duration,
+    ) -> Result<()> {
+        // A short gap between real keys lets older applications handle each
+        // key message before the next, as with a fast typist.
+        let key_gap = pause.min(std::time::Duration::from_millis(8));
+        for stroke in super::keystrokes(text, layout) {
+            match stroke {
+                super::Keystroke::Text(run) => enigo.text(&run).map_err(tool_error)?,
+                super::Keystroke::Key { vk, shift } => {
+                    if shift {
+                        enigo
+                            .key(Key::Shift, Direction::Press)
+                            .map_err(tool_error)?;
+                    }
+                    let typed = enigo
+                        .key(Key::Other(u32::from(vk)), Direction::Click)
+                        .map_err(tool_error);
+                    if shift {
+                        enigo
+                            .key(Key::Shift, Direction::Release)
+                            .map_err(tool_error)?;
+                    }
+                    typed?;
+                    if !key_gap.is_zero() {
+                        std::thread::sleep(key_gap);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn input_text(text: &str, inter_key_pause_ms: u64) -> Result<()> {
         if text.contains('\0') {
             return Err(PokError::Tool(
@@ -2182,6 +2360,7 @@ mod native {
         };
         let lines = super::typed_lines(text);
         let line_count = lines.len();
+        let layout = current_key_layout();
         // Keystrokes go to whatever window is in front. If the user switches
         // windows mid-text, stop rather than type into their window.
         let front = || w::HWND::GetForegroundWindow().map(|hwnd| hwnd.ptr() as usize);
@@ -2196,7 +2375,7 @@ mod native {
                         "typing stopped after {typed_chars} characters because the window in front changed (the user switched windows); check the field and retry"
                     )));
                 }
-                enigo.text(batch).map_err(tool_error)?;
+                type_keys(&mut enigo, batch, layout, pause)?;
                 typed_chars += batch.chars().count();
                 if index + 1 < batch_count && !pause.is_zero() {
                     std::thread::sleep(pause);

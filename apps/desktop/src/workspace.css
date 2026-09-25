@@ -110,6 +110,17 @@ pre, .markdown-message code { background: var(--code); color: var(--text); borde
 .composer .actions button { padding: 7px 9px; font-size: 11px; }
 .composer select { width: auto; max-width: 200px; padding: 7px 28px 7px 9px; font-size: 11px; color: var(--text); background-color: var(--raised); border: 1px solid var(--border); border-radius: 8px; }
 .composer select:hover:not(:disabled) { border-color: var(--accent); }
+/* Searchable model picker: themed like the other composer controls, and it
+   opens upward because the composer sits at the bottom of the window. */
+.model-picker { position: relative; }
+.composer .composer-model { width: 190px; padding: 7px 9px; font-size: 11px; color: var(--text); background: var(--raised); border: 1px solid var(--border); border-radius: 8px; }
+.composer .composer-model:hover:not(:disabled) { border-color: var(--accent); }
+.model-picker-list { position: absolute; z-index: 40; bottom: calc(100% + 6px); left: 0; min-width: 260px; max-width: min(420px, 80vw); max-height: min(300px, 50vh); overflow-y: auto; margin: 0; padding: 4px; list-style: none; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 30px #0000004d; }
+.model-picker-list li { padding: 6px 9px; border-radius: 6px; cursor: pointer; font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.model-picker-list li:hover { background: var(--raised); }
+.model-picker-list li.active { background: color-mix(in srgb, var(--accent) 22%, var(--raised)); }
+.model-picker-list li.selected { color: var(--accent); font-weight: 600; }
+.model-picker-list li.model-picker-empty { color: var(--muted); font-style: italic; cursor: default; background: none; }
 .composer .primary { margin-left: auto; }.composer .stop { margin-left: 0; }
 .composer .pause-toggle:disabled { display: none; }
 .composer .jev-toggle { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); background: var(--raised); }

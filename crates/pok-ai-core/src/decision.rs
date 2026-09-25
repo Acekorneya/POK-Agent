@@ -249,6 +249,30 @@ pub trait DecisionRouter: Send + Sync {
             "decision router does not support condition choices".into(),
         ))
     }
+
+    /// Log every question this router sends (with its answers) for training.
+    fn set_training_recorder(
+        &self,
+        _recorder: Option<std::sync::Arc<crate::router_training::TrainingRecorder>>,
+    ) {
+    }
+
+    /// The exact target-pick request this router would send, for a training
+    /// record of a decision local grounding made instead. `None` when the
+    /// backend has no such request or outbound filters withhold it.
+    fn training_body(&self, _request: DecisionRequest) -> Option<Value> {
+        None
+    }
+
+    /// The exact completion-check request this router would send.
+    fn completion_training_body(
+        &self,
+        _goal: &str,
+        _condition: &str,
+        _state: &serde_json::Value,
+    ) -> Option<Value> {
+        None
+    }
 }
 
 pub struct TypeSafeDecisionRouter {
@@ -256,12 +280,37 @@ pub struct TypeSafeDecisionRouter {
     judge_client: reqwest::Client,
     config: DecisionRouterConfig,
     consecutive_failures: AtomicU8,
+    /// When the backend last failed; a suspended router probes again once
+    /// `ROUTER_RETRY_AFTER` has passed, so a local sidecar that was still
+    /// loading or restarted is picked up again instead of lost for the run.
+    last_failure: parking_lot::Mutex<Option<std::time::Instant>>,
+    training: parking_lot::Mutex<Option<Arc<crate::router_training::TrainingRecorder>>>,
 }
+
+/// A router request failure with its cause spelled out: reqwest's message
+/// alone ("error sending request for url …") hides whether the backend timed
+/// out (a slow CPU model) or could not be reached (not running yet).
+fn request_failure(error: &reqwest::Error) -> String {
+    let cause = if error.is_timeout() {
+        " (timed out)"
+    } else if error.is_connect() {
+        " (could not connect; the router may still be starting)"
+    } else {
+        ""
+    };
+    format!("{error}{cause}")
+}
+
+/// How long a router stays suspended after repeated provider failures before
+/// one request probes it again.
+const ROUTER_RETRY_AFTER: Duration = Duration::from_secs(30);
 
 impl TypeSafeDecisionRouter {
     pub fn new(config: DecisionRouterConfig) -> Result<Self> {
+        // Local models answer in ~0.1 s on a GPU but several seconds on a CPU,
+        // longest for a session's first, larger questions.
         let timeout_ms = if config.native_choice_probabilities() {
-            config.timeout_ms.clamp(5_000, 30_000)
+            config.timeout_ms.clamp(12_000, 30_000)
         } else {
             config.timeout_ms.clamp(100, 10_000)
         };
@@ -287,6 +336,8 @@ impl TypeSafeDecisionRouter {
             judge_client,
             config,
             consecutive_failures: AtomicU8::new(0),
+            last_failure: parking_lot::Mutex::new(None),
+            training: parking_lot::Mutex::new(None),
         })
     }
 
@@ -314,75 +365,22 @@ struct ChoiceAnswer {
 }
 
 impl TypeSafeDecisionRouter {
-    async fn decide_once(&self, request: DecisionRequest) -> Result<DecisionResult> {
-        Ok(self.decide_once_with(request, None).await?.0)
-    }
-
-    /// One request that picks a target and, when `completion` is given, also
-    /// asks whether that condition already holds, against the same state:
-    /// the state is sent (and prefilled by the backend) once instead of twice.
-    async fn decide_once_with(
+    /// The `/v1/systemone` body for a target pick plus any attached completion
+    /// and condition-choice questions, after the outbound sanitization and
+    /// validation every request gets. Shared by real requests and training
+    /// records, so both carry exactly what the backend is asked.
+    fn fanout_body(
         &self,
-        request: DecisionRequest,
-        completion: Option<&str>,
-    ) -> Result<(DecisionResult, Option<ConditionVerdict>)> {
-        let (decision, verdict, _) = self.decide_once_fanout(request, completion, None).await?;
-        Ok((decision, verdict))
-    }
-
-    /// The target pick plus any attached completion and condition-choice
-    /// questions in one `/v1/systemone` request.
-    async fn decide_once_fanout(
-        &self,
-        mut request: DecisionRequest,
+        request: &mut DecisionRequest,
         completion: Option<&str>,
         condition: Option<&[(String, String)]>,
-    ) -> Result<(
-        DecisionResult,
-        Option<ConditionVerdict>,
-        Option<ConditionChoice>,
-    )> {
-        if let Some(options) = condition {
-            if options.len() < 2 || options.len() > 8 {
-                return Err(PokError::Provider(
-                    "condition choice needs between 2 and 8 options".into(),
-                ));
-            }
-            if options
-                .iter()
-                .any(|(_, text)| outbound_text_may_be_sensitive(text))
-            {
-                return Err(PokError::Provider(
-                    "condition choice was withheld by the sensitive-data filter".into(),
-                ));
-            }
-        }
-        let completion = completion.map(|condition| bounded_text(condition, 300));
-        if completion
-            .as_deref()
-            .is_some_and(outbound_text_may_be_sensitive)
-        {
-            return Err(PokError::Provider(
-                "completion check was withheld by the sensitive-data filter".into(),
-            ));
-        }
-        let api_key = self
-            .config
-            .active_key_env()
-            .and_then(get_api_key)
-            .filter(|key| !key.trim().is_empty());
-        if self.config.backend == crate::config::DecisionRouterBackend::Jev && api_key.is_none() {
-            return Err(PokError::Provider(format!(
-                "decision router requires API key {}",
-                self.config.api_key_env
-            )));
-        }
+    ) -> Result<(Value, OutboundSanitization)> {
         let sanitization = if request.purpose == DecisionPurpose::NextAction {
-            sanitize_next_action_request(&mut request)
+            sanitize_next_action_request(request)
         } else {
             OutboundSanitization::default()
         };
-        validate_outbound_request(&request, self.config.max_candidates)?;
+        validate_outbound_request(request, self.config.max_candidates)?;
         let criteria = request
             .candidates
             .iter()
@@ -393,7 +391,7 @@ impl TypeSafeDecisionRouter {
                 )
             })
             .collect::<serde_json::Map<_, _>>();
-        let application_state = allowed_state(&request);
+        let application_state = allowed_state(request);
         let candidates = request
             .candidates
             .iter()
@@ -490,7 +488,7 @@ impl TypeSafeDecisionRouter {
                 }))
             }).collect()
         };
-        if let Some(condition) = completion.as_deref() {
+        if let Some(condition) = completion {
             questions.insert("satisfied".into(), completion_question(condition));
         }
         if let Some(options) = condition {
@@ -531,6 +529,74 @@ impl TypeSafeDecisionRouter {
             },
             "questions": questions
         });
+        Ok((body, sanitization))
+    }
+
+    async fn decide_once(&self, request: DecisionRequest) -> Result<DecisionResult> {
+        Ok(self.decide_once_with(request, None).await?.0)
+    }
+
+    /// One request that picks a target and, when `completion` is given, also
+    /// asks whether that condition already holds, against the same state:
+    /// the state is sent (and prefilled by the backend) once instead of twice.
+    async fn decide_once_with(
+        &self,
+        request: DecisionRequest,
+        completion: Option<&str>,
+    ) -> Result<(DecisionResult, Option<ConditionVerdict>)> {
+        let (decision, verdict, _) = self.decide_once_fanout(request, completion, None).await?;
+        Ok((decision, verdict))
+    }
+
+    /// The target pick plus any attached completion and condition-choice
+    /// questions in one `/v1/systemone` request.
+    async fn decide_once_fanout(
+        &self,
+        mut request: DecisionRequest,
+        completion: Option<&str>,
+        condition: Option<&[(String, String)]>,
+    ) -> Result<(
+        DecisionResult,
+        Option<ConditionVerdict>,
+        Option<ConditionChoice>,
+    )> {
+        if let Some(options) = condition {
+            if options.len() < 2 || options.len() > 8 {
+                return Err(PokError::Provider(
+                    "condition choice needs between 2 and 8 options".into(),
+                ));
+            }
+            if options
+                .iter()
+                .any(|(_, text)| outbound_text_may_be_sensitive(text))
+            {
+                return Err(PokError::Provider(
+                    "condition choice was withheld by the sensitive-data filter".into(),
+                ));
+            }
+        }
+        let completion = completion.map(|condition| bounded_text(condition, 300));
+        if completion
+            .as_deref()
+            .is_some_and(outbound_text_may_be_sensitive)
+        {
+            return Err(PokError::Provider(
+                "completion check was withheld by the sensitive-data filter".into(),
+            ));
+        }
+        let api_key = self
+            .config
+            .active_key_env()
+            .and_then(get_api_key)
+            .filter(|key| !key.trim().is_empty());
+        if self.config.backend == crate::config::DecisionRouterBackend::Jev && api_key.is_none() {
+            return Err(PokError::Provider(format!(
+                "decision router requires API key {}",
+                self.config.api_key_env
+            )));
+        }
+        let (body, sanitization) =
+            self.fanout_body(&mut request, completion.as_deref(), condition)?;
         if serde_json::to_vec(&body)?.len() > 32 * 1024 {
             return Err(PokError::Provider(
                 "decision router payload exceeds the 32 KiB outbound limit".into(),
@@ -543,7 +609,7 @@ impl TypeSafeDecisionRouter {
         let response = http_request
             .send()
             .await
-            .map_err(|error| PokError::Provider(error.to_string()))?;
+            .map_err(|error| PokError::Provider(request_failure(&error)))?;
         let status = response.status();
         if !status.is_success() {
             return Err(PokError::Provider(format!(
@@ -554,6 +620,7 @@ impl TypeSafeDecisionRouter {
             .json()
             .await
             .map_err(|error| PokError::Provider(error.to_string()))?;
+        self.record_training("router", &body, &response);
         let mut selected_operation = None;
         let mut selected_operation_probability = None;
         let mut selected_target_probability = None;
@@ -759,7 +826,7 @@ fn operation_id(tool: &str) -> String {
         .collect()
 }
 
-fn candidate_operation(candidate: &DecisionCandidate) -> String {
+pub(crate) fn candidate_operation(candidate: &DecisionCandidate) -> String {
     if candidate.id == "search_web_for_request" {
         return "SEARCH_WEB".into();
     }
@@ -794,22 +861,9 @@ fn operation_groups(candidates: &[DecisionCandidate]) -> BTreeMap<String, Vec<&D
 #[async_trait]
 impl DecisionRouter for TypeSafeDecisionRouter {
     async fn decide(&self, request: DecisionRequest) -> Result<DecisionResult> {
-        if self.consecutive_failures.load(AtomicOrdering::Relaxed) >= 3 {
-            return Err(PokError::Provider(
-                "decision router is suspended after three consecutive provider failures".into(),
-            ));
-        }
+        self.ensure_available()?;
         let result = self.decide_once(request).await;
-        match &result {
-            Ok(_) => self.consecutive_failures.store(0, AtomicOrdering::Relaxed),
-            // A request refused locally never reached the backend, so it says
-            // nothing about backend health.
-            Err(error) if is_local_rejection(error) => {}
-            Err(_) => {
-                self.consecutive_failures
-                    .fetch_add(1, AtomicOrdering::Relaxed);
-            }
-        }
+        self.record_outcome(&result);
         result
     }
 
@@ -842,12 +896,10 @@ impl DecisionRouter for TypeSafeDecisionRouter {
         condition: &str,
         state: &serde_json::Value,
     ) -> Result<ConditionVerdict> {
-        if self.consecutive_failures.load(AtomicOrdering::Relaxed) >= 3 {
-            return Err(PokError::Provider(
-                "decision router is suspended after three consecutive provider failures".into(),
-            ));
-        }
-        self.check_condition_once(goal, condition, state).await
+        self.ensure_available()?;
+        let result = self.check_condition_once(goal, condition, state).await;
+        self.record_outcome(&result);
+        result
     }
 
     async fn decide_with_completion(
@@ -857,22 +909,9 @@ impl DecisionRouter for TypeSafeDecisionRouter {
         condition: &str,
         _condition_state: &serde_json::Value,
     ) -> Result<(DecisionResult, ConditionVerdict)> {
-        if self.consecutive_failures.load(AtomicOrdering::Relaxed) >= 3 {
-            return Err(PokError::Provider(
-                "decision router is suspended after three consecutive provider failures".into(),
-            ));
-        }
+        self.ensure_available()?;
         let result = self.decide_once_with(request, Some(condition)).await;
-        match &result {
-            Ok(_) => self.consecutive_failures.store(0, AtomicOrdering::Relaxed),
-            // A request refused locally never reached the backend, so it says
-            // nothing about backend health.
-            Err(error) if is_local_rejection(error) => {}
-            Err(_) => {
-                self.consecutive_failures
-                    .fetch_add(1, AtomicOrdering::Relaxed);
-            }
-        }
+        self.record_outcome(&result);
         let (decision, verdict) = result?;
         let verdict = verdict.ok_or_else(|| {
             PokError::Provider("decision router omitted the batched completion answer".into())
@@ -887,11 +926,7 @@ impl DecisionRouter for TypeSafeDecisionRouter {
         completion: Option<(&str, &serde_json::Value)>,
         condition: Option<(&[(String, String)], &serde_json::Value)>,
     ) -> Result<FanoutAnswers> {
-        if self.consecutive_failures.load(AtomicOrdering::Relaxed) >= 3 {
-            return Err(PokError::Provider(
-                "decision router is suspended after three consecutive provider failures".into(),
-            ));
-        }
+        self.ensure_available()?;
         let result = self
             .decide_once_fanout(
                 request,
@@ -899,14 +934,7 @@ impl DecisionRouter for TypeSafeDecisionRouter {
                 condition.map(|(options, _)| options),
             )
             .await;
-        match &result {
-            Ok(_) => self.consecutive_failures.store(0, AtomicOrdering::Relaxed),
-            Err(error) if is_local_rejection(error) => {}
-            Err(_) => {
-                self.consecutive_failures
-                    .fetch_add(1, AtomicOrdering::Relaxed);
-            }
-        }
+        self.record_outcome(&result);
         let (decision, completion, condition) = result?;
         Ok(FanoutAnswers {
             decision,
@@ -921,16 +949,75 @@ impl DecisionRouter for TypeSafeDecisionRouter {
         options: &[(String, String)],
         state: &serde_json::Value,
     ) -> Result<ConditionChoice> {
-        if self.consecutive_failures.load(AtomicOrdering::Relaxed) >= 3 {
-            return Err(PokError::Provider(
-                "decision router is suspended after three consecutive provider failures".into(),
-            ));
-        }
-        self.choose_condition_once(goal, options, state).await
+        self.ensure_available()?;
+        let result = self.choose_condition_once(goal, options, state).await;
+        self.record_outcome(&result);
+        result
+    }
+
+    fn set_training_recorder(
+        &self,
+        recorder: Option<Arc<crate::router_training::TrainingRecorder>>,
+    ) {
+        *self.training.lock() = recorder;
+    }
+
+    fn training_body(&self, mut request: DecisionRequest) -> Option<Value> {
+        let (body, _) = self.fanout_body(&mut request, None, None).ok()?;
+        (serde_json::to_vec(&body).ok()?.len() <= 32 * 1024).then_some(body)
+    }
+
+    fn completion_training_body(
+        &self,
+        goal: &str,
+        condition: &str,
+        state: &serde_json::Value,
+    ) -> Option<Value> {
+        let (body, outbound) = self.completion_body(goal, condition, state);
+        (!outbound
+            .iter()
+            .any(|value| outbound_text_may_be_sensitive(value)))
+        .then_some(body)
     }
 }
 
 impl TypeSafeDecisionRouter {
+    /// Refuse requests while suspended after three consecutive provider
+    /// failures, except one probe each `ROUTER_RETRY_AFTER`.
+    fn ensure_available(&self) -> Result<()> {
+        if self.consecutive_failures.load(AtomicOrdering::Relaxed) < 3 {
+            return Ok(());
+        }
+        let mut last_failure = self.last_failure.lock();
+        match *last_failure {
+            Some(at) if at.elapsed() < ROUTER_RETRY_AFTER => Err(PokError::Provider(
+                "decision router is suspended after three consecutive provider failures; it will be retried shortly".into(),
+            )),
+            _ => {
+                // Let this request probe; concurrent ones wait for its result.
+                *last_failure = Some(std::time::Instant::now());
+                Ok(())
+            }
+        }
+    }
+
+    fn record_outcome<T>(&self, result: &Result<T>) {
+        match result {
+            Ok(_) => self.consecutive_failures.store(0, AtomicOrdering::Relaxed),
+            // A request refused locally never reached the backend, so it says
+            // nothing about backend health.
+            Err(error) if is_local_rejection(error) => {}
+            Err(_) => {
+                let _ = self.consecutive_failures.fetch_update(
+                    AtomicOrdering::Relaxed,
+                    AtomicOrdering::Relaxed,
+                    |failures| Some(failures.saturating_add(1)),
+                );
+                *self.last_failure.lock() = Some(std::time::Instant::now());
+            }
+        }
+    }
+
     /// Send one bounded `/v1/systemone` request built for a single question
     /// and return the parsed response. Shared by completion and condition
     /// choice questions so both follow the same auth, size and filter rules.
@@ -971,30 +1058,56 @@ impl TypeSafeDecisionRouter {
         let response = request
             .send()
             .await
-            .map_err(|error| PokError::Provider(error.to_string()))?;
+            .map_err(|error| PokError::Provider(request_failure(&error)))?;
         let status = response.status();
         if !status.is_success() {
             return Err(PokError::Provider(format!(
                 "decision router returned HTTP {status}"
             )));
         }
-        response
+        let response: ApiResponse = response
             .json()
             .await
-            .map_err(|error| PokError::Provider(error.to_string()))
+            .map_err(|error| PokError::Provider(error.to_string()))?;
+        self.record_training("router", &body, &response);
+        Ok(response)
     }
 
-    async fn check_condition_once(
+    fn record_training(&self, source: &str, body: &Value, response: &ApiResponse) {
+        // Only on-screen decisions (a target pick, "is it done?", a branch
+        // choice) are training data; intent and context routing carry the
+        // user's prompts and history and have no provable answer.
+        let on_screen = body
+            .get("questions")
+            .and_then(Value::as_object)
+            .is_some_and(|questions| {
+                ["operation", "satisfied", "condition"]
+                    .iter()
+                    .any(|key| questions.contains_key(*key))
+            });
+        if !on_screen {
+            return;
+        }
+        if let Some(recorder) = self.training.lock().as_ref() {
+            let answers = serde_json::to_value(&response.answers).ok();
+            recorder.question(source, body, answers.as_ref());
+        }
+    }
+
+    /// The completion-check body and the strings the outbound filter checks.
+    fn completion_body(
         &self,
         goal: &str,
         condition: &str,
         state: &serde_json::Value,
-    ) -> Result<ConditionVerdict> {
+    ) -> (Value, Vec<String>) {
         let goal = bounded_text(goal, 500);
         let condition = bounded_text(condition, 300);
         let context = bounded_state_value(state);
-        let mut outbound_strings = vec![goal.as_str(), condition.as_str()];
-        collect_json_strings(&context, &mut outbound_strings);
+        let mut outbound = vec![goal.clone(), condition.clone()];
+        let mut strings = Vec::new();
+        collect_json_strings(&context, &mut strings);
+        outbound.extend(strings.into_iter().map(str::to_owned));
         // Same yes/no/unknown shape and quoting as the validated judge
         // questions, so every typed-choice backend answers it natively.
         let body = json!({
@@ -1006,6 +1119,17 @@ impl TypeSafeDecisionRouter {
             },
             "questions": {"satisfied": completion_question(&condition)},
         });
+        (body, outbound)
+    }
+
+    async fn check_condition_once(
+        &self,
+        goal: &str,
+        condition: &str,
+        state: &serde_json::Value,
+    ) -> Result<ConditionVerdict> {
+        let (body, outbound) = self.completion_body(goal, condition, state);
+        let outbound_strings = outbound.iter().map(String::as_str).collect::<Vec<_>>();
         let response = self
             .send_single_question(&outbound_strings, body, "completion check")
             .await?;
@@ -1250,7 +1374,7 @@ async fn judge_candidate_once(
     let response = request
         .send()
         .await
-        .map_err(|error| PokError::Provider(error.to_string()))?;
+        .map_err(|error| PokError::Provider(request_failure(&error)))?;
     let status = response.status();
     if !status.is_success() {
         return Err(PokError::Provider(format!("judge returned HTTP {status}")));
@@ -2350,59 +2474,38 @@ pub fn grounded_condition(condition: &str, evidence: &str) -> Option<bool> {
     )
 }
 
-/// Whether a condition asks for more than its quoted labels being present,
-/// e.g. `"Save As" dialog is closed and title shows "report"`. Finding the
-/// quoted text then proves only part of it: the rest needs a judgment.
+/// Whether a condition asks for more than its quoted labels being present:
+/// something closed, gone, saved or sent, e.g. `"Save As" dialog is closed and
+/// title shows "report"`. Quoted text on screen cannot prove that (it may be
+/// text just typed into the dialog), so the clause needs a judgment. Plain
+/// presence wording ("is selected", "is visible", "is open") is proved by the
+/// quoted labels themselves.
 pub fn condition_has_unquoted_clause(condition: &str) -> bool {
-    const PRESENCE_WORDS: &[&str] = &[
-        "a",
-        "an",
-        "the",
-        "and",
-        "is",
-        "are",
-        "be",
-        "now",
-        "titled",
-        "foreground",
-        "front",
-        "focused",
-        "active",
-        "visible",
-        "shown",
-        "shows",
-        "showing",
-        "displayed",
-        "appears",
-        "present",
-        "heading",
-        "button",
-        "link",
-        "text",
-        "label",
-        "labeled",
-        "labelled",
-        "page",
-        "tab",
-        "item",
-        "list",
-        "title",
-        "window",
-        "contains",
-        "containing",
-        "selected",
-        "in",
-        "on",
-        "of",
-        "at",
-        "has",
-        "with",
-        "reads",
-        "says",
-        "named",
-        "called",
-        "field",
-        "value",
+    const CHANGE_WORDS: &[&str] = &[
+        "closed",
+        "close",
+        "closes",
+        "gone",
+        "disappear",
+        "disappears",
+        "disappeared",
+        "dismissed",
+        "hidden",
+        "removed",
+        "deleted",
+        "cleared",
+        "empty",
+        "not",
+        "no",
+        "longer",
+        "without",
+        "saved",
+        "sent",
+        "submitted",
+        "finished",
+        "completed",
+        "complete",
+        "done",
     ];
     let mut unquoted = String::new();
     let mut inside = false;
@@ -2417,7 +2520,7 @@ pub fn condition_has_unquoted_clause(condition: &str) -> bool {
     }
     normalized_words(&unquoted)
         .split_whitespace()
-        .any(|word| !PRESENCE_WORDS.contains(&word))
+        .any(|word| CHANGE_WORDS.contains(&word))
 }
 
 /// Whether every label a condition quotes is part of the target the planner
@@ -2688,6 +2791,48 @@ fn relevance_bucket(score: f64) -> &'static str {
 mod tests {
     use super::*;
 
+    #[test]
+    fn training_bodies_match_the_requests_the_router_sends() {
+        let router = TypeSafeDecisionRouter::new(DecisionRouterConfig {
+            backend: crate::config::DecisionRouterBackend::Laya,
+            ..DecisionRouterConfig::default()
+        })
+        .unwrap();
+        let body = router
+            .completion_training_body(
+                "open display settings",
+                "\"Display\" is visible",
+                &json!({"visible": ["Display"]}),
+            )
+            .unwrap();
+        assert_eq!(
+            body["questions"]["satisfied"],
+            completion_question("\"Display\" is visible")
+        );
+        assert_eq!(body["state"]["done_when"], "\"Display\" is visible");
+    }
+
+    #[test]
+    fn a_suspended_router_is_probed_again_after_a_cooldown() {
+        let router = TypeSafeDecisionRouter::new(DecisionRouterConfig::default()).unwrap();
+        let failure: Result<()> = Err(PokError::Provider("timed out".into()));
+        for _ in 0..3 {
+            assert!(router.ensure_available().is_ok());
+            router.record_outcome(&failure);
+        }
+        // Three failures in a row suspend it.
+        assert!(router.ensure_available().is_err());
+        // Once the cooldown has passed, one request probes the backend...
+        *router.last_failure.lock() =
+            std::time::Instant::now().checked_sub(ROUTER_RETRY_AFTER + Duration::from_secs(1));
+        assert!(router.ensure_available().is_ok());
+        // ...while the others keep waiting for its answer.
+        assert!(router.ensure_available().is_err());
+        // A successful probe resumes the router.
+        router.record_outcome(&Ok(()));
+        assert!(router.ensure_available().is_ok());
+    }
+
     fn labelled(id: &str, label: &str) -> DecisionCandidate {
         DecisionCandidate {
             id: id.into(),
@@ -2773,8 +2918,15 @@ mod tests {
         assert!(condition_has_unquoted_clause(
             r#"Save As dialog closed and document title shows "pok-ai-word-test""#
         ));
-        assert!(condition_has_unquoted_clause(
+        // Presence wording is proved by the quoted labels themselves.
+        assert!(!condition_has_unquoted_clause(
             r#""Downloads" folder is open"#
+        ));
+        assert!(!condition_has_unquoted_clause(
+            r#"the "Example Guild" server is selected and a channel label containing "Voice" is visible"#
+        ));
+        assert!(condition_has_unquoted_clause(
+            r#"the "Accept cookies" banner is gone"#
         ));
     }
 
@@ -3348,6 +3500,8 @@ mod tests {
             trust_model_targets: None,
             trust_model_conditions: None,
             batch_router_questions: true,
+            training_log: false,
+            training_exclude: Vec::new(),
             laya: crate::config::LayaRouterConfig::default(),
             llm_choice: crate::config::LlmChoiceRouterConfig::default(),
             kev: crate::config::KevRouterConfig::default(),
@@ -3670,6 +3824,8 @@ mod tests {
             trust_model_targets: None,
             trust_model_conditions: None,
             batch_router_questions: true,
+            training_log: false,
+            training_exclude: Vec::new(),
             laya: crate::config::LayaRouterConfig::default(),
             llm_choice: crate::config::LlmChoiceRouterConfig::default(),
             kev: crate::config::KevRouterConfig::default(),

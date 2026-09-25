@@ -46,6 +46,37 @@ pub struct Policy {
     pub mode: PolicyMode,
 }
 
+/// Whether a control's accessible label says activating it joins or starts a
+/// voice or video call. Calls open the user's microphone or camera to other
+/// people, so they are started only when the user asked for one.
+pub fn is_call_control(label: &str) -> bool {
+    const CALL_PHRASES: &[&str] = &[
+        "voice channel",
+        "video channel",
+        "stage channel",
+        "join voice",
+        "join call",
+        "join the call",
+        "start call",
+        "start a call",
+        "voice call",
+        "video call",
+        "join meeting",
+        "start meeting",
+        "call duration",
+    ];
+    let label = label.to_lowercase();
+    CALL_PHRASES.iter().any(|phrase| label.contains(phrase))
+}
+
+/// Whether the user's request asks to join or place a call.
+pub fn request_allows_calls(request: &str) -> bool {
+    request
+        .to_lowercase()
+        .split(|character: char| !character.is_alphanumeric())
+        .any(|word| matches!(word, "join" | "call" | "dial" | "meeting" | "videocall"))
+}
+
 impl Policy {
     pub fn interactive() -> Self {
         Self {
@@ -297,6 +328,23 @@ mod tests {
                 )
                 .is_err()
         );
+    }
+
+    #[test]
+    fn call_controls_are_recognized_from_their_labels() {
+        assert!(is_call_control(
+            "Late Night Lounge (voice channel), 6 of 67 users, call duration 6 hours"
+        ));
+        assert!(is_call_control("Join Meeting"));
+        assert!(is_call_control("Start a call"));
+        assert!(!is_call_control("general (text channel), unread"));
+        assert!(!is_call_control("Voice settings"));
+        assert!(request_allows_calls("join the General voice channel"));
+        assert!(request_allows_calls("can you call mom on Teams"));
+        assert!(!request_allows_calls(
+            "who is in the Example Guild voice channels"
+        ));
+        assert!(!request_allows_calls("recall what we discussed"));
     }
 
     #[test]

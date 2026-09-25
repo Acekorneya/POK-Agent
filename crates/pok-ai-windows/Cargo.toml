@@ -20,7 +20,7 @@ sysinfo = "0.37"
 tempfile.workspace = true
 uiautomation = { version = "0.25", default-features = false, features = ["control", "input"] }
 windows = { version = "0.51.1", features = ["Foundation", "Foundation_Collections", "Globalization", "Graphics_Imaging", "Media_Ocr", "Storage", "Storage_Streams"] }
-winsafe = { version = "0.0.28", features = ["kernel", "user"] }
+winsafe = { version = "0.0.28", features = ["kernel", "user", "dwm"] }
 xcap = { version = "0.9.8", default-features = false }
 
 [lints]

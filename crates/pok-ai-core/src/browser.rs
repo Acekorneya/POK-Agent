@@ -110,11 +110,44 @@ struct BrowserConnection {
     // spawns, since job membership is inherited) to a job with
     // `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, so the whole tree dies together
     // when `child.kill()` is called or the job handle closes.
-    child: Box<dyn ChildWrapper>,
+    /// `None` when attached to a managed browser that was already running
+    /// with this profile (left open by an earlier session); it is alive while
+    /// its DevTools endpoint answers.
+    child: Option<Box<dyn ChildWrapper>>,
     port: u16,
     snapshot_id: Option<String>,
     target_guards: HashMap<String, String>,
     last_snapshot: Option<Value>,
+}
+
+impl BrowserConnection {
+    fn attached(child: Option<Box<dyn ChildWrapper>>, port: u16) -> Self {
+        Self {
+            child,
+            port,
+            snapshot_id: None,
+            target_guards: HashMap::new(),
+            last_snapshot: None,
+        }
+    }
+}
+
+/// The port in a Chromium profile's `DevToolsActivePort` file (first line).
+fn devtools_active_port(text: &str) -> Option<u16> {
+    text.lines()
+        .next()?
+        .trim()
+        .parse()
+        .ok()
+        .filter(|port| *port != 0)
+}
+
+async fn devtools_ready(client: &reqwest::Client, port: u16) -> bool {
+    client
+        .get(format!("http://127.0.0.1:{port}/json/version"))
+        .send()
+        .await
+        .is_ok_and(|response| response.status().is_success())
 }
 
 pub struct ManagedBrowser {
@@ -134,18 +167,71 @@ impl ManagedBrowser {
 
     async fn ensure_started(&self) -> Result<()> {
         let mut state = self.state.lock().await;
-        if state
-            .as_mut()
-            .is_some_and(|connection| connection.child.try_wait().ok().flatten().is_none())
-        {
-            return Ok(());
+        let client = devtools_http_client()?;
+        if let Some(connection) = state.as_mut() {
+            let alive = match connection.child.as_mut() {
+                Some(child) => child.try_wait().ok().flatten().is_none(),
+                None => devtools_ready(&client, connection.port).await,
+            };
+            if alive {
+                return Ok(());
+            }
         }
         std::fs::create_dir_all(&self.profile_dir)?;
-        let executable = self
-            .executable_override
-            .clone()
-            .or_else(find_chromium)
-            .ok_or_else(|| PokError::Unsupported("managed browser requires Microsoft Edge or Google Chrome; set POK_AI_BROWSER_EXECUTABLE to override discovery".into()))?;
+        // A browser already running with this profile (from an earlier
+        // conversation) is reused: a second launch would only hand its
+        // request to that window and exit.
+        if let Some(port) = self.running_port(&client).await {
+            *state = Some(BrowserConnection::attached(None, port));
+            return Ok(());
+        }
+        let executables = match &self.executable_override {
+            Some(executable) => vec![executable.clone()],
+            None => chromium_candidates(),
+        };
+        if executables.is_empty() {
+            return Err(PokError::Unsupported("managed browser requires Microsoft Edge or Google Chrome; set POK_AI_BROWSER_EXECUTABLE to override discovery".into()));
+        }
+        let mut last_error = None;
+        for executable in executables {
+            match self.launch(&executable, &client).await {
+                Ok(connection) => {
+                    *state = Some(connection);
+                    return Ok(());
+                }
+                Err(error) => {
+                    // Exit code 0 before DevTools usually means the launch was
+                    // handed to a copy already using this profile: attach.
+                    if let Some(port) = self.running_port(&client).await {
+                        *state = Some(BrowserConnection::attached(None, port));
+                        return Ok(());
+                    }
+                    last_error = Some(match error {
+                        PokError::Tool(message) => message,
+                        other => other.to_string(),
+                    });
+                }
+            }
+        }
+        let error = last_error.unwrap_or_else(|| "managed browser could not be started".into());
+        Err(PokError::Tool(format!(
+            "{error}. Do not retry the managed browser in this turn; instead open the page in the user's own browser (run_command `Start-Process \"<url>\"`, or open_application) and read it with the desktop tools (activate_window, capture_screen)."
+        )))
+    }
+
+    /// The DevTools port of a browser already running with this profile, when
+    /// it answers.
+    async fn running_port(&self, client: &reqwest::Client) -> Option<u16> {
+        let text = std::fs::read_to_string(self.profile_dir.join("DevToolsActivePort")).ok()?;
+        let port = devtools_active_port(&text)?;
+        devtools_ready(client, port).await.then_some(port)
+    }
+
+    async fn launch(
+        &self,
+        executable: &Path,
+        client: &reqwest::Client,
+    ) -> Result<BrowserConnection> {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
         let port = listener.local_addr()?.port();
         drop(listener);
@@ -162,23 +248,18 @@ impl ManagedBrowser {
         #[cfg(windows)]
         command.wrap(JobObject);
         let mut child = command.spawn().map_err(|error| {
-            PokError::Tool(format!("failed to launch managed browser: {error}"))
+            PokError::Tool(format!(
+                "failed to launch managed browser {}: {error}",
+                executable.display()
+            ))
         })?;
-        let client = devtools_http_client()?;
         let endpoint = format!("http://127.0.0.1:{port}/json/version");
         let deadline = tokio::time::Instant::now() + DEVTOOLS_STARTUP_TIMEOUT;
         let mut last_error = None;
         while tokio::time::Instant::now() < deadline {
             match client.get(&endpoint).send().await {
                 Ok(response) if response.status().is_success() => {
-                    *state = Some(BrowserConnection {
-                        child,
-                        port,
-                        snapshot_id: None,
-                        target_guards: HashMap::new(),
-                        last_snapshot: None,
-                    });
-                    return Ok(());
+                    return Ok(BrowserConnection::attached(Some(child), port));
                 }
                 Ok(response) => {
                     last_error = Some(format!("HTTP {}", response.status()));
@@ -189,7 +270,8 @@ impl ManagedBrowser {
             }
             if let Some(status) = child.try_wait()? {
                 return Err(PokError::Tool(format!(
-                    "managed browser exited before exposing DevTools (status {status})"
+                    "managed browser {} exited before exposing DevTools (status {status})",
+                    executable.display()
                 )));
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -371,8 +453,13 @@ impl ManagedBrowser {
             'value' in el ? String(el.value).slice(0,300) : null, 'checked' in el ? !!el.checked : null,
             !!el.disabled || el.getAttribute('aria-disabled') === 'true']);
           if (currentGuard !== {guard}) return {{ok:false, reason:'target semantics changed'}};
-          const x=r.x+r.width/2, y=r.y+r.height/2;
-          if (x < 0 || y < 0 || x >= innerWidth || y >= innerHeight || !el.contains(document.elementFromPoint(x,y))) return {{ok:false, reason:'target is covered or outside the viewport'}};
+          let box=r, x=r.x+r.width/2, y=r.y+r.height/2;
+          const outside = () => x < 0 || y < 0 || x >= innerWidth || y >= innerHeight;
+          // A target below or beside the visible area is scrolled into view
+          // first, as a person would; one still covered (a banner, a dialog) is refused.
+          if (outside()) {{ el.scrollIntoView({{block:'center', inline:'center', behavior:'instant'}}); box = el.getBoundingClientRect(); x=box.x+box.width/2; y=box.y+box.height/2; }}
+          if (outside()) return {{ok:false, reason:'target is outside the viewport'}};
+          if (!el.contains(document.elementFromPoint(x,y))) return {{ok:false, reason:'target is covered by another element (a banner or dialog); dismiss it first'}};
           const op = {operation_json}; const v = {value_json};
           const inputType = el.tagName === 'INPUT' ? String(el.type || 'text').toLowerCase() : '';
           if (op === 'type' && (inputType === 'password' || el.autocomplete === 'current-password' || el.autocomplete === 'new-password')) return {{ok:false, reason:'password-field typing is prohibited'}};
@@ -732,7 +819,10 @@ fn explicit_http_url(value: &str) -> Option<String> {
         })
 }
 
-fn find_chromium() -> Option<PathBuf> {
+/// Installed Chromium browsers to try, Edge first, then Chrome.
+fn chromium_candidates() -> Vec<PathBuf> {
+    #[cfg_attr(not(windows), allow(unused_mut))]
+    let mut found = Vec::new();
     #[cfg(windows)]
     {
         let roots = [
@@ -740,19 +830,21 @@ fn find_chromium() -> Option<PathBuf> {
             std::env::var_os("PROGRAMFILES(X86)").map(PathBuf::from),
             std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
         ];
-        for root in roots.into_iter().flatten() {
-            for relative in [
-                "Microsoft/Edge/Application/msedge.exe",
-                "Google/Chrome/Application/chrome.exe",
-            ] {
-                let candidate = root.join(relative);
-                if candidate.is_file() {
-                    return Some(candidate);
-                }
+        for relative in [
+            "Microsoft/Edge/Application/msedge.exe",
+            "Google/Chrome/Application/chrome.exe",
+        ] {
+            if let Some(candidate) = roots
+                .iter()
+                .flatten()
+                .map(|root| root.join(relative))
+                .find(|candidate| candidate.is_file())
+            {
+                found.push(candidate);
             }
         }
     }
-    None
+    found
 }
 
 static BROWSERS: OnceLock<SyncMutex<HashMap<PathBuf, Arc<ManagedBrowser>>>> = OnceLock::new();
@@ -982,6 +1074,66 @@ pub fn register_managed_browser_tools(registry: &mut ToolRegistry) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn devtools_active_port_reads_the_first_line() {
+        assert_eq!(
+            devtools_active_port("9222\n/devtools/browser/abc\n"),
+            Some(9222)
+        );
+        assert_eq!(devtools_active_port("0\n"), None);
+        assert_eq!(devtools_active_port(""), None);
+    }
+
+    #[tokio::test]
+    async fn a_browser_already_running_with_the_profile_is_reused() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buffer = [0; 1024];
+                let _ = socket.read(&mut buffer).await;
+                let body = "{\"Browser\":\"Edg/153\"}";
+                let _ = socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await;
+            }
+        });
+        let data = tempfile::tempdir().unwrap();
+        let mut browser = ManagedBrowser::new(data.path());
+        // Launching would fail: the running browser must be reused instead.
+        browser.executable_override = Some(data.path().join("missing-browser.exe"));
+        std::fs::create_dir_all(&browser.profile_dir).unwrap();
+        std::fs::write(
+            browser.profile_dir.join("DevToolsActivePort"),
+            format!("{port}\n/devtools/browser/id\n"),
+        )
+        .unwrap();
+        browser.ensure_started().await.unwrap();
+        let state = browser.state.lock().await;
+        let connection = state.as_ref().unwrap();
+        assert_eq!(connection.port, port);
+        assert!(connection.child.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_browser_that_cannot_start_suggests_the_users_own_browser() {
+        let data = tempfile::tempdir().unwrap();
+        let mut browser = ManagedBrowser::new(data.path());
+        browser.executable_override = Some(data.path().join("missing-browser.exe"));
+        let error = browser.ensure_started().await.unwrap_err().to_string();
+        assert!(error.contains("Start-Process"), "{error}");
+        assert!(!error.contains("tool error: tool error"), "{error}");
+    }
 
     #[test]
     fn managed_browser_tools_have_a_dedicated_contract() {

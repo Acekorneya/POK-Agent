@@ -1937,6 +1937,8 @@ async fn run_prompt(
         *conversation_judge_enabled = Some(judge_enabled_for_conversation);
     }
     let session = conversation.as_mut().expect("conversation was created");
+    let training_log = runtime.config.lock().decision_router.training_log;
+    session.set_training_log(training_log);
     session.configure_model_request(
         temperature.or_else(|| agent_temperature.value()),
         max_output_tokens,
@@ -2161,6 +2163,9 @@ struct DecisionRouterStatus {
     has_api_key: bool,
     laya: LayaRuntimeStatus,
     judge: JudgeRuntimeStatus,
+    /// The opt-in router training log is on, and where its files go.
+    training_log: bool,
+    training_dir: String,
 }
 
 fn judge_root(runtime: &AppRuntime) -> PathBuf {
@@ -2657,6 +2662,14 @@ async fn decision_router_status(runtime: &AppRuntime) -> DecisionRouterStatus {
         has_api_key,
         laya: laya_runtime_status(runtime).await,
         judge: judge_runtime_status(runtime).await,
+        training_log: config.training_log,
+        training_dir: runtime
+            .config
+            .lock()
+            .data_dir
+            .join("router-training")
+            .display()
+            .to_string(),
     }
 }
 
@@ -2735,6 +2748,17 @@ async fn set_decision_router_backend(
         config.decision_router.backend = backend;
         config.decision_router.enabled = backend != DecisionRouterBackend::Off;
     }
+    Ok(decision_router_status(runtime.inner()).await)
+}
+
+/// Turn the router training log on or off; the live conversation picks the
+/// change up with its next message.
+#[tauri::command]
+async fn set_router_training(
+    enabled: bool,
+    runtime: State<'_, AppRuntime>,
+) -> std::result::Result<DecisionRouterStatus, String> {
+    runtime.config.lock().decision_router.training_log = enabled;
     Ok(decision_router_status(runtime.inner()).await)
 }
 
@@ -3102,6 +3126,7 @@ pub fn run() {
             prepare_laya,
             install_judge,
             set_judge_enabled,
+            set_router_training,
             save_decision_router_key,
             list_models,
             get_model_capabilities,

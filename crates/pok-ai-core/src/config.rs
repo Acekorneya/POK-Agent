@@ -63,6 +63,19 @@ pub enum DecisionRouterBackend {
     Kev,
 }
 
+impl DecisionRouterBackend {
+    /// Name shown to the user for decisions this backend made.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Jev => "JEV",
+            Self::Laya => "Laya",
+            Self::LlmChoice => "LLM choice",
+            Self::Kev => "kev",
+            Self::Off => "Router",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LayaDevicePreference {
@@ -208,20 +221,29 @@ pub struct DecisionRouterConfig {
     #[serde(default = "default_decision_router_completion_probability")]
     pub min_completion_probability: f64,
     /// Whether delegated `fast_actions` may act on a target the fast model
-    /// picks when local grounding cannot decide it. Unset means true only for
-    /// calibrated hosted backends (JEV): the router question bench found the
-    /// local backends confidently wrong on target picks.
+    /// picks when local grounding cannot decide it. Unset means true for JEV,
+    /// kev and Laya, the backends validated in the live delegated matrix;
+    /// other local backends stay untrusted until they are measured.
     #[serde(default)]
     pub trust_model_targets: Option<bool>,
     /// Whether the fast model may judge unquoted done_when, branch and
-    /// interrupt conditions. Unset means true only for JEV, for the same
-    /// reason; quoted conditions are always checked locally.
+    /// interrupt conditions. Unset means true for JEV, kev and Laya, like
+    /// target picks; quoted conditions are always checked locally.
     #[serde(default)]
     pub trust_model_conditions: Option<bool>,
     /// Ask a fast-action step's completion check and target pick in one
     /// request when both need the model, so the state is sent once.
     #[serde(default = "default_true")]
     pub batch_router_questions: bool,
+    /// Save the router's questions, with proven answers, to
+    /// `<data_dir>/router-training/<session>.jsonl` for training a System 1
+    /// model. Off by default; files stay on this machine.
+    #[serde(default)]
+    pub training_log: bool,
+    /// Windows whose title or process contains one of these (case-insensitive)
+    /// are never recorded in the training log.
+    #[serde(default = "default_training_exclude")]
+    pub training_exclude: Vec<String>,
     #[serde(default)]
     pub laya: LayaRouterConfig,
     #[serde(default)]
@@ -325,6 +347,8 @@ impl Default for DecisionRouterConfig {
             trust_model_targets: None,
             trust_model_conditions: None,
             batch_router_questions: true,
+            training_log: false,
+            training_exclude: default_training_exclude(),
             laya: LayaRouterConfig::default(),
             llm_choice: LlmChoiceRouterConfig::default(),
             kev: KevRouterConfig::default(),
@@ -374,17 +398,24 @@ impl DecisionRouterConfig {
     /// probabilities (Laya, LLM choice) rather than JEV's calibrated
     /// confidences; they share the Laya probability gates and local timeouts.
     pub fn model_targets_trusted(&self) -> bool {
-        self.trust_model_targets.unwrap_or(matches!(
-            self.backend,
-            DecisionRouterBackend::Jev | DecisionRouterBackend::Kev
-        ))
+        self.trust_model_targets
+            .unwrap_or_else(|| self.backend_trusted_by_default())
     }
 
     pub fn model_conditions_trusted(&self) -> bool {
-        self.trust_model_conditions.unwrap_or(matches!(
+        self.trust_model_conditions
+            .unwrap_or_else(|| self.backend_trusted_by_default())
+    }
+
+    /// Backends whose picks and completion checks were validated in the live
+    /// delegated matrix, where trusted Laya matched JEV and kev on primary-model
+    /// calls. Quoted-label grounding and the local agreement checks still run
+    /// for every backend.
+    fn backend_trusted_by_default(&self) -> bool {
+        matches!(
             self.backend,
-            DecisionRouterBackend::Jev | DecisionRouterBackend::Kev
-        ))
+            DecisionRouterBackend::Jev | DecisionRouterBackend::Kev | DecisionRouterBackend::Laya
+        )
     }
 
     pub fn native_choice_probabilities(&self) -> bool {
@@ -454,8 +485,11 @@ fn default_decision_router_search_url() -> String {
     "https://www.google.com/search".into()
 }
 
+/// A fast model's "done" or branch answer is accepted only when it is clearly
+/// sure: a false "done" ends a step early. Raise the model's confidence by
+/// fine-tuning it (router training log), not by lowering this bar.
 fn default_decision_router_completion_probability() -> f64 {
-    0.60
+    0.80
 }
 
 impl ProviderConfig {
@@ -646,6 +680,27 @@ const fn default_fusion_iou_threshold() -> f32 {
 const fn default_ocr_containment_threshold() -> f32 {
     0.6
 }
+/// Applications whose screens hold passwords, money, mail, or other
+/// people's messages and customer records.
+fn default_training_exclude() -> Vec<String> {
+    [
+        "password",
+        "1password",
+        "bitwarden",
+        "keepass",
+        "lastpass",
+        "bank",
+        "mail",
+        "outlook",
+        "discord",
+        "example_pos",
+        "examplepos",
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect()
+}
+
 const fn default_true() -> bool {
     true
 }
@@ -978,6 +1033,25 @@ pub fn default_config_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn routers_validated_live_are_trusted_by_default() {
+        let mut config = DecisionRouterConfig::default();
+        for (backend, trusted) in [
+            (DecisionRouterBackend::Jev, true),
+            (DecisionRouterBackend::Kev, true),
+            (DecisionRouterBackend::Laya, true),
+            (DecisionRouterBackend::LlmChoice, false),
+        ] {
+            config.backend = backend;
+            assert_eq!(config.model_targets_trusted(), trusted, "{backend:?}");
+            assert_eq!(config.model_conditions_trusted(), trusted, "{backend:?}");
+        }
+        // An explicit setting still wins, e.g. grounding-only Laya.
+        config.backend = DecisionRouterBackend::Laya;
+        config.trust_model_targets = Some(false);
+        assert!(!config.model_targets_trusted());
+    }
 
     #[test]
     fn provider_retry_limit_defaults_to_three() {

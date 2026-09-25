@@ -5775,7 +5775,7 @@ impl Tool for TypeTextTool {
     }
 
     fn description(&self) -> &'static str {
-        "Type the complete desired string into the focused control in one call and verify it by UI Automation. Provide target_id of the listed text field whenever you can: native fields (forms, search boxes, file name boxes in Save dialogs) are then filled directly without using the user's keyboard or mouse, even in a background window; other fields are focused and typed into. mode=append preserves existing text; mode=replace clears/replaces it. Line breaks in the text are entered as Shift+Enter, a new line that does not send a chat message. This tool never presses Enter: to send a message or submit a form, press Enter as a separate key action after the text is verified."
+        "Type the complete desired string into the focused control in one call and verify it by UI Automation. Provide target_id of the listed text field whenever you can: native fields (forms, search boxes, file name boxes in Save dialogs) are then filled directly without using the user's keyboard or mouse, even in a background window; other fields are focused and typed into. mode=append preserves existing text; mode=replace clears/replaces it. Line breaks in the text are entered as Shift+Enter, a new line that does not send a chat message. This tool never presses Enter: to send a message or submit a form, press Enter as a separate key action after the text is verified. Desktop forms often look up or validate a field (a ZIP code filling in the city) only on the key that leaves it: press Tab after entering such a value."
     }
 
     fn input_schema(&self) -> Value {
@@ -5938,8 +5938,10 @@ async fn pattern_text(
         &context.task_hint.lock(),
         context.focused_control.lock().as_ref(),
     )?;
-    let (destination, _) = destination(observation);
-    if duplicate_submission_value(&context.input_ledger.lock(), &destination, text).is_some() {
+    let (destination, _) = field_destination(observation, Some(target));
+    if duplicate_submission_value(&context.input_ledger.lock(), &destination, text, !append)
+        .is_some()
+    {
         return Ok(None);
     }
     Ok(context
@@ -5963,7 +5965,8 @@ struct ActionStep {
     /// type_text (aliases: type, text), or key (aliases: keyboard,
     /// keyboard_shortcut, shortcut, key_press).
     kind: String,
-    /// Fresh numbered target required by click_target/click/left_click.
+    /// Fresh numbered target: required by click_target/click/left_click, and
+    /// optional for type_text, which then focuses that field before typing.
     #[serde(default)]
     target_id: Option<TargetId>,
     /// Visible label intended by this click step.
@@ -6057,7 +6060,7 @@ impl Tool for ExecuteActionBatchTool {
         "execute_action_batch"
     }
     fn description(&self) -> &'static str {
-        "Execute grounded input steps sequentially against the latest observation. The runtime verifies intermediate state but returns only the final visual observation. Repeated identical steps stop when the first settled action makes no progress. Click steps require target_id and expected_label; the full batch is semantically validated before input. Other steps are type_text and key. Example: [{\"kind\":\"click_target\",\"target_id\":\"7\",\"expected_label\":\"Search\"},{\"kind\":\"type_text\",\"text\":\"complete query\",\"replace_existing\":true},{\"kind\":\"key\",\"key\":\"Enter\"}]."
+        "Execute grounded input steps sequentially against the latest observation. The runtime verifies intermediate state but returns only the final visual observation. Repeated identical steps stop when the first settled action makes no progress. Click steps require target_id and expected_label; the full batch is semantically validated before input. Other steps are type_text and key; a type_text step with target_id focuses that field first, so each value lands in its own field. Desktop forms often look up or validate a field (a ZIP code filling in the city) only on the next key: follow each form value with Tab. Example: [{\"kind\":\"type_text\",\"target_id\":\"12\",\"text\":\"10001\",\"replace_existing\":true},{\"kind\":\"key\",\"key\":\"Tab\"},{\"kind\":\"click_target\",\"target_id\":\"7\",\"expected_label\":\"Search\"},{\"kind\":\"type_text\",\"text\":\"complete query\",\"replace_existing\":true},{\"kind\":\"key\",\"key\":\"Enter\"}]."
     }
     fn input_schema(&self) -> Value {
         schema::<ExecuteActionBatchArgs>()
@@ -6175,21 +6178,85 @@ impl Tool for ExecuteActionBatchTool {
                     result
                 }
                 "text" | "type" | "type_text" => {
-                    let input_args = InputArgs {
-                        observation_id: args.observation_id.clone(),
-                        kind: "type".into(),
-                        x: None,
-                        y: None,
-                        button: None,
-                        text: step.text.clone(),
-                        replace_existing: step.replace_existing,
-                        key: None,
-                        delta_x: None,
-                        delta_y: None,
-                    };
-                    let action = input_action(&input_args, &target.bounds, screenshot)?;
-                    let model_action = model_action_value(&input_args);
-                    execute_input(action, step_observation.clone(), context, model_action).await
+                    // A type step naming its field goes into that field, not
+                    // whichever one kept focus from the previous step: focus it
+                    // first (without the mouse when the control allows it).
+                    let mut typing_observation = step_observation.clone();
+                    let mut focused = Ok(Value::Null);
+                    if step.target_id.is_some() {
+                        let field = batch_type_field(&observation, &step_observation, step, index)?;
+                        if !accepts_typed_text(&field.control_type) {
+                            return Err(PokError::Tool(format!(
+                                "batch step {index} types into target {:?}, a {} ({:?}), not a text field; use the edit or combo box target for the field",
+                                field.id, field.control_type, field.name
+                            )));
+                        }
+                        let (x, y) = field.click_point.unwrap_or((
+                            field.bounds.x
+                                + i32::try_from(field.bounds.width / 2).unwrap_or(i32::MAX),
+                            field.bounds.y
+                                + i32::try_from(field.bounds.height / 2).unwrap_or(i32::MAX),
+                        ));
+                        let focused_control = FocusedControl {
+                            app: step_observation
+                                .foreground_window
+                                .as_ref()
+                                .map_or_else(String::new, |window| window.process_name.clone()),
+                            label: field.name.clone(),
+                            control_type: field.control_type.clone(),
+                        };
+                        focused = execute_input(
+                            InputAction::Click {
+                                x,
+                                y,
+                                button: MouseButton::Left,
+                            },
+                            step_observation.clone(),
+                            context,
+                            json!({
+                                "kind": "click_target",
+                                "target_id": field.id,
+                                "label": field.name,
+                            }),
+                        )
+                        .await;
+                        if focused.is_ok() {
+                            *context.focused_control.lock() = Some(focused_control);
+                            typing_observation = context
+                                .latest_observation
+                                .lock()
+                                .clone()
+                                .unwrap_or(typing_observation);
+                        }
+                    }
+                    match focused {
+                        Err(error) => Err(error),
+                        Ok(value)
+                            if value.get("executed").and_then(Value::as_bool) == Some(false) =>
+                        {
+                            Ok(value)
+                        }
+                        Ok(_) => {
+                            let input_args = InputArgs {
+                                observation_id: args.observation_id.clone(),
+                                kind: "type".into(),
+                                x: None,
+                                y: None,
+                                button: None,
+                                text: step.text.clone(),
+                                replace_existing: step.replace_existing,
+                                key: None,
+                                delta_x: None,
+                                delta_y: None,
+                            };
+                            let action = input_action(&input_args, &target.bounds, screenshot)?;
+                            let mut model_action = model_action_value(&input_args);
+                            if let Some(target_id) = &step.target_id {
+                                model_action["target_id"] = json!(target_id.normalized());
+                            }
+                            execute_input(action, typing_observation, context, model_action).await
+                        }
+                    }
                 }
                 "keyboard" | "keyboard_shortcut" | "shortcut" | "key" | "key_press" => {
                     let input_args = InputArgs {
@@ -6294,6 +6361,43 @@ impl Tool for ExecuteActionBatchTool {
             "step_results": step_results,
         }))
     }
+}
+
+/// The field a batch type step names. Target ids come from the screen the
+/// planner saw; earlier steps may have refreshed it and renumbered targets, so
+/// the same field is found again by label and type, or by where it was.
+fn batch_type_field<'a>(
+    planned: &'a Observation,
+    current: &'a Observation,
+    step: &ActionStep,
+    index: usize,
+) -> Result<&'a InteractionTarget> {
+    let target_id = step
+        .target_id
+        .as_ref()
+        .map(TargetId::normalized)
+        .ok_or_else(|| PokError::Tool(format!("target_id is required at batch step {index}")))?;
+    let named = planned
+        .targets
+        .iter()
+        .chain(current.targets.iter())
+        .find(|target| target.id == target_id)
+        .ok_or_else(|| {
+            PokError::Tool(format!(
+                "unknown target {target_id:?} at batch step {index}; capture again and use a listed target id"
+            ))
+        })?;
+    let same = |target: &&InteractionTarget| {
+        target.id == named.id
+            && target.name == named.name
+            && target.control_type == named.control_type
+    };
+    Ok(current
+        .targets
+        .iter()
+        .find(same)
+        .or_else(|| unique_rebased_target(named, current))
+        .unwrap_or(named))
 }
 
 fn resolve_batch_target<'a>(
@@ -6597,6 +6701,29 @@ fn destination(observation: &Observation) -> (String, String) {
     )
 }
 
+/// The destination of typed text: the window plus, when known, the field.
+/// Different fields of one form are different destinations, while a chat's
+/// message box stays the same destination between attempts.
+fn field_destination(
+    observation: &Observation,
+    field: Option<&InteractionTarget>,
+) -> (String, String) {
+    let (window, label) = destination(observation);
+    let Some(field) = field.or_else(|| observation.targets.iter().find(|target| target.focused))
+    else {
+        return (window, label);
+    };
+    let key = if field.name.trim().is_empty() {
+        format!(
+            "{}@{},{}",
+            field.control_type, field.bounds.x, field.bounds.y
+        )
+    } else {
+        format!("{}:{}", field.control_type, field.name.trim())
+    };
+    (format!("{window}|{}", key.to_ascii_lowercase()), label)
+}
+
 fn normalized_text(value: &str) -> String {
     value
         .split_whitespace()
@@ -6647,6 +6774,7 @@ fn duplicate_submission_value(
     ledger: &InputLedger,
     destination: &str,
     text: &str,
+    replace: bool,
 ) -> Option<Value> {
     let normalized = normalized_text(text);
     if let Some(record) = ledger
@@ -6660,7 +6788,12 @@ fn duplicate_submission_value(
         .pending
         .as_ref()
         .filter(|pending| {
-            pending.destination == destination && normalized_text(&pending.text) == normalized
+            pending.destination == destination
+                && normalized_text(&pending.text) == normalized
+                // Replacing an unsent draft with the same text cannot
+                // duplicate it; retrying that is how a field the application
+                // did not register gets filled again.
+                && (pending.submitted || !replace)
         })
         .map(|pending| {
             json!({
@@ -6991,17 +7124,46 @@ async fn execute_input(
             return Ok(result);
         }
     }
+    // Never join or start a call the user did not ask for: a voice channel
+    // or call button connects their microphone or camera.
+    if matches!(
+        action,
+        InputAction::Click { .. } | InputAction::DoubleClick { .. }
+    ) {
+        let clicked = input_action_context(&observation, &action, &model_action);
+        if let Some(label) = clicked.get("label").and_then(Value::as_str)
+            && crate::policy::is_call_control(label)
+            && !crate::policy::request_allows_calls(&context.active_task.lock().root_request)
+        {
+            return Err(PokError::PolicyDenied {
+                tool: "simulate_input".into(),
+                reason: format!(
+                    "{label:?} joins or starts a voice or video call, which the user did not ask for; read who is in it from the visible channel list instead"
+                ),
+            });
+        }
+    }
     let before = observation.clone();
     let action_context = input_action_context(&observation, &action, &model_action);
-    let (destination, destination_label) = destination(&observation);
-    if let InputAction::TypeText { text, .. } = &action {
+    let typed_field = model_action
+        .get("target_id")
+        .and_then(Value::as_str)
+        .and_then(|id| observation.targets.iter().find(|target| target.id == id));
+    let (destination, destination_label) = field_destination(&observation, typed_field);
+    if let InputAction::TypeText {
+        text,
+        replace_existing,
+    } = &action
+    {
         validate_browser_navigation(
             text,
             &context.task_hint.lock(),
             context.focused_control.lock().as_ref(),
         )?;
         let ledger = context.input_ledger.lock();
-        if let Some(submission) = duplicate_submission_value(&ledger, &destination, text) {
+        if let Some(submission) =
+            duplicate_submission_value(&ledger, &destination, text, *replace_existing)
+        {
             return Ok(json!({
                 "executed": false,
                 "action": model_action,
@@ -9294,6 +9456,94 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
+    async fn clicking_a_voice_channel_needs_a_request_to_join() {
+        let mut observation = scroll_observation(&[], "discord");
+        let window = observation.target.as_ref().unwrap().bounds.clone();
+        let mut channel = selection_target("Lounge (voice channel), 3 users", false, false);
+        channel.control_type = "tree item".into();
+        channel.bounds.x = window.x + 40;
+        channel.bounds.y = window.y + 40;
+        channel.click_point = Some((window.x + 90, window.y + 52));
+        observation.targets = vec![channel];
+        let platform = crate::platform::MockDesktop::new(observation.clone());
+        let temp = tempfile::tempdir().unwrap();
+        let context = mock_input_context(platform.clone(), &temp);
+        context.active_task.lock().root_request = "who is in the voice channels".into();
+        let click = InputAction::Click {
+            x: window.x + 90,
+            y: window.y + 52,
+            button: MouseButton::Left,
+        };
+        let denied = execute_input(
+            click.clone(),
+            observation.clone(),
+            &context,
+            json!({"kind": "click_target", "target_id": "Lounge (voice channel), 3 users"}),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(denied.contains("voice or video call"), "{denied}");
+        assert!(platform.actions().is_empty());
+        // Asked to join: the click goes ahead.
+        context.active_task.lock().root_request = "join the Lounge voice channel".into();
+        let _ = execute_input(
+            click,
+            observation,
+            &context,
+            json!({"kind": "click_target", "target_id": "Lounge (voice channel), 3 users"}),
+        )
+        .await;
+        assert!(!platform.actions().is_empty());
+    }
+
+    #[tokio::test]
+    async fn batch_type_steps_go_into_the_fields_they_name() {
+        let mut observation = scroll_observation(&[], "form");
+        let window = observation.target.as_ref().unwrap().bounds.clone();
+        let (left, top) = (window.x + 40, window.y + 40);
+        let mut zip = selection_target("Zip", false, true);
+        zip.control_type = "edit".into();
+        zip.id = "40".into();
+        zip.bounds.x = left;
+        zip.bounds.y = top;
+        zip.click_point = Some((left + 50, top + 12));
+        let mut length = zip.clone();
+        length.id = "59".into();
+        length.name = "Length".into();
+        length.focused = false;
+        length.bounds.y = top + 60;
+        length.click_point = Some((left + 50, top + 72));
+        observation.targets = vec![zip, length];
+        let platform = crate::platform::MockDesktop::new(observation.clone());
+        let temp = tempfile::tempdir().unwrap();
+        let context = mock_input_context(platform.clone(), &temp);
+        *context.latest_observation.lock() = Some(observation.clone());
+        let outcome = ExecuteActionBatchTool
+            .execute(
+                json!({"observation_id": observation.version.to_string(), "steps": [
+                    {"kind": "type_text", "target_id": "40", "text": "10001", "replace_existing": true},
+                    {"kind": "key", "key": "Tab"},
+                    {"kind": "type_text", "target_id": "59", "text": "9", "replace_existing": true},
+                ]}),
+                &context,
+            )
+            .await;
+        let actions = platform.actions();
+        let length_click = actions
+            .iter()
+            .position(|action| matches!(action, InputAction::Click { y, .. } if *y == top + 72));
+        let length_typed = actions
+            .iter()
+            .position(|action| matches!(action, InputAction::TypeText { text, .. } if text == "9"));
+        // The second value is typed only after its own field was focused.
+        assert!(
+            matches!((length_click, length_typed), (Some(click), Some(typed)) if click < typed),
+            "{outcome:?} {actions:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn left_clicks_on_accessible_controls_use_patterns_not_the_mouse() {
         let observation = pattern_fixture(TargetSource::Uia);
         let platform = crate::platform::MockDesktop::new(observation.clone());
@@ -10295,6 +10545,7 @@ pub(crate) mod tests {
             &ledger,
             "discord.exe|@recipient - discord",
             "hello   there",
+            true,
         )
         .unwrap();
         assert_eq!(duplicate["status"], "suppressed_duplicate");
@@ -10303,9 +10554,69 @@ pub(crate) mod tests {
                 &ledger,
                 "discord.exe|@someone-else - discord",
                 "hello there",
+                true,
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn an_unsent_draft_can_be_replaced_but_not_typed_twice() {
+        let mut ledger = InputLedger {
+            pending: Some(PendingSubmission {
+                text: "10001".into(),
+                destination: "example_pos.exe|examplepos|edit@120,340".into(),
+                destination_label: "Example POS".into(),
+                submitted: false,
+            }),
+            verified: Vec::new(),
+        };
+        let field = "example_pos.exe|examplepos|edit@120,340";
+        // Retyping the same value over it (replace) is safe to retry.
+        assert!(duplicate_submission_value(&ledger, field, "10001", true).is_none());
+        // Appending it again would duplicate the text.
+        assert_eq!(
+            duplicate_submission_value(&ledger, field, "10001", false).unwrap()["status"],
+            "draft_already_typed"
+        );
+        // Another field of the same form is another destination.
+        assert!(
+            duplicate_submission_value(
+                &ledger,
+                "example_pos.exe|examplepos|edit@120,380",
+                "10001",
+                false
+            )
+            .is_none()
+        );
+        // Once sent, even a replace waits for verification.
+        ledger.pending.as_mut().unwrap().submitted = true;
+        assert_eq!(
+            duplicate_submission_value(&ledger, field, "10001", true).unwrap()["status"],
+            "verification_required"
+        );
+    }
+
+    #[test]
+    fn typed_text_destinations_tell_form_fields_apart() {
+        let mut observation = scroll_observation(&[], "form");
+        let mut zip = selection_target("", false, true);
+        zip.control_type = "edit".into();
+        let mut city = zip.clone();
+        city.focused = false;
+        city.bounds.y += 40;
+        observation.targets = vec![zip.clone(), city.clone()];
+        let (zip_field, _) = field_destination(&observation, Some(&zip));
+        let (city_field, _) = field_destination(&observation, Some(&city));
+        assert_ne!(zip_field, city_field);
+        // Without a target id, the focused field is the destination.
+        assert_eq!(field_destination(&observation, None).0, zip_field);
+        // A labeled field keeps its identity when it grows or moves.
+        let mut message = zip.clone();
+        message.name = "Message #general".into();
+        let (before, _) = field_destination(&observation, Some(&message));
+        message.bounds.y -= 60;
+        assert_eq!(field_destination(&observation, Some(&message)).0, before);
     }
 
     #[test]

@@ -43,6 +43,8 @@ type DecisionRouterStatus = {
   has_api_key: boolean;
   laya: LayaRuntimeStatus;
   judge: JudgeRuntimeStatus;
+  training_log?: boolean;
+  training_dir?: string;
 };
 type MemoryRecord = {
   id: string; source: string; text: string; approved: boolean; enabled: boolean; created_at: string;
@@ -441,13 +443,52 @@ function TaskProgressPanel({ task }: { task: TaskProgress }) {
   );
 }
 
+/** A reasoning level as the user sees it. */
+export function reasoningLabel(effort: string) {
+  const labels: Record<string, string> = {
+    off: "Off", on: "On", none: "None", minimal: "Minimal", low: "Low",
+    medium: "Medium", high: "High", xhigh: "Extra high", max: "Max",
+  };
+  return labels[effort] ?? effort.charAt(0).toUpperCase() + effort.slice(1);
+}
+
+/** Router decisions the user should see in the chat: choosing an action. */
+function isActionRouting(purpose: string | undefined) {
+  return (purpose ?? "next_action") === "next_action" || purpose === "fast_actions";
+}
+
+/** A candidate description ('"Display" (List Item, enabled, …)') as a short target: “Display” (list item). */
+export function quotedTarget(description: string | undefined) {
+  if (!description) return "a target";
+  const label = description.match(/^"([^"]*)"/)?.[1] ?? description;
+  const role = description.match(/\(([^,)]+)/)?.[1]?.trim().toLowerCase();
+  const short = label.length > 60 ? `${label.slice(0, 59)}…` : label;
+  return `“${short}”${role ? ` (${role})` : ""}`;
+}
+
+/** Why a fast-action pick was handed back, in plain words. */
+function routerHandBackReason(reason: string | undefined) {
+  switch (reason) {
+    case "contradicted_by_local_evidence": return "Its pick disagreed with the labels on screen";
+    case "below_threshold": return "Not confident enough";
+    case "no_candidate": return "No suitable option on screen";
+    case "model_mismatch": return "Answer came from a different router model";
+    default: return (reason ?? "Not eligible").replaceAll("_", " ");
+  }
+}
+
 function ModelPicker({ models, value, onChange, disabled }: {
   models: string[]; value: string; onChange: (model: string) => void; disabled?: boolean;
 }) {
   const [query, setQuery] = useState(value);
   const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
   const ref = useRef<HTMLDivElement>(null);
-  const filtered = query.trim()
+  const listRef = useRef<HTMLUListElement>(null);
+  // The full list while the field still shows the current model; a filtered
+  // one once the user types something else.
+  const searching = query.trim() !== "" && query !== value;
+  const filtered = searching
     ? models.filter((item) => item.toLowerCase().includes(query.toLowerCase())).slice(0, 100)
     : models.slice(0, 100);
   useEffect(() => { setQuery(value); }, [value]);
@@ -458,6 +499,16 @@ function ModelPicker({ models, value, onChange, disabled }: {
     window.addEventListener("keydown", escape);
     return () => { window.removeEventListener("mousedown", close); window.removeEventListener("keydown", escape); };
   }, []);
+  // Start on the current model when opening, and on the best match while searching.
+  useEffect(() => {
+    if (!open) return;
+    const current = searching ? -1 : filtered.indexOf(value);
+    setActive(Math.max(current, 0));
+  }, [open, query]);
+  useEffect(() => {
+    listRef.current?.querySelector<HTMLElement>(`[data-index="${active}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [active, open]);
+  const choose = (item: string) => { onChange(item); setQuery(item); setOpen(false); };
   return (
     <div className="model-picker" ref={ref}>
       <input
@@ -465,27 +516,37 @@ function ModelPicker({ models, value, onChange, disabled }: {
         aria-label="Model"
         aria-expanded={open}
         aria-controls="model-picker-list"
+        aria-activedescendant={open && filtered[active] ? `model-option-${active}` : undefined}
+        aria-autocomplete="list"
         className="composer-model"
         value={query}
         disabled={disabled}
         placeholder={value || "Search models…"}
-        onFocus={() => setOpen(true)}
+        onFocus={(event) => { event.currentTarget.select(); setOpen(true); }}
         onChange={(event) => { setQuery(event.target.value); setOpen(true); }}
         onKeyDown={(event) => {
-          if (event.key === "Enter" && open && filtered.length > 0) {
+          if (event.key === "ArrowDown" || event.key === "ArrowUp") {
             event.preventDefault();
-            onChange(filtered[0]);
-            setQuery(filtered[0]);
-            setOpen(false);
+            if (!open) { setOpen(true); return; }
+            const step = event.key === "ArrowDown" ? 1 : -1;
+            setActive((index) => filtered.length ? (index + step + filtered.length) % filtered.length : 0);
+          } else if (event.key === "Enter" && open && filtered[active]) {
+            event.preventDefault();
+            choose(filtered[active]);
+          } else if (event.key === "Escape") {
+            setQuery(value);
           }
         }}
       />
       {open && (
-        <ul id="model-picker-list" role="listbox" aria-label="Model options" className="model-picker-list">
+        <ul id="model-picker-list" ref={listRef} role="listbox" aria-label="Model options" className="model-picker-list">
           {filtered.length === 0 && <li className="model-picker-empty">No matching models</li>}
-          {filtered.map((item) => (
-            <li key={item} role="option" aria-selected={item === value} className={item === value ? "selected" : ""}
-              onMouseDown={(event) => { event.preventDefault(); onChange(item); setQuery(item); setOpen(false); }}
+          {filtered.map((item, index) => (
+            <li key={item} id={`model-option-${index}`} data-index={index} role="option" aria-selected={index === active}
+              className={[index === active ? "active" : "", item === value ? "selected" : ""].filter(Boolean).join(" ")}
+              title={item}
+              onMouseEnter={() => setActive(index)}
+              onMouseDown={(event) => { event.preventDefault(); choose(item); }}
             >{item}</li>
           ))}
         </ul>
@@ -998,6 +1059,16 @@ export function App() {
     }
   };
 
+  const handleRouterTrainingChange = async (enabled: boolean) => {
+    try {
+      const next = await invoke<DecisionRouterStatus>("set_router_training", { enabled });
+      setDecisionRouter(next);
+      try { localStorage.setItem("pok_router_training", enabled ? "on" : "off"); } catch { /* storage unavailable */ }
+    } catch (error) {
+      setDecisionRouterError(compactValue(String(error), 240) ?? "Could not change the training log");
+    }
+  };
+
   const handleJudgeEnabledChange = async (enabled: boolean) => {
     if (busy || installingJudge || togglingJudge) return;
     setTogglingJudge(true);
@@ -1225,7 +1296,13 @@ export function App() {
   useEffect(() => {
     checkApiStatus();
     invoke<string[]>("list_providers").then(setProviders).catch(() => undefined);
-    invoke<DecisionRouterStatus>("get_decision_router_status").then((next) => {
+    invoke<DecisionRouterStatus>("get_decision_router_status").then(async (next) => {
+      // The training log is a remembered, opt-in choice: re-apply it.
+      let savedTraining = false;
+      try { savedTraining = localStorage.getItem("pok_router_training") === "on"; } catch { /* storage unavailable */ }
+      if (savedTraining !== Boolean(next.training_log)) {
+        next = await invoke<DecisionRouterStatus>("set_router_training", { enabled: savedTraining }).catch(() => next);
+      }
       setDecisionRouter(next);
       setJevEnabled(next.enabled);
       setDecisionRouterBackend(next.enabled ? next.backend : "off");
@@ -1326,26 +1403,30 @@ export function App() {
           const callId = `jev-${payload.purpose ?? "decision"}-${payload.turn ?? 0}`;
           setJevRuntimeState("evaluating");
           setJevWarning(null);
-          setLiveActivity({ phase: "thinking", label: `${activeRouterName()} is evaluating options`, detail: `${payload.candidate_count ?? 0} bounded candidates`, startedAt: Date.now() });
+          const choosing = payload.purpose === "fast_actions"
+            ? `${activeRouterName()} is choosing what to click`
+            : `${activeRouterName()} is evaluating options`;
+          const optionCount = `${payload.candidate_count ?? 0} ${payload.purpose === "fast_actions" ? "on-screen options" : "bounded candidates"}`;
+          setLiveActivity({ phase: "thinking", label: choosing, detail: optionCount, startedAt: Date.now() });
           // Only action routing gets a chat row; optional-context/intent
           // routing is plumbing that stays out of the conversation feed.
-          if ((payload.purpose ?? "decision") !== "next_action") break;
+          if (!isActionRouting(payload.purpose)) break;
           setMessages((previous) => [...previous, {
             id: `${callId}-${Date.now()}`,
             sender: "system",
             type: "activity",
-            text: `${activeRouterName()} is evaluating options`,
+            text: choosing,
             timestamp: new Date(),
             activityTool: "jev_decision",
             activityCallId: callId,
-            activityLabel: `${activeRouterName()} is evaluating options`,
-            activityDetail: `${payload.candidate_count ?? 0} bounded candidates`,
+            activityLabel: choosing,
+            activityDetail: optionCount,
             activityStatus: "running",
           }]);
           break;
         }
         case "decision_router_cache_hit":
-          setJevMetrics((current) => ({ ...current, cached: current.cached + 1, last: "Unchanged state · no repeated JEV request" }));
+          setJevMetrics((current) => ({ ...current, cached: current.cached + 1, last: `Unchanged state · no repeated ${activeRouterName()} request` }));
           setJevRuntimeState("ready");
           setJevWarning(null);
           break;
@@ -1367,12 +1448,16 @@ export function App() {
             // when the router keeps the local ranking, nothing was declined
             // and no chat row is needed. Only announce when it added context.
             const purpose = payload.purpose ?? "next_action";
-            if (purpose !== "next_action" && !payload.eligible) return previous;
+            if (!isActionRouting(purpose) && !payload.eligible) return previous;
             const callId = `jev-${purpose}-${payload.turn ?? 0}`;
             const index = [...previous].reverse().findIndex((message) => message.activityTool === "jev_decision" && message.activityCallId === callId && message.activityStatus === "running");
             const routerName = activeRouterName();
             const isTerminal = payload.candidate_id === "jev_done" || payload.candidate_id === "jev_blocked";
-            const label = payload.eligible
+            const label = purpose === "fast_actions"
+              ? payload.eligible
+                ? `${routerName} picked ${quotedTarget(payload.description ?? payload.tool)}`
+                : `${routerName} handed this step back to the main model`
+              : payload.eligible
               ? isTerminal
                 ? payload.candidate_id === "jev_done" ? `${routerName} finished (evidence sufficient)` : `${routerName} blocked — no safe action`
                 : payload.tool === "focus_evidence"
@@ -1384,7 +1469,11 @@ export function App() {
               : purpose === "next_action"
                 ? `${routerName} deferred to the main model`
                 : `${routerName} used local ranking`;
-            const detail = payload.eligible
+            const detail = purpose === "fast_actions"
+              ? payload.eligible
+                ? `${Math.round((payload.target_probability ?? payload.selected_probability ?? 0) * 100)}% sure · ${payload.elapsed_ms ?? 0} ms`
+                : `${routerHandBackReason(payload.rejection_reason)} · ${payload.elapsed_ms ?? 0} ms`
+              : payload.eligible
               ? purpose === "next_action"
                 ? `${payload.description ?? payload.tool ?? payload.candidate_id ?? "Candidate"} · op ${Math.round((payload.operation_probability ?? payload.selected_probability ?? 0) * 100)}% · target ${Math.round((payload.target_probability ?? payload.selected_probability ?? 0) * 100)}%${payload.operation_confidence == null ? "" : ` · ${Math.round(payload.operation_confidence * 100)}% confidence`}`
                 : `${payload.description ?? payload.candidate_id ?? "context"}`
@@ -2585,6 +2674,25 @@ export function App() {
               {decisionRouter?.judge.running ? `✓ Judge ready on ${decisionRouter.judge.device ?? "local device"}. ${decisionRouter.judge.device_reason ?? ""}` : decisionRouter?.judge.detail}
             </small>
             {install?.label.includes("judge") && <InstallProgress label={install.label} detail={install.detail} />}
+            <hr />
+            <strong>Training data (opt-in)</strong>
+            <small>
+              Save each on-screen question the router is asked, with the answer that later proved right, to build a
+              training set for a System 1 model. Files stay on this computer. Password managers, banking, mail, Discord
+              and Example POS are never recorded, nor are emails or long numbers.
+            </small>
+            <label style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "8px" }}>
+              <input
+                type="checkbox"
+                aria-label="Save router questions for training"
+                checked={decisionRouter?.training_log ?? false}
+                onChange={(event) => void handleRouterTrainingChange(event.target.checked)}
+              />
+              Save router questions for training
+            </label>
+            {decisionRouter?.training_log && decisionRouter.training_dir && (
+              <small role="status">Saving to {decisionRouter.training_dir} (one file per conversation). Combine them with scripts/build_router_dataset.py.</small>
+            )}
             {decisionRouterError && <p className="error-text">{decisionRouterError}</p>}
           </div>
         </div>
@@ -2629,9 +2737,9 @@ export function App() {
             </label>
             <label>Reasoning effort
               <select value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value)}>
-                <option value="auto">Auto / provider default{modelCapabilities?.reasoning_default ? ` (${modelCapabilities.reasoning_default})` : ""}</option>
-                {(modelCapabilities?.reasoning_efforts ?? []).map((effort) => <option key={effort} value={effort}>{effort}</option>)}
-                {manualCapabilityOverride && ["none", "minimal", "low", "medium", "high", "xhigh"].filter((effort) => !(modelCapabilities?.reasoning_efforts ?? []).includes(effort)).map((effort) => <option key={effort} value={effort}>{effort} (override)</option>)}
+                <option value="auto">Auto / provider default{modelCapabilities?.reasoning_default ? ` (${reasoningLabel(modelCapabilities.reasoning_default)})` : ""}</option>
+                {(modelCapabilities?.reasoning_efforts ?? []).map((effort) => <option key={effort} value={effort}>{reasoningLabel(effort)}</option>)}
+                {manualCapabilityOverride && ["off", "on", "none", "minimal", "low", "medium", "high", "xhigh", "max"].filter((effort) => !(modelCapabilities?.reasoning_efforts ?? []).includes(effort)).map((effort) => <option key={effort} value={effort}>{reasoningLabel(effort)} (override)</option>)}
               </select>
             </label>
             <label>Temperature (blank = auto)
@@ -2832,6 +2940,23 @@ export function App() {
         
         <div className="actions">
           <ModelPicker models={models} value={model} onChange={(next) => void handleModelChange(next)} disabled={busy || modelTransitioning} />
+          {(modelCapabilities?.reasoning_efforts.length ?? 0) > 0 && (
+            <select
+              aria-label="Reasoning level"
+              className="composer-reasoning"
+              title="How much the model thinks before answering. Levels come from the provider's model catalog."
+              disabled={busy}
+              value={reasoningEffort}
+              onChange={(event) => setReasoningEffort(event.target.value)}
+            >
+              <option value="auto">
+                Reasoning: {modelCapabilities?.reasoning_default ? `default (${reasoningLabel(modelCapabilities.reasoning_default)})` : "auto"}
+              </option>
+              {modelCapabilities!.reasoning_efforts.map((effort) => (
+                <option key={effort} value={effort}>Reasoning: {reasoningLabel(effort)}</option>
+              ))}
+            </select>
+          )}
           <select aria-label="Permission mode" className="composer-policy" disabled={busy} value={policyMode} onChange={e => setPolicyMode(e.target.value as "interactive" | "autonomous")}><option value="interactive">Ask permission</option><option value="autonomous">Autonomous</option></select>
           <select aria-label="Decision router" className={`jev-toggle jev-${jevRuntimeState} ${jevEnabled ? "active" : ""}`} disabled={busy} value={decisionRouterBackend} onChange={(event) => void handleRouterBackendChange(event.target.value as DecisionRouterBackend)}>
             <option value="off">Router Off</option>
@@ -2839,7 +2964,7 @@ export function App() {
             <option value="laya" disabled={!decisionRouter?.laya.installed}>Laya{decisionRouter?.laya.phase === "loading" ? " · Loading…" : decisionRouter?.laya.running ? ` · ${decisionRouter.laya.device ?? "Ready"}` : ""}</option>
           </select>
           {jevEnabled && jevWarning && (
-            <span className="jev-warning" role="status" title="No suitable bounded candidate was selected. The main model continued normally and JEV remains enabled.">
+            <span className="jev-warning" role="status" title={`No suitable bounded candidate was selected. The main model continued normally and ${activeRouterName()} remains enabled.`}>
               ⚠ {jevWarning}
             </span>
           )}

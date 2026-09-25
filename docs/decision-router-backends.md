@@ -528,6 +528,58 @@ path today. This needs live-capture, multi-step validation — and probably a
 re-observe/expand fallback design — before it's safe to ship, not just a
 same-day synthetic pass.
 
+## Collecting training data from real use
+
+Fine-tuning a Laya-type model on the harness's own questions is the most
+direct way to improve System 1 decisions: the Laya authors report the base
+checkpoint at ~0.36 on a new question type and ~0.77 after fine-tuning on
+in-domain questions. The harness can build that dataset while you use it.
+
+Turn on **Settings > Decision router > Training data** (or
+`decision_router.training_log = true`). Each conversation then appends to
+`<data_dir>/router-training/<session>.jsonl`:
+
+- `question` records: the exact `/v1/systemone` body in Laya's typed shape,
+  `{state, questions}`, after the router's outbound sanitization. Real router
+  questions include the backend's answers. Decisions local grounding made are
+  recorded as the question the router *would* have been asked
+  (`source: "grounding"`).
+- `label` records: the proven answer for one question of a record:
+  - `grounding`: a quoted `done_when` checked against screen evidence;
+  - `quoted_label_match`: the target a quoted hint named exactly;
+  - `local_evidence`: the grounded best target when a router pick
+    contradicted clear label evidence.
+
+Only on-screen decisions are recorded (target picks, completion checks,
+branch choices), not intent or context routing, which carry prompts and
+history. Windows matching `training_exclude` (title or process) and any
+record containing an email address or a run of six or more digits are
+skipped. Nothing leaves the machine.
+
+Build a dataset from any number of sessions and machines:
+
+```bash
+python scripts/build_router_dataset.py --output dataset/ \
+  --input "%LOCALAPPDATA%/POK-Ai/POK-Ai/data/router-training" --input other-pc/
+```
+
+To distill a stronger backend into Laya, collect with that backend selected
+(for example JEV, whose probabilities are calibrated) and add
+`--teacher jev --teacher-min 0.9`: where no proven label exists, the
+teacher's confident answer becomes a soft target (its full probability
+spread). Proven labels always take precedence, so the student can still
+surpass the teacher where grounding knows better.
+
+It keeps questions with a proven label that is one of the offered options,
+drops duplicates, splits train/test by conversation, and writes
+`{id, workflow, state, questions, gold}` rows (JSON strings, one-hot `gold`
+probabilities), the format of `LocalLLaMA/typed-decisions`. Train with the
+Laya repository's `notebooks/laya_finetune_typed_decisions_2xT4_kaggle.ipynb`
+(load with `datasets.load_dataset("json", ...)`), mixing in the public set so
+general skills are kept. Compare base and fine-tuned checkpoints with
+`pok-ai router-bench` on `diagnostics/router_question_suite.json` and the live
+bench before switching `[decision_router.laya]` to the new model folder.
+
 ## Swapping the installed Laya checkpoint
 
 `scripts/setup-laya.ps1` takes a `-Repo` parameter (default

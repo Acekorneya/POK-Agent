@@ -122,6 +122,10 @@ enum Commands {
     Models {
         #[arg(long)]
         provider: Option<String>,
+        /// Also print each model's reported capabilities: vision, tool use,
+        /// and reasoning levels with their default.
+        #[arg(long)]
+        details: bool,
     },
     Run {
         prompt: String,
@@ -372,9 +376,35 @@ async fn main() -> anyhow::Result<()> {
                 )?;
             }
         }
-        Commands::Models { provider } => {
-            for model in brain(&config, provider.as_deref())?.list_models().await? {
-                println!("{model}");
+        Commands::Models { provider, details } => {
+            let brain = brain(&config, provider.as_deref())?;
+            if details {
+                let flag = |value: Option<bool>| match value {
+                    Some(true) => "yes",
+                    Some(false) => "no",
+                    None => "?",
+                };
+                for model in brain.model_info().await? {
+                    let reasoning = if model.reasoning_efforts.is_empty() {
+                        flag(model.reasoning).to_owned()
+                    } else {
+                        format!(
+                            "{} (default {})",
+                            model.reasoning_efforts.join("/"),
+                            model.reasoning_default.as_deref().unwrap_or("provider")
+                        )
+                    };
+                    println!(
+                        "{}\tvision {}\ttools {}\treasoning {reasoning}",
+                        model.id,
+                        flag(model.vision),
+                        flag(model.tool_use)
+                    );
+                }
+            } else {
+                for model in brain.list_models().await? {
+                    println!("{model}");
+                }
             }
         }
         Commands::Run {
@@ -530,14 +560,7 @@ async fn main() -> anyhow::Result<()> {
                 command_manager: Arc::new(pok_ai_core::commands::CommandManager::new(artifact_dir)),
                 current_tool_call_id: Default::default(),
             };
-            let router_name = match decision_router_config.backend {
-                pok_ai_core::config::DecisionRouterBackend::Laya => "Laya",
-                pok_ai_core::config::DecisionRouterBackend::LlmChoice => "LLM choice",
-                pok_ai_core::config::DecisionRouterBackend::Kev => "kev",
-                pok_ai_core::config::DecisionRouterBackend::Jev => "JEV",
-                pok_ai_core::config::DecisionRouterBackend::Off => "Router",
-            }
-            .to_string();
+            let router_name = decision_router_config.backend.display_name().to_string();
             let mut session = Session::new(
                 brain,
                 Arc::new(std::mem::take(&mut tools)),

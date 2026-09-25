@@ -409,6 +409,8 @@ pub struct Session {
     active_tool_groups: BTreeSet<String>,
     decision_router: Option<Arc<dyn DecisionRouter>>,
     decision_router_config: Option<crate::config::DecisionRouterConfig>,
+    /// Opt-in log of router questions and proven answers for training.
+    training: Option<Arc<crate::router_training::TrainingRecorder>>,
     decision_router_enabled: bool,
     decision_router_backend: crate::config::DecisionRouterBackend,
     decision_router_failures: u8,
@@ -1156,6 +1158,9 @@ const FAST_MAX_INTERRUPT_ACTIONS: u8 = 3;
 /// state, so it uses the low-stakes tier from the TypeSafe confidence
 /// guidance (act from 0.5) instead of the click gate.
 const FAST_SCROLL_MIN_PROBABILITY: f64 = 0.5;
+/// An interrupt rule the fast model judged true ends or redirects the whole
+/// run, so it needs stronger evidence than a completion check.
+const FAST_INTERRUPT_MIN_PROBABILITY: f64 = 0.8;
 
 /// Delegated operations that only move the view.
 fn is_read_only_fast_tool(tool: &str) -> bool {
@@ -1486,6 +1491,93 @@ fn unambiguous_label_match(candidates: &[DecisionCandidate]) -> Option<&Decision
 /// Target gate for a delegated pick. When every candidate shares one
 /// operation, the operation stage is forced and only target certainty is a
 /// real signal; otherwise the ordinary combined gate applies.
+/// Accept plan shapes models commonly produce for nested steps, which the
+/// schema normalizer does not reach inside the recursive `then`/`branches`:
+/// lists wrapped as `{"item": ...}` (an XML-style serialization), and a step
+/// that only reads values, without its own `goal` or `done_when`.
+fn repair_fast_plan(node: &mut Value, top_level: bool) {
+    unwrap_item_lists(node);
+    let Some(object) = node.as_object_mut() else {
+        return;
+    };
+    if !top_level {
+        let first_read = object
+            .get("read")
+            .and_then(Value::as_array)
+            .and_then(|reads| reads.first())
+            .and_then(|read| read.get("label"))
+            .and_then(Value::as_str)
+            .map(|label| {
+                let label = label.trim();
+                if label.starts_with('"') {
+                    label.to_owned()
+                } else {
+                    format!("\"{label}\"")
+                }
+            });
+        let hint = object
+            .get("target_hint")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .filter(|hint| !hint.trim().is_empty());
+        if !object.contains_key("goal") {
+            let goal = match (&first_read, &hint) {
+                (_, Some(hint)) => format!("act on {hint}"),
+                (Some(_), None) => "read the requested values".to_owned(),
+                (None, None) => String::new(),
+            };
+            if !goal.is_empty() {
+                object.insert("goal".into(), json!(goal));
+            }
+        }
+        if !object.contains_key("done_when")
+            && let Some(label) = first_read
+        {
+            object.insert("done_when".into(), json!(format!("{label} is visible")));
+        }
+    }
+    for key in ["then", "branches"] {
+        if let Some(children) = object.get_mut(key).and_then(Value::as_array_mut) {
+            for child in children {
+                if key == "branches" {
+                    if let Some(steps) = child.get_mut("then").and_then(Value::as_array_mut) {
+                        for step in steps {
+                            repair_fast_plan(step, false);
+                        }
+                    }
+                } else {
+                    repair_fast_plan(child, false);
+                }
+            }
+        }
+    }
+}
+
+/// Replace every `{"item": x}` object with a list (`x` itself when it is a
+/// list, otherwise `[x]`). No fast-actions field is named `item`.
+fn unwrap_item_lists(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            if object.len() == 1
+                && let Some(item) = object.get_mut("item")
+            {
+                let item = item.take();
+                *value = match item {
+                    Value::Array(items) => Value::Array(items),
+                    other => Value::Array(vec![other]),
+                };
+                unwrap_item_lists(value);
+                return;
+            }
+            for child in object.values_mut() {
+                unwrap_item_lists(child);
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(unwrap_item_lists),
+        _ => {}
+    }
+}
+
 fn fast_target_eligible(
     decision: &crate::decision::DecisionResult,
     config: &crate::config::DecisionRouterConfig,
@@ -2411,6 +2503,7 @@ impl Session {
             ]),
             decision_router: None,
             decision_router_config: None,
+            training: None,
             decision_router_enabled: false,
             decision_router_backend: crate::config::DecisionRouterBackend::Off,
             decision_router_failures: 0,
@@ -2632,8 +2725,10 @@ impl Session {
         };
         let delegated = self.decision_router_enabled
             && config.mode == crate::config::DecisionRouterMode::Delegated;
+        let training_log = config.training_log;
         self.decision_router = router;
         self.decision_router_config = Some(config);
+        self.set_training_log(training_log);
         if delegated
             && let Some(MessageContent::Text { text }) = self
                 .messages
@@ -2645,6 +2740,42 @@ impl Session {
 - commit_required: the step that completes the request (save, send, submit, ...) is yours to confirm; the result gives the exact tool and arguments, so confirm it with that one call.\n- Typing, form entry, and consequential commits always stay with you.");
         }
         self
+    }
+
+    /// Turn the opt-in router training log on or off for this conversation,
+    /// from the next question on. Files go to
+    /// `<data_dir>/router-training/<session>.jsonl`.
+    pub fn set_training_log(&mut self, enabled: bool) {
+        if let Some(config) = self.decision_router_config.as_mut() {
+            config.training_log = enabled;
+        }
+        let Some(router) = self.decision_router.clone() else {
+            self.training = None;
+            return;
+        };
+        if !enabled {
+            router.set_training_recorder(None);
+            if self.training.take().is_some() {
+                let _ = self.log("router_training_log", json!({"enabled": false}));
+            }
+        } else if self.training.is_none() {
+            let excluded = self
+                .decision_router_config
+                .as_ref()
+                .map(|config| config.training_exclude.clone())
+                .unwrap_or_default();
+            let recorder = Arc::new(crate::router_training::TrainingRecorder::new(
+                &self.context.data_dir.join("router-training"),
+                self.id,
+                &excluded,
+            ));
+            router.set_training_recorder(Some(recorder.clone()));
+            let _ = self.log(
+                "router_training_log",
+                json!({"enabled": true, "file": recorder.path()}),
+            );
+            self.training = Some(recorder);
+        }
     }
 
     /// True when the primary model plans and delegates bounded action runs
@@ -2664,9 +2795,17 @@ impl Session {
         detail: impl Into<String>,
         elapsed_ms: u64,
     ) {
+        // Activity labels are written as "JEV …"; name the backend that
+        // actually answered (Laya, kev, …).
+        let mut label = label.into();
+        if let Some(rest) = label.strip_prefix("JEV ")
+            && let Some(config) = self.decision_router_config.as_ref()
+        {
+            label = format!("{} {rest}", config.backend.display_name());
+        }
         self.decision_activity.push(DecisionActivitySummary {
             purpose: purpose.into(),
-            label: label.into(),
+            label,
             detail: detail.into(),
             elapsed_ms,
             recorded_at: Utc::now().to_rfc3339(),
@@ -4625,9 +4764,10 @@ impl Session {
                 "reason": "no fast decision model is configured; continue with ordinary tools",
             }));
         }
-        let arguments = self
+        let mut arguments = self
             .tools
             .normalized_arguments("fast_actions", arguments.clone());
+        repair_fast_plan(&mut arguments, true);
         let args: FastActionsArgs = serde_json::from_value(arguments)
             .map_err(|error| PokError::Tool(format!("invalid fast_actions arguments: {error}")))?;
         let plan = FastPlan::from_args(&args)?;
@@ -4946,6 +5086,12 @@ impl Session {
     ) -> Result<Option<usize>> {
         let picked = match choice {
             Some(choice) if choice.accepted && choice.option_id == "none" => pending.otherwise,
+            Some(choice)
+                if pending.purpose == "interrupt"
+                    && choice.probability < FAST_INTERRUPT_MIN_PROBABILITY =>
+            {
+                None
+            }
             Some(choice) if choice.accepted => choice
                 .option_id
                 .strip_prefix('c')
@@ -5076,6 +5222,9 @@ impl Session {
         let mut completion: Option<crate::decision::ConditionVerdict> = None;
         let mut alternatives: Vec<Value> = Vec::new();
         let mut named_target_clicked = false;
+        // The named target was a window to switch to: in background mode that
+        // selects the agent's window without changing the screen.
+        let mut named_target_was_window = false;
         let mut fired_interrupts = HashSet::<usize>::new();
         // An interrupt rule the router matched in a fan-out answer; acted on
         // at the start of the next step.
@@ -5250,6 +5399,29 @@ impl Session {
             let unchanged_since_start = *start_evidence == evidence;
             let unchanged_since_last = last_step_evidence.as_ref() == Some(&evidence);
             last_step_evidence = Some(evidence.clone());
+            if let Some(recorder) = &self.training {
+                let window_info = observation
+                    .as_ref()
+                    .and_then(|observation| observation.foreground_window.as_ref());
+                recorder.observe_window(
+                    &format!(
+                        "{} {} {}",
+                        window_info.map_or("", |window| window.title.as_str()),
+                        browser_state
+                            .get("title")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default(),
+                        browser_state
+                            .get("url")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default(),
+                    ),
+                    window_info.map_or("", |window| window.process_name.as_str()),
+                );
+            }
+            // Set only when the quoted evidence itself decided the condition:
+            // a proven answer worth keeping as training data.
+            let mut grounding_proof = None;
             // A pending interrupt action is handled before judging completion.
             let grounded = if interrupt_hint.is_some() {
                 Some(false)
@@ -5267,7 +5439,7 @@ impl Session {
                 // that already shows it is real evidence.
                 Some(false)
             } else {
-                match crate::decision::grounded_condition(&done_when, &evidence) {
+                let proof = match crate::decision::grounded_condition(&done_when, &evidence) {
                     // The quotes are there, but the condition also asks for
                     // something they cannot show (a dialog closed, a folder
                     // opened): that part needs a judgment.
@@ -5275,8 +5447,21 @@ impl Session {
                         None
                     }
                     grounded => grounded,
-                }
+                };
+                grounding_proof = proof;
+                proof
             };
+            if let (Some(recorder), Some(satisfied)) = (&self.training, grounding_proof)
+                && let Some(body) =
+                    router.completion_training_body(&goal, &done_when, &condition_state)
+            {
+                recorder.question("grounding", &body, None);
+                recorder.label(
+                    "satisfied",
+                    if satisfied { "yes" } else { "no" },
+                    "grounding",
+                );
+            }
             let verdict = if let Some(satisfied) = grounded {
                 increment_metric(metrics, "fast_actions_grounded_checks", 1);
                 Ok(crate::decision::ConditionVerdict {
@@ -5351,7 +5536,11 @@ impl Session {
             if named_target_clicked && interrupt_hint.is_none() {
                 settle_interrupt!();
                 settle_completion!();
-                if unchanged_since_last {
+                if named_target_was_window {
+                    status = "unverified";
+                    reason =
+                        Some("switched to the window you named; capture it to continue".into());
+                } else if unchanged_since_last {
                     // Say so plainly: a click that changed nothing needs a
                     // different approach, not another identical click.
                     status = "stalled";
@@ -5566,6 +5755,30 @@ impl Session {
                 // nothing else comes close; asking the router would only add a
                 // chance to override an exact grounding match.
                 increment_metric(metrics, "fast_actions_local_matches", 1);
+                if let Some(recorder) = &self.training
+                    && let Some(body) = router.training_body(DecisionRequest {
+                        purpose: DecisionPurpose::NextAction,
+                        task: goal.clone(),
+                        current_step: if hint.is_empty() {
+                            done_when.clone()
+                        } else {
+                            hint.clone()
+                        },
+                        candidates: candidates.clone(),
+                        state: json!({
+                            "window": window,
+                            "browser": browser_state,
+                            "last_action": steps.last(),
+                            "previous_outcome": self.continuity.current.as_ref().map(|state| &state.outcome),
+                            "state_revision": self.continuity.state_revision,
+                        }),
+                    })
+                {
+                    let operation = crate::decision::candidate_operation(matched);
+                    recorder.question("grounding", &body, None);
+                    recorder.label("operation", &operation, "quoted_label_match");
+                    recorder.label(&format!("target_{operation}"), &matched.id, "quoted_label_match");
+                }
                 self.log(
                     "fast_actions_local_match",
                     json!({
@@ -5625,6 +5838,12 @@ impl Session {
                     candidates: candidates.clone(),
                     state: Value::Null,
                 };
+                // Shown live in the dashboard ("Laya is evaluating options").
+                self.emit(AgentEvent::DecisionRouterStarted {
+                    turn,
+                    purpose: "fast_actions".into(),
+                    candidate_count: candidates.len(),
+                });
                 let fan_completion = std::mem::take(&mut deferred_completion);
                 let fan_interrupt = deferred_interrupt.take();
                 let decision = if fan_completion || fan_interrupt.is_some() {
@@ -5758,6 +5977,58 @@ impl Session {
                         "elapsed_ms": pick_started.elapsed().as_millis(),
                     }),
                 )?;
+                // The pick disagreed with clear label evidence: the grounded
+                // best candidate is the answer the router should have given.
+                if contradicted
+                    && let Some(recorder) = &self.training
+                    && let Some(best) = candidates
+                        .iter()
+                        .max_by(|left, right| left.local_score.total_cmp(&right.local_score))
+                {
+                    let operation = crate::decision::candidate_operation(best);
+                    recorder.label("operation", &operation, "local_evidence");
+                    recorder.label(&format!("target_{operation}"), &best.id, "local_evidence");
+                }
+                let mut router_alternatives = decision
+                    .probabilities
+                    .iter()
+                    .map(|(id, score)| (id.clone(), *score))
+                    .collect::<Vec<_>>();
+                router_alternatives.sort_by(|left, right| right.1.total_cmp(&left.1));
+                router_alternatives.truncate(3);
+                self.emit(AgentEvent::DecisionRouterEvaluated {
+                    turn,
+                    purpose: "fast_actions".into(),
+                    candidate_count: candidates.len(),
+                    candidate_id: decision.candidate_id.clone(),
+                    tool: selected.map(|candidate| candidate.tool.clone()),
+                    description: selected.map(|candidate| {
+                        crate::decision::bounded_text(&candidate.description, 200)
+                    }),
+                    selected_probability: decision.selected_probability,
+                    confidence: decision.confidence,
+                    operation_probability: decision.operation_probability,
+                    target_probability: decision.target_probability,
+                    operation_confidence: decision.operation_confidence,
+                    target_confidence: decision.target_confidence,
+                    eligible,
+                    rejection_reason: (!eligible).then(|| {
+                        if selected.is_none() {
+                            "no_candidate"
+                        } else if decision.model != config.active_model() {
+                            "model_mismatch"
+                        } else if contradicted {
+                            "contradicted_by_local_evidence"
+                        } else {
+                            "below_threshold"
+                        }
+                        .to_owned()
+                    }),
+                    probability_threshold: config.min_selected_probability,
+                    confidence_threshold: None,
+                    alternatives: router_alternatives,
+                    elapsed_ms: pick_started.elapsed().as_millis() as u64,
+                });
                 // With a judge configured it reviews every router pick, not
                 // only uncertain ones: the bench found local pickers
                 // confidently wrong, so the judge acts as a veto as well as a
@@ -5920,6 +6191,7 @@ impl Session {
             if picked_named_target {
                 if ok && feedback.outcome != "failed" {
                     named_target_clicked = true;
+                    named_target_was_window = call.name == "activate_window";
                 } else {
                     // The planner's exact target did not take the click; say
                     // so instead of letting the run drift to other targets.
@@ -6867,16 +7139,17 @@ impl Session {
         let model_reasoning_efforts = model_info
             .map(|model| model.reasoning_efforts.clone())
             .unwrap_or_default();
-        self.bounded_reasoning_effort = if model_reasoning_efforts
-            .iter()
-            .any(|effort| effort == "none")
-        {
-            Some("none".into())
-        } else if model_reasoning_efforts.iter().any(|effort| effort == "low") {
-            Some("low".into())
-        } else {
-            self.reasoning_effort.clone()
-        };
+        // Bounded helper calls (summaries, curation) use the least reasoning
+        // the model offers.
+        self.bounded_reasoning_effort = ["none", "off", "minimal", "low"]
+            .into_iter()
+            .find(|cheapest| {
+                model_reasoning_efforts
+                    .iter()
+                    .any(|effort| effort == cheapest)
+            })
+            .map(str::to_owned)
+            .or_else(|| self.reasoning_effort.clone());
         let model_reasoning_default = model_info.and_then(|model| model.reasoning_default.clone());
         if model_reasoning == Some(true) {
             self.response_max_tokens = self.response_max_tokens.max(8_192);
@@ -13712,6 +13985,17 @@ mod tests {
                 }
                 AgentEvent::TurnStarted { turn } => format!("turn_started:{turn}"),
                 AgentEvent::ToolStarted { name, .. } => format!("tool_started:{name}"),
+                AgentEvent::DecisionRouterStarted { purpose, .. } => {
+                    format!("router_started:{purpose}")
+                }
+                AgentEvent::DecisionRouterEvaluated {
+                    purpose,
+                    rejection_reason,
+                    ..
+                } => format!(
+                    "router_evaluated:{purpose}:{}",
+                    rejection_reason.as_deref().unwrap_or("picked")
+                ),
                 _ => return,
             };
             self.events.lock().push(label);
@@ -16335,6 +16619,7 @@ mod tests {
         decided_tools: parking_lot::Mutex<Vec<Vec<String>>>,
         pick_label: Option<&'static str>,
         condition_pick: Option<&'static str>,
+        condition_probability: f64,
         condition_questions: AtomicU64,
         batched: AtomicU64,
     }
@@ -16465,6 +16750,30 @@ mod tests {
                 condition: condition.map(|(options, _)| self.condition_answer(options)),
             })
         }
+
+        fn training_body(&self, request: DecisionRequest) -> Option<Value> {
+            let criteria = request
+                .candidates
+                .iter()
+                .map(|candidate| (candidate.id.clone(), json!(candidate.description)))
+                .collect::<serde_json::Map<_, _>>();
+            Some(
+                json!({"model": "stub-router", "state": {"task": request.task},
+                "questions": {"operation": {"type": "choice"}, "target_CLICK": {"type": "choice", "criteria": criteria}}}),
+            )
+        }
+
+        fn completion_training_body(
+            &self,
+            goal: &str,
+            condition: &str,
+            _state: &Value,
+        ) -> Option<Value> {
+            Some(
+                json!({"model": "stub-router", "state": {"goal": goal, "done_when": condition},
+                "questions": {"satisfied": {"type": "choice"}}}),
+            )
+        }
     }
 
     impl FastStubRouter {
@@ -16478,8 +16787,8 @@ mod tests {
                 .map_or_else(|| "none".to_owned(), |(id, _)| id.clone());
             crate::decision::ConditionChoice {
                 option_id: picked,
-                probability: 0.9,
-                accepted: true,
+                probability: self.condition_probability,
+                accepted: self.condition_probability >= 0.6,
                 model: "stub-router".into(),
             }
         }
@@ -16701,9 +17010,41 @@ mod tests {
             decided_tools: Default::default(),
             pick_label: None,
             condition_pick: None,
+            condition_probability: 0.9,
             condition_questions: AtomicU64::new(0),
             batched: AtomicU64::new(0),
         }
+    }
+
+    #[test]
+    fn decision_activity_names_the_backend_that_answered() {
+        let mut harness = fast_harness(
+            fast_router(0, 0.99),
+            Vec::new(),
+            crate::config::DecisionRouterMode::Delegated,
+        );
+        if let Some(config) = harness.session.decision_router_config.as_mut() {
+            config.backend = crate::config::DecisionRouterBackend::Laya;
+        }
+        harness.session.record_decision_activity(
+            "context_selection",
+            "JEV selected optional context",
+            "selected",
+            40,
+        );
+        harness
+            .session
+            .record_decision_activity("fast_actions", "Fast actions done", "", 1);
+        let labels = harness
+            .session
+            .decision_activity
+            .iter()
+            .map(|activity| activity.label.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            labels,
+            ["Laya selected optional context", "Fast actions done"]
+        );
     }
 
     #[tokio::test]
@@ -16809,6 +17150,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn training_log_keeps_questions_grounding_answered_with_their_answers() {
+        let mut harness = fast_harness(
+            fast_router(1, 0.2),
+            vec![
+                fast_link("t1", "System"),
+                fast_link("t2", "Windows spotlight, dynamic images"),
+                fast_link("t3", "Home"),
+            ],
+            crate::config::DecisionRouterMode::Delegated,
+        );
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = Arc::new(crate::router_training::TrainingRecorder::new(
+            dir.path(),
+            harness.session.id,
+            &[],
+        ));
+        harness.session.training = Some(recorder.clone());
+        let mut metrics = RunMetrics::default();
+        harness
+            .session
+            .run_fast_actions(
+                1,
+                &json!({"goal": "open System", "target_hint": "\"System\"", "done_when": "\"System\" is visible"}),
+                &mut metrics,
+            )
+            .await
+            .unwrap();
+        let records = std::fs::read_to_string(recorder.path())
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        let labels = records
+            .iter()
+            .filter(|record| record["kind"] == "label")
+            .map(|record| {
+                (
+                    record["question"].as_str().unwrap().to_owned(),
+                    record["label"].as_str().unwrap().to_owned(),
+                    record["source"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect::<Vec<_>>();
+        // The quoted-label click is the answer to the target question: the
+        // option (by its request id) describing "System".
+        let target = labels
+            .iter()
+            .find(|(question, _, source)| {
+                question == "target_CLICK" && source == "quoted_label_match"
+            })
+            .unwrap_or_else(|| panic!("{labels:?}"));
+        let question = records
+            .iter()
+            .find(|record| {
+                record["kind"] == "question"
+                    && record["source"] == "grounding"
+                    && record["questions"].get("target_CLICK").is_some()
+            })
+            .unwrap();
+        let answer = question["questions"]["target_CLICK"]["criteria"][&target.1]
+            .as_str()
+            .unwrap();
+        assert!(
+            answer.contains("System") && !answer.contains("spotlight"),
+            "{answer}"
+        );
+        // ...and the grounded completion checks are yes/no answers.
+        assert!(
+            labels
+                .iter()
+                .any(|(question, _, source)| question == "satisfied" && source == "grounding"),
+            "{labels:?}"
+        );
+        // Every label points at a recorded question.
+        let ids = records
+            .iter()
+            .filter(|record| record["kind"] == "question")
+            .map(|record| record["id"].clone())
+            .collect::<Vec<_>>();
+        assert!(
+            records
+                .iter()
+                .filter(|record| record["kind"] == "label")
+                .all(|label| ids.contains(&label["id"]))
+        );
+    }
+
+    #[tokio::test]
     async fn fast_actions_executes_an_unambiguous_label_match_without_the_router() {
         let mut harness = fast_harness(
             fast_router(1, 0.2),
@@ -16850,6 +17279,10 @@ mod tests {
             ],
             crate::config::DecisionRouterMode::Delegated,
         );
+        let observer = Arc::new(RecordingObserver {
+            events: Mutex::new(Vec::new()),
+        });
+        harness.session.observer = Some(observer.clone());
         let mut metrics = RunMetrics::default();
         let result = harness
             .session
@@ -16860,6 +17293,18 @@ mod tests {
             )
             .await
             .unwrap();
+        // The dashboard sees the router working and why it handed back.
+        let events = observer.events.lock().clone();
+        assert!(
+            events.contains(&"router_started:fast_actions".to_owned()),
+            "{events:?}"
+        );
+        assert!(
+            events.contains(
+                &"router_evaluated:fast_actions:contradicted_by_local_evidence".to_owned()
+            ),
+            "{events:?}"
+        );
         let clicked = harness
             .clicks
             .lock()
@@ -17356,6 +17801,65 @@ mod tests {
         assert_eq!(harness.router.batched.load(Ordering::SeqCst), 1);
     }
 
+    #[test]
+    fn nested_plan_quirks_from_real_models_are_accepted() {
+        // A plan a model sent verbatim: item-wrapped lists inside nested
+        // steps, and a last step that only reads a value.
+        let mut arguments = json!({
+            "allowed_operations": ["click", "scroll"],
+            "done_when": "heading \"Advanced display\" is visible",
+            "goal": "open the System > Display page and scroll to the refresh rate setting",
+            "target_hint": "\"System\"",
+            "then": [
+                {
+                    "allowed_operations": {"item": ["click", "scroll"]},
+                    "done_when": "the refresh rate dropdown value is visible",
+                    "goal": "click the \"Advanced display\" link",
+                    "target_hint": "\"Advanced display\""
+                },
+                {"read": {"item": {"label": "\"Refresh rate\"", "name": "refresh_rate"}}}
+            ]
+        });
+        repair_fast_plan(&mut arguments, true);
+        let args: FastActionsArgs = serde_json::from_value(arguments.clone()).unwrap();
+        assert!(FastPlan::from_args(&args).is_ok());
+        let read_step = &arguments["then"][1];
+        assert_eq!(read_step["goal"], "read the requested values");
+        assert_eq!(read_step["done_when"], "\"Refresh rate\" is visible");
+        assert_eq!(read_step["read"][0]["name"], "refresh_rate");
+        assert_eq!(
+            arguments["then"][0]["allowed_operations"],
+            json!(["click", "scroll"])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_weak_interrupt_match_does_not_stop_the_run() {
+        // 0.64 clears the completion bar but not the interrupt bar: a false
+        // "a permission dialog appeared" must not throw away the whole run.
+        let mut router = fast_router(usize::MAX, 0.99);
+        router.condition_pick = Some("administrator");
+        router.condition_probability = 0.64;
+        let mut harness = fast_harness(
+            router,
+            vec![fast_link("t1", "Display"), fast_link("t2", "Sound")],
+            crate::config::DecisionRouterMode::Delegated,
+        );
+        let (result, _) = run_plan(
+            &mut harness,
+            json!({
+                "goal": "open Display settings",
+                "target_hint": "\"Display\"",
+                "done_when": "\"Advanced display\" is visible",
+                "on_interrupt": [{"when": "a permission or administrator dialog appears", "stop": true}],
+                "max_steps": 2,
+            }),
+        )
+        .await;
+        assert_ne!(result["status"], "interrupted", "{result}");
+        assert!(!harness.clicks.lock().is_empty());
+    }
+
     #[tokio::test]
     async fn a_fanned_out_interrupt_match_acts_before_the_target() {
         let mut router = fast_router(usize::MAX, 0.99);
@@ -17429,8 +17933,9 @@ mod tests {
             crate::config::DecisionRouterMode::Delegated,
         );
         if let Some(config) = harness.session.decision_router_config.as_mut() {
-            config.backend = crate::config::DecisionRouterBackend::Laya;
-            config.laya.model = "stub-router".into();
+            // Not yet measured in the live matrix, so untrusted by default.
+            config.backend = crate::config::DecisionRouterBackend::LlmChoice;
+            config.llm_choice.model = "stub-router".into();
         }
         let (result, _) = run_plan(
             &mut harness,

@@ -1,6 +1,6 @@
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Appearance, MarkdownMessage } from "./components/workspace";
 import { appendStreamDelta } from "./session-display";
@@ -183,6 +183,88 @@ describe("workspace presentation", () => {
     await userEvent.selectOptions(permissionSelect, "autonomous");
     expect(permissionSelect.value).toBe("autonomous");
     expect(screen.getByRole("option", { name: "Autonomous" }).getAttribute("value")).toBe("autonomous");
+  });
+  it("searches models with a visible highlight that follows the keyboard", async () => {
+    const previous = mock.invoke.getMockImplementation()!;
+    mock.invoke.mockImplementation((name, args) => name === "list_models"
+      ? Promise.resolve(["test-model", "alpha/fast", "nex-agi/nex-n2.5-pro:free", "beta/pro-max"])
+      : previous(name, args));
+    await renderApp();
+    const input = screen.getByRole("combobox", { name: "Model" }) as HTMLInputElement;
+    await waitFor(() => expect(mock.invoke.mock.calls.some(c => c[0] === "list_models")).toBe(true));
+    fireEvent.focus(input);
+    // Opening starts on the current model.
+    const list = () => within(screen.getByRole("listbox", { name: "Model options" }));
+    const current = await waitFor(() => list().getByRole("option", { name: "test-model" }));
+    expect(current.className).toContain("active");
+    expect(current.className).toContain("selected");
+    fireEvent.change(input, { target: { value: "pro" } });
+    const options = list().getAllByRole("option").map(option => option.textContent);
+    expect(options).toEqual(["nex-agi/nex-n2.5-pro:free", "beta/pro-max"]);
+    expect(list().getByRole("option", { name: "nex-agi/nex-n2.5-pro:free" }).className).toContain("active");
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(list().getByRole("option", { name: "beta/pro-max" }).className).toContain("active");
+    expect(input.getAttribute("aria-activedescendant")).toBe("model-option-1");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input.value).toBe("beta/pro-max");
+    expect(screen.queryByRole("listbox", { name: "Model options" })).toBeNull();
+  });
+  it("offers the model's own reasoning levels in the chat box and sends the choice", async () => {
+    const previous = mock.invoke.getMockImplementation()!;
+    mock.invoke.mockImplementation((name, args) => name === "get_model_capabilities"
+      ? Promise.resolve({ id: "test-model", reasoning: true, supported_parameters: [], reasoning_efforts: ["off", "on", "low", "high"], reasoning_default: "on" })
+      : previous(name, args));
+    await renderApp();
+    const level = await screen.findByRole("combobox", { name: "Reasoning level" }) as HTMLSelectElement;
+    expect(within(level).getAllByRole("option").map(option => option.textContent)).toEqual([
+      "Reasoning: default (On)", "Reasoning: Off", "Reasoning: On", "Reasoning: Low", "Reasoning: High",
+    ]);
+    await userEvent.selectOptions(level, "high");
+    fireEvent.change(screen.getByRole("textbox", { name: "Message the agent" }), { target: { value: "think hard" } });
+    await userEvent.click(screen.getByRole("button", { name: "Run task" }));
+    await waitFor(() => expect(mock.invoke.mock.calls.some(([name, args]) => name === "run_prompt" && (args as any).reasoningEffort === "high")).toBe(true));
+  });
+  it("remembers the opt-in router training log and shows where files go", async () => {
+    const previous = mock.invoke.getMockImplementation()!;
+    mock.invoke.mockImplementation((name, args) => name === "set_router_training"
+      ? previous("get_decision_router_status", {}).then((status: any) => ({ ...status, training_log: (args as any).enabled, training_dir: "C:/data/router-training" }))
+      : previous(name, args));
+    await renderApp();
+    const toggle = await screen.findByRole("checkbox", { name: "Save router questions for training" }) as HTMLInputElement;
+    expect(toggle.checked).toBe(false);
+    await userEvent.click(toggle);
+    await waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("set_router_training", { enabled: true }));
+    expect(localStorage.getItem("pok_router_training")).toBe("on");
+    expect(await screen.findByText(/Saving to C:\/data\/router-training/)).not.toBeNull();
+  });
+  it("hides the reasoning control for models that report no levels", async () => {
+    await renderApp();
+    await waitFor(() => expect(mock.invoke.mock.calls.some(c => c[0] === "get_model_capabilities")).toBe(true));
+    expect(screen.queryByRole("combobox", { name: "Reasoning level" })).toBeNull();
+  });
+  it("names Laya and its on-screen picks while it carries out a plan", async () => {
+    const previous = mock.invoke.getMockImplementation()!;
+    const laya = { installed: true, enabled: true, running: true, phase: "ready", detail: "ready", model: "laya", checkpoint: "", preference: "auto", device: "cuda" };
+    mock.invoke.mockImplementation((name, args) => {
+      if (name === "get_decision_router_status") return previous(name, args).then((status: any) => ({ ...status, laya }));
+      if (name === "set_decision_router_backend") return previous(name, args).then((status: any) => ({ ...status, backend: "laya", laya }));
+      return previous(name, args);
+    });
+    await renderApp();
+    const router = screen.getByRole("combobox", { name: "Decision router" }) as HTMLSelectElement;
+    await waitFor(() => expect((within(router).getByRole("option", { name: /Laya/ }) as HTMLOptionElement).disabled).toBe(false));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    await userEvent.selectOptions(router, "laya");
+    await waitFor(() => expect(router.value).toBe("laya"));
+    emit({ type: "decision_router_started", turn: 3, purpose: "fast_actions", candidate_count: 12 });
+    expect(await screen.findAllByText("Laya is choosing what to click")).not.toHaveLength(0);
+    emit({ type: "decision_router_evaluated", turn: 3, purpose: "fast_actions", eligible: true, tool: "click_target", candidate_id: "t4", description: "\"Documents\" (List Item, enabled, weakly task relevant)", selected_probability: 0.91, target_probability: 0.91, probability_threshold: 0.3, elapsed_ms: 38, alternatives: [] });
+    expect(await screen.findByText("Laya picked “Documents” (list item)")).not.toBeNull();
+    emit({ type: "decision_router_started", turn: 4, purpose: "fast_actions", candidate_count: 9 });
+    emit({ type: "decision_router_evaluated", turn: 4, purpose: "fast_actions", eligible: false, tool: "click_target", candidate_id: "t2", rejection_reason: "contradicted_by_local_evidence", selected_probability: 0.8, probability_threshold: 0.3, elapsed_ms: 41, alternatives: [] });
+    expect(await screen.findByText("Laya handed this step back to the main model")).not.toBeNull();
+    expect(screen.getByText(/Its pick disagreed with the labels on screen/)).not.toBeNull();
+    expect(document.querySelector(".console-feed")?.textContent).not.toMatch(/JEV/);
   });
   it("switches the router per conversation and shows bounded decision activity", async () => {
     await renderApp();
