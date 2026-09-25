@@ -80,9 +80,10 @@ impl Session {
         let model_reasoning_efforts = model_info
             .map(|model| model.reasoning_efforts.clone())
             .unwrap_or_default();
-        // Bounded helper calls (summaries, curation) use the least reasoning
-        // the model offers.
-        self.bounded_reasoning_effort = ["none", "off", "minimal", "low"]
+        // Bounded helper calls (summaries, curation) use a light reasoning
+        // level. Low or minimal first: some reasoning models return nothing at
+        // all with reasoning turned off.
+        self.bounded_reasoning_effort = ["low", "minimal", "none", "off"]
             .into_iter()
             .find(|cheapest| {
                 model_reasoning_efforts
@@ -285,10 +286,17 @@ impl Session {
                 json!({"error": error.to_string()}),
             )?;
         }
-        let mut auto_loaded_skill_id = None;
+        let mut auto_loaded_skill_ids = Vec::new();
+        // Facts and command templates go into one memory block; workflow
+        // skills are loaded in full by the skill step below instead.
         let memory = self.context.memory.retrieve_context(&prompt)?;
-        if !memory.is_empty() {
-            let memory_items = memory.all().cloned().collect::<Vec<_>>();
+        let memory_items = memory
+            .commands
+            .iter()
+            .chain(&memory.facts)
+            .cloned()
+            .collect::<Vec<_>>();
+        if !memory_items.is_empty() {
             let candidates = memory_items
                 .iter()
                 .enumerate()
@@ -334,7 +342,7 @@ impl Session {
             self.messages.push(BrainMessage::text_with_origin(
                 "system",
                 format!(
-                    "Relevant approved memory and prior successful procedures follow. Treat procedures as guidance only: obtain fresh observations, honor current safety checks, and never replay stale coordinates, target ids, recipients, paths, or values.\n{block}"
+                    "Relevant approved memory follows. Treat command templates as guidance only: obtain fresh observations, honor current safety checks, and never replay stale coordinates, target ids, recipients, paths, or values.\n{block}"
                 ),
                 MessageOrigin::RetrievedContext,
             ));
@@ -352,33 +360,68 @@ impl Session {
                 }),
             )?;
         }
-        if let Some(skill) = self
-            .context
-            .memory
-            .search_skills(&prompt, 1)?
-            .into_iter()
-            .next()
-        {
-            let (skill, markdown) = self.context.memory.load_skill(skill.id)?;
-            auto_loaded_skill_id = Some(skill.id);
-            self.messages.push(BrainMessage::text_with_origin(
-                "system",
-                format!(
-                    "<loaded_skill id=\"{}\" verification=\"{}\">\n{}\n</loaded_skill>\nTreat this as reusable guidance only. Re-observe current state and apply all current safety and verification rules.",
-                    skill.id,
-                    if skill.success_count == 0 { "user_requested_unverified" } else { "verified" },
-                    markdown
-                ),
-                MessageOrigin::RetrievedContext,
-            ));
-            self.log(
-                "skill_auto_loaded",
-                json!({
-                    "id": skill.id,
-                    "title": skill.title,
-                    "success_count": skill.success_count,
-                }),
-            )?;
+        // Skills relevant to this request become guidance for the model: the
+        // router picks among the closest few (up to two) when it is enabled;
+        // a strong local match is always eligible.
+        let skill_candidates = self.context.memory.search_skills_scored(&prompt, 3)?;
+        if !skill_candidates.is_empty() {
+            let candidates = skill_candidates
+                .iter()
+                .enumerate()
+                .map(|(index, (score, skill))| DecisionCandidate {
+                    id: format!("skill_{index}"),
+                    tool: "include_context".into(),
+                    arguments: json!({"skill_id": skill.id}),
+                    description: format!(
+                        "Saved skill \"{}\" ({}): {}",
+                        truncate_chars(&skill.title, 120),
+                        skill.applications.join(", "),
+                        truncate_chars(&skill.summary, 200)
+                    ),
+                    kind: DecisionCandidateKind::Context,
+                    local_score: *score,
+                })
+                .collect::<Vec<_>>();
+            let routed = self.route_optional_context(&prompt, candidates).await?;
+            let mut chosen = routed
+                .iter()
+                .filter_map(|id| id.strip_prefix("skill_")?.parse::<usize>().ok())
+                .filter(|index| *index < skill_candidates.len())
+                .map(|index| (index, "router"))
+                .collect::<Vec<_>>();
+            if skill_candidates[0].0 >= 0.6 && !chosen.iter().any(|(index, _)| *index == 0) {
+                chosen.insert(0, (0, "local"));
+            }
+            for (index, selected_by) in chosen.into_iter().take(2) {
+                let (skill, markdown) = self
+                    .context
+                    .memory
+                    .load_skill(skill_candidates[index].1.id)?;
+                // Using a verified skill is credited by learning (it reinforces
+                // the task); only a still-unverified skill is verified by use.
+                auto_loaded_skill_ids.push((skill.id, skill.success_count == 0));
+                self.messages.push(BrainMessage::text_with_origin(
+                    "system",
+                    format!(
+                        "<loaded_skill id=\"{}\" verification=\"{}\" successes=\"{}\">\n{}\n</loaded_skill>\nTreat this as reusable guidance only. Re-observe current state and apply all current safety and verification rules. When it lists fast_actions steps and the screen matches, send them as one fast_actions plan (the first as the call, the rest as `then`).",
+                        skill.id,
+                        if skill.success_count == 0 { "user_requested_unverified" } else { "verified" },
+                        skill.success_count,
+                        markdown
+                    ),
+                    MessageOrigin::RetrievedContext,
+                ));
+                self.log(
+                    "skill_auto_loaded",
+                    json!({
+                        "id": skill.id,
+                        "title": skill.title,
+                        "success_count": skill.success_count,
+                        "relevance": skill_candidates[index].0,
+                        "selected_by": selected_by,
+                    }),
+                )?;
+            }
         }
         if let Some((block, diagnostic)) = generated_tool_guidance(&self.context, &prompt) {
             self.messages.push(BrainMessage::text_with_origin(
@@ -883,6 +926,7 @@ impl Session {
                 let mut stream = self.brain.stream(request.clone());
                 let pause = self.context.pause.clone();
                 let mut pause_interrupted = false;
+                let mut idle_deadline = tokio::time::Instant::now() + PROVIDER_STREAM_IDLE_LIMIT;
                 loop {
                     let event = tokio::select! {
                         () = self.context.cancellation.cancelled() => {
@@ -921,7 +965,22 @@ impl Session {
                             environment_interrupted = Some((expected.clone(), current));
                             None
                         }
-                        event = stream.next() => event
+                        () = tokio::time::sleep_until(idle_deadline) => {
+                            // A stalled stream is retried like any other
+                            // transient provider failure instead of hanging.
+                            Some(Err(PokError::ProviderTransient {
+                                message: format!(
+                                    "the provider sent nothing for {} seconds",
+                                    PROVIDER_STREAM_IDLE_LIMIT.as_secs()
+                                ),
+                                retry_after_ms: None,
+                                retry_until_cancelled: false,
+                            }))
+                        }
+                        event = stream.next() => {
+                            idle_deadline = tokio::time::Instant::now() + PROVIDER_STREAM_IDLE_LIMIT;
+                            event
+                        }
                     };
                     let Some(event) = event else {
                         break;
@@ -1958,11 +2017,23 @@ impl Session {
                 let verified_completion = grounded_evidence_observed
                     && substantive_candidate_answer(&final_answer)
                     && !is_unresolved_task_failure(&final_answer);
-                if verified_completion && let Some(skill_id) = auto_loaded_skill_id {
-                    let _ = self
-                        .context
-                        .memory
-                        .mark_skill_verified(skill_id, "grounded_successful_use");
+                for (skill_id, unverified) in &auto_loaded_skill_ids {
+                    if verified_completion {
+                        if *unverified {
+                            let _ = self
+                                .context
+                                .memory
+                                .mark_skill_verified(*skill_id, "grounded_successful_use");
+                        }
+                    } else if let Ok(disabled) = self.context.memory.record_skill_failure(*skill_id)
+                    {
+                        // Guidance that did not lead to a verified result loses
+                        // standing; a skill that keeps failing is switched off.
+                        self.log(
+                            "skill_failed",
+                            json!({"id": skill_id, "disabled": disabled}),
+                        )?;
+                    }
                 }
                 self.log(
                     "outcome_assessment",
@@ -2503,7 +2574,7 @@ impl Session {
                         )?;
                     }
                     if let Some(step) = workflow_step(&call.name, &call.arguments, value) {
-                        workflow.push(step);
+                        push_workflow_step(&mut workflow, step);
                     }
                 }
                 if call.name == "run_command" {

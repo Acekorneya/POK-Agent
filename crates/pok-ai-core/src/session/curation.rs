@@ -35,7 +35,17 @@ pub(super) fn workflow_step(name: &str, arguments: &Value, result: &Value) -> Op
         "simulate_input",
         "execute_action_batch",
         "run_command",
+        "open_application",
+        "managed_browser_open",
+        "managed_browser_snapshot",
+        "managed_browser_click",
+        "managed_browser_type",
+        "managed_browser_select",
+        "managed_browser_scroll",
     ];
+    if name == "fast_actions" {
+        return Some(fast_actions_workflow_step(arguments, result));
+    }
     if !PROCEDURE_TOOLS.contains(&name) {
         return None;
     }
@@ -90,10 +100,163 @@ pub(super) fn workflow_step(name: &str, arguments: &Value, result: &Value) -> Op
             + usize::from(result.pointer("/state_change/focus_changed").and_then(Value::as_bool).unwrap_or(false))
             + result.pointer("/state_change/selected_changed").and_then(Value::as_array).map_or(0, Vec::len)
             + usize::from(result.pointer("/state_change/focused_control_changed").and_then(Value::as_bool).unwrap_or(false)),
+        "page_fingerprint": result.get("fingerprint").filter(|_| name.starts_with("managed_browser_")),
         "submission_status": result.pointer("/submission/status"),
         "outcome": result.pointer("/_pok_continuity/outcome"),
         "error": result.get("error"),
     }))
+}
+
+/// Add a workflow step. A managed-browser action that leaves a different page
+/// than the previous browser step saw counts as a state change.
+pub(super) fn push_workflow_step(workflow: &mut Vec<Value>, mut step: Value) {
+    if let Some(fingerprint) = step.get("page_fingerprint").and_then(Value::as_str) {
+        let previous = workflow
+            .iter()
+            .rev()
+            .find_map(|earlier| earlier.get("page_fingerprint").and_then(Value::as_str));
+        let acted = step
+            .get("tool")
+            .and_then(Value::as_str)
+            .is_some_and(|tool| tool != "managed_browser_snapshot");
+        if acted && previous.is_some_and(|previous| previous != fingerprint) {
+            step["state_change_count"] = json!(1);
+        }
+    }
+    workflow.push(step);
+}
+
+/// A delegated plan as a workflow step: the plan's subgoals that reached
+/// their goal (also when the plan handed back later), with the label each one acted on, so a later run can issue the
+/// same plan in one call. Every action that made progress counts as a state
+/// change.
+fn fast_actions_workflow_step(arguments: &Value, result: &Value) -> Value {
+    let subgoals = result
+        .get("subgoals")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_else(|| vec![result.clone()]);
+    let hints = std::iter::once(arguments)
+        .chain(
+            arguments
+                .get("then")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten(),
+        )
+        .map(|node| node.get("target_hint").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    let mut changes = 0;
+    let reached = subgoals
+        .iter()
+        .enumerate()
+        .filter(|(_, subgoal)| {
+            matches!(
+                subgoal.get("status").and_then(Value::as_str),
+                Some("done" | "unverified")
+            )
+        })
+        .map(|(index, subgoal)| {
+            let acted = subgoal
+                .get("steps")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|step| step.get("ok").and_then(Value::as_bool) == Some(true))
+                .collect::<Vec<_>>();
+            let progressed = acted
+                .iter()
+                .filter(|step| step.get("outcome").and_then(Value::as_str) == Some("progress"))
+                .count();
+            // A subgoal whose done_when was confirmed after acting changed the
+            // screen even when its steps only report the new page as observed
+            // (managed-browser clicks).
+            let confirmed =
+                subgoal.get("status").and_then(Value::as_str) == Some("done") && !acted.is_empty();
+            changes += progressed.max(usize::from(confirmed));
+            let progressed = acted
+                .into_iter()
+                .filter(|step| {
+                    matches!(
+                        step.get("outcome").and_then(Value::as_str),
+                        Some("progress" | "observed")
+                    )
+                })
+                .collect::<Vec<_>>();
+            json!({
+                "goal": subgoal.get("goal"),
+                "target_hint": hints.get(index).copied().flatten(),
+                "done_when": subgoal.get("done_when"),
+                "status": subgoal.get("status"),
+                "actions": progressed.iter().map(|step| json!({
+                    "tool": step.get("tool"),
+                    "target": step.get("target"),
+                })).collect::<Vec<_>>(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let status = result.get("status").and_then(Value::as_str);
+    json!({
+        "tool": "fast_actions",
+        "executed": true,
+        // A plan that handed back part-way still reached these subgoals.
+        "success": !reached.is_empty(),
+        "arguments": sanitize_workflow_arguments("fast_actions", arguments),
+        "subgoals": reached,
+        "target": result.pointer("/observation/target").map(|target| json!({
+            "scope": target.get("scope"),
+            "app": target.get("app"),
+        })),
+        "state_change_count": changes,
+        "outcome": status,
+        "error": result.get("error"),
+    })
+}
+
+/// One reusable instruction per subgoal of a delegated plan that reached its
+/// goal: what to act on and how to know it worked, in the plan's own quoted
+/// labels.
+fn fast_actions_instructions(step: &Value) -> Vec<String> {
+    step.get("subgoals")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|subgoal| {
+            let target = subgoal
+                .get("target_hint")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| {
+                    let label = subgoal.pointer("/actions/0/target")?.as_str()?;
+                    Some(label.split(" (").next().unwrap_or(label).to_owned())
+                })?;
+            let done_when = subgoal.get("done_when")?.as_str()?;
+            Some(truncate_chars(
+                &format!("target_hint {target}; done_when {done_when}"),
+                300,
+            ))
+        })
+        .filter(|instruction| !looks_private(instruction))
+        .collect()
+}
+
+/// Personal or run-specific details a skill must not keep: long numbers,
+/// email addresses, and file paths.
+pub(super) fn looks_private(value: &str) -> bool {
+    let mut digits = 0;
+    let long_number = value.chars().any(|character| {
+        digits = if character.is_ascii_digit() {
+            digits + 1
+        } else {
+            0
+        };
+        digits >= 6
+    });
+    long_number
+        || value.contains('@')
+        || value.contains(":\\")
+        || value.contains("/home/")
+        || value.contains("/Users/")
 }
 
 pub(super) fn sanitize_workflow_arguments(name: &str, arguments: &Value) -> Value {
@@ -196,7 +359,7 @@ pub(super) fn normalize_command_template(command: &str) -> String {
     normalized
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(super) struct WorkflowQualification {
     pub(super) eligible: bool,
     pub(super) applications: Vec<String>,
@@ -229,6 +392,12 @@ pub(super) fn qualify_workflow(
                             | "scroll_until_text"
                             | "simulate_input"
                             | "execute_action_batch"
+                            | "fast_actions"
+                            | "managed_browser_open"
+                            | "managed_browser_click"
+                            | "managed_browser_type"
+                            | "managed_browser_select"
+                            | "managed_browser_scroll"
                     )
                 )
         })
@@ -255,6 +424,12 @@ pub(super) fn qualify_workflow(
                             | "activate_window"
                             | "browser_navigate"
                             | "execute_action_batch"
+                            | "fast_actions"
+                            | "managed_browser_open"
+                            | "managed_browser_click"
+                            | "managed_browser_type"
+                            | "managed_browser_select"
+                            | "managed_browser_scroll"
                     )
                 )
         })
@@ -354,62 +529,419 @@ pub(super) fn is_system_shell_application(app: &str) -> bool {
     )
 }
 
+/// The procedure a verified workflow teaches, if it is worth keeping: a
+/// non-trivial task that acted on the desktop or a page.
+pub(super) fn verified_procedure(
+    prompt: &str,
+    workflow: &[Value],
+    qualification: &WorkflowQualification,
+) -> Option<NewProcedure> {
+    let signature = task_signature(prompt);
+    if signature.is_empty() || is_trivial_memory_task(prompt) || !qualification.eligible {
+        return None;
+    }
+    let steps = procedure_steps(workflow);
+    if !steps.iter().any(|step| {
+        matches!(
+            step.tool.as_str(),
+            "activate_window"
+                | "browser_navigate"
+                | "click_target"
+                | "type_text"
+                | "scroll_view"
+                | "scroll_until_text"
+                | "simulate_input"
+                | "execute_action_batch"
+                | "fast_actions"
+                | "managed_browser_open"
+                | "managed_browser_click"
+                | "managed_browser_type"
+                | "managed_browser_select"
+        )
+    }) {
+        return None;
+    }
+    let fingerprint = procedure_fingerprint(
+        ProcedureKind::Workflow,
+        &signature,
+        &qualification.applications,
+        &steps,
+        None,
+    );
+    Some(NewProcedure {
+        kind: ProcedureKind::Workflow,
+        task_signature: signature,
+        title: concise_task_title(prompt),
+        summary: format!(
+            "Previously successful approach for this task using {}. Re-observe every target and value.",
+            if qualification.applications.is_empty() {
+                "the Windows desktop".into()
+            } else {
+                qualification.applications.join(", ")
+            }
+        ),
+        applications: qualification.applications.clone(),
+        steps,
+        command_template: None,
+        evidence: qualification.evidence.into(),
+        fingerprint,
+        verified_successes: 1,
+    })
+}
+
 pub(super) fn learn_verified_procedures(
     memory: &crate::memory::MemoryStore,
     prompt: &str,
     workflow: &[Value],
     qualification: &WorkflowQualification,
 ) -> Result<Vec<(crate::memory::ProcedureRecord, bool)>> {
-    let signature = task_signature(prompt);
-    if signature.is_empty() || is_trivial_memory_task(prompt) {
+    let Some(procedure) = verified_procedure(prompt, workflow, qualification) else {
         return Ok(Vec::new());
+    };
+    Ok(vec![memory.save_or_reinforce_procedure(procedure)?])
+}
+
+/// Append one event to a session's `trace.jsonl` from background work that
+/// does not hold the session (post-turn curation).
+fn append_trace(artifact_dir: &std::path::Path, session_id: Uuid, kind: &str, payload: Value) {
+    let event = SessionEvent {
+        timestamp: Utc::now(),
+        session_id,
+        kind: kind.into(),
+        payload,
+    };
+    if let Ok(line) = serde_json::to_string(&event)
+        && let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(artifact_dir.join("trace.jsonl"))
+    {
+        let _ = file.write_all(format!("{line}\n").as_bytes());
     }
-    let title = concise_task_title(prompt);
-    let mut learned = Vec::new();
-    if qualification.eligible {
-        let steps = procedure_steps(workflow);
-        if steps.iter().any(|step| {
-            matches!(
-                step.tool.as_str(),
-                "activate_window"
-                    | "browser_navigate"
-                    | "click_target"
-                    | "type_text"
-                    | "scroll_view"
-                    | "scroll_until_text"
-                    | "simulate_input"
-                    | "execute_action_batch"
+}
+
+/// How a verified workflow was folded into the skill library.
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct LearnedSkill {
+    pub(super) id: Uuid,
+    pub(super) title: String,
+    /// `created`, `reinforced` (same task), or `merged` (the router judged it
+    /// the same task as an existing skill).
+    pub(super) outcome: &'static str,
+    pub(super) rewritten: bool,
+    /// Why the LLM's rewrite was not used, when one was attempted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) rewrite_rejected: Option<String>,
+    pub(super) success_count: u64,
+}
+
+/// Learn from a verified workflow without growing duplicate skills:
+/// 1. the same task (kind, signature, apps) reinforces its skill (memory);
+/// 2. a similar skill for a differently worded task is offered to the fast
+///    decision model as "same task as skill A, B, C, or new?" (layer 2);
+/// 3. a created or changed skill is rewritten by the LLM into reusable
+///    guidance, validated, with the previous text kept for undo (layer 3).
+#[allow(clippy::too_many_arguments)]
+pub(super) async fn learn_skill_with_review(
+    memory: &crate::memory::MemoryStore,
+    router: Option<Arc<dyn DecisionRouter>>,
+    config: Option<&crate::config::DecisionRouterConfig>,
+    brain: Arc<dyn Brain>,
+    model: &str,
+    reasoning: &HelperReasoning,
+    prompt: &str,
+    workflow: &[Value],
+    qualification: &WorkflowQualification,
+    cancellation: &CancellationToken,
+) -> Result<Option<LearnedSkill>> {
+    let Some(procedure) = verified_procedure(prompt, workflow, qualification) else {
+        return Ok(None);
+    };
+    let same_task_exists = memory
+        .search_skills(&procedure.task_signature, 20)?
+        .iter()
+        .any(|skill| {
+            skill.kind == procedure.kind
+                && skill.task_signature == procedure.task_signature
+                && skill.applications == procedure.applications
+        });
+    let mut merged_into = None;
+    if !same_task_exists && let (Some(router), Some(config)) = (router.as_ref(), config) {
+        let candidates = memory.similar_procedures(&procedure, 3)?;
+        if !candidates.is_empty() {
+            merged_into = same_skill_choice(
+                router.as_ref(),
+                config,
+                &procedure,
+                &candidates,
+                cancellation,
             )
-        }) {
-            let fingerprint = procedure_fingerprint(
-                ProcedureKind::Workflow,
-                &signature,
-                &qualification.applications,
-                &steps,
-                None,
-            );
-            learned.push(memory.save_or_reinforce_procedure(NewProcedure {
-                kind: ProcedureKind::Workflow,
-                task_signature: signature.clone(),
-                title: title.clone(),
-                summary: format!(
-                    "Previously successful approach for this task using {}. Re-observe every target and value.",
-                    if qualification.applications.is_empty() {
-                        "the Windows desktop".into()
-                    } else {
-                        qualification.applications.join(", ")
-                    }
-                ),
-                applications: qualification.applications.clone(),
-                steps,
-                command_template: None,
-                evidence: qualification.evidence.into(),
-                fingerprint,
-                verified_successes: 1,
-            })?);
+            .await
+            .map(|index| candidates[index].id);
         }
     }
-    Ok(learned)
+    let (record, outcome, steps_changed) = if let Some(id) = merged_into {
+        let record = memory.merge_into_procedure(&id.to_string(), &procedure)?;
+        (record, "merged", true)
+    } else {
+        let (record, created) = memory.save_or_reinforce_procedure(procedure.clone())?;
+        let adopted = !created && record.steps == procedure.steps;
+        (
+            record,
+            if created { "created" } else { "reinforced" },
+            created || adopted,
+        )
+    };
+    let mut rewritten = false;
+    let mut rewrite_rejected = None;
+    if steps_changed {
+        let allowed = workflow
+            .iter()
+            .filter_map(|step| step.get("tool").and_then(Value::as_str))
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
+        match write_skill_text(
+            brain,
+            model,
+            reasoning,
+            prompt,
+            workflow,
+            &record,
+            outcome != "created",
+            &allowed,
+            cancellation,
+        )
+        .await
+        {
+            Ok(Ok(text)) => {
+                memory.rewrite_procedure(record.id, &text.title, &text.summary, &text.steps)?;
+                rewritten = true;
+            }
+            Ok(Err(reason)) => rewrite_rejected = Some(reason),
+            Err(error) => rewrite_rejected = Some(error.to_string()),
+        }
+    }
+    Ok(Some(LearnedSkill {
+        id: record.id,
+        title: record.title,
+        outcome,
+        rewritten,
+        rewrite_rejected,
+        success_count: record.success_count,
+    }))
+}
+
+/// Layer 2: ask the fast decision model whether a new workflow is the same
+/// task as one of a few similar saved skills. `None` means a new skill; a
+/// match must clear the router's completion bar (0.80 by default).
+async fn same_skill_choice(
+    router: &dyn DecisionRouter,
+    config: &crate::config::DecisionRouterConfig,
+    procedure: &NewProcedure,
+    candidates: &[crate::memory::ProcedureRecord],
+    cancellation: &CancellationToken,
+) -> Option<usize> {
+    let mut options = candidates
+        .iter()
+        .enumerate()
+        .map(|(index, skill)| {
+            (
+                format!("s{index}"),
+                format!(
+                    "the new task is the same task as saved skill \"{}\" ({})",
+                    truncate_chars(&skill.title, 120),
+                    skill.applications.join(", ")
+                ),
+            )
+        })
+        .collect::<Vec<_>>();
+    options.push((
+        "new".into(),
+        "the new task is a different task that needs its own skill".into(),
+    ));
+    let state = json!({
+        "new_task": {
+            "title": procedure.title,
+            "applications": procedure.applications,
+            "steps": procedure.steps.iter().map(|step| &step.tool).collect::<Vec<_>>(),
+        },
+        "saved_skills": candidates.iter().enumerate().map(|(index, skill)| json!({
+            "id": format!("s{index}"),
+            "title": skill.title,
+            "summary": skill.summary,
+            "applications": skill.applications,
+            "steps": skill.steps.iter().map(|step| &step.tool).collect::<Vec<_>>(),
+        })).collect::<Vec<_>>(),
+    });
+    let choice = tokio::select! {
+        () = cancellation.cancelled() => return None,
+        choice = router.choose_condition("decide whether a verified workflow updates an existing skill", &options, &state) => choice.ok()?,
+    };
+    (choice.accepted && choice.probability >= config.min_completion_probability)
+        .then(|| choice.option_id.strip_prefix('s')?.parse::<usize>().ok())
+        .flatten()
+        .filter(|index| *index < candidates.len())
+}
+
+/// A skill's reusable text as written by the LLM (layer 3).
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub(super) struct SkillText {
+    pub(super) title: String,
+    pub(super) summary: String,
+    pub(super) steps: Vec<ProcedureStep>,
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn write_skill_text(
+    brain: Arc<dyn Brain>,
+    model: &str,
+    reasoning: &HelperReasoning,
+    prompt: &str,
+    workflow: &[Value],
+    existing: &crate::memory::ProcedureRecord,
+    updating: bool,
+    allowed_tools: &BTreeSet<String>,
+    cancellation: &CancellationToken,
+) -> Result<std::result::Result<SkillText, String>> {
+    let existing_text = json!({
+        "title": existing.title,
+        "summary": existing.summary,
+        "steps": existing.steps,
+    });
+    let request = BrainRequest {
+        model: model.to_owned(),
+        messages: vec![
+            BrainMessage::text(
+                "system",
+                "You write reusable skills for a Windows computer-use agent. A skill is short, generic guidance for doing a kind of task again: which application, which screens, and which visible controls to use, in order. Write steps as instructions that quote visible labels (for example: open \"System\", then \"Display\"). Never include coordinates, target ids, file paths, recipients, message text, names of people, numbers from the screen, or anything personal. Use only the tools that appear in the workflow. For fast_actions steps keep the form `target_hint <quoted label>; done_when <condition quoting visible text>`, one step per subgoal in order, so the whole plan can be sent again as one fast_actions call. When updating an existing skill, keep what still works and improve it with what this run shows. Return JSON only: {\"title\":\"imperative title, at most 80 characters\",\"summary\":\"one sentence on when to use this skill\",\"steps\":[{\"tool\":\"tool name\",\"instruction\":\"what to do\"}]} with at most 12 steps.",
+            ),
+            BrainMessage::text(
+                "user",
+                format!(
+                    "TASK THAT WAS COMPLETED:\n{}\n\n{} SKILL:\n{}\n\nVERIFIED WORKFLOW (sanitized):\n{}",
+                    truncate_chars(prompt, 600),
+                    if updating { "EXISTING" } else { "DRAFT" },
+                    existing_text,
+                    truncate_chars(&serde_json::to_string(workflow)?, 6_000),
+                ),
+            ),
+        ],
+        tools: Vec::new(),
+        temperature: Some(0.0),
+        max_tokens: None,
+        seed: Some(42),
+        reasoning_effort: None,
+    };
+    helper_reply(brain, request, reasoning, cancellation, |text| {
+        parse_skill_text(text, allowed_tools)
+    })
+    .await
+}
+
+/// Reasoning for post-turn helper calls (skill writing, memory curation):
+/// the user's chosen level first; the session's light level only when that
+/// reply had no usable answer.
+#[derive(Debug, Clone, Default)]
+pub(super) struct HelperReasoning {
+    pub(super) chosen: Option<String>,
+    pub(super) fallback: Option<String>,
+}
+
+/// Output budget for a helper call. Its answer is short JSON; the rest is
+/// room for a reasoning model's thinking at whatever level the user chose.
+const HELPER_MAX_TOKENS: u32 = 16_000;
+
+/// Run a helper request and validate its text with `accept`, retrying once
+/// at the fallback reasoning level when the reply is unusable (for example a
+/// reasoning model that ran out of room before answering).
+async fn helper_reply<T>(
+    brain: Arc<dyn Brain>,
+    mut request: BrainRequest,
+    reasoning: &HelperReasoning,
+    cancellation: &CancellationToken,
+    accept: impl Fn(&str) -> std::result::Result<T, String>,
+) -> Result<std::result::Result<T, String>> {
+    let mut attempts = vec![reasoning.chosen.clone()];
+    if reasoning.fallback != reasoning.chosen {
+        attempts.push(reasoning.fallback.clone());
+    }
+    let mut rejection = String::new();
+    for effort in attempts {
+        request.reasoning_effort = effort;
+        request.max_tokens = Some(HELPER_MAX_TOKENS);
+        let mut stream = brain.stream(request.clone());
+        let mut text = String::new();
+        let mut finish = None;
+        loop {
+            tokio::select! {
+                () = cancellation.cancelled() => return Err(PokError::Cancelled),
+                event = stream.next() => match event {
+                    Some(event) => match event? {
+                        BrainEvent::TextDelta { text: delta } => text.push_str(&delta),
+                        BrainEvent::Finished { reason } => finish = reason,
+                        _ => {}
+                    },
+                    None => break,
+                }
+            }
+        }
+        match accept(&text) {
+            Ok(value) => return Ok(Ok(value)),
+            Err(reason) => {
+                rejection = format!(
+                    "{reason} (reasoning {}, finish {}); reply began: {}",
+                    request.reasoning_effort.as_deref().unwrap_or("default"),
+                    finish.as_deref().unwrap_or("none"),
+                    truncate_chars(text.trim(), 160)
+                );
+            }
+        }
+    }
+    Ok(Err(rejection))
+}
+
+/// Accept an LLM-written skill only when it is well formed, uses tools from
+/// the workflow, and carries nothing personal or run-specific.
+pub(super) fn parse_skill_text(
+    text: &str,
+    allowed_tools: &BTreeSet<String>,
+) -> std::result::Result<SkillText, String> {
+    let object = extract_json_object(text).ok_or("no JSON object")?;
+    let skill: SkillText =
+        serde_json::from_str(object).map_err(|error| format!("invalid skill JSON: {error}"))?;
+    let title = skill.title.trim();
+    let summary = skill.summary.trim();
+    if title.is_empty() || title.chars().count() > 80 {
+        return Err("title empty or over 80 characters".into());
+    }
+    if summary.is_empty() || summary.chars().count() > 300 {
+        return Err("summary empty or over 300 characters".into());
+    }
+    if skill.steps.is_empty() || skill.steps.len() > 12 {
+        return Err("needs 1 to 12 steps".into());
+    }
+    if looks_private(title) || looks_private(summary) {
+        return Err("title or summary has personal details".into());
+    }
+    for step in &skill.steps {
+        if !allowed_tools.contains(&step.tool) {
+            return Err(format!(
+                "step uses tool {:?} not in the workflow",
+                step.tool
+            ));
+        }
+        if step.instruction.trim().is_empty() || step.instruction.chars().count() > 300 {
+            return Err("step instruction empty or over 300 characters".into());
+        }
+        if looks_private(&step.instruction) {
+            return Err("step has personal details".into());
+        }
+    }
+    Ok(SkillText {
+        title: title.to_owned(),
+        summary: summary.to_owned(),
+        steps: skill.steps,
+    })
 }
 
 pub(super) fn record_helper_candidates(
@@ -479,50 +1011,59 @@ pub(super) fn procedure_steps(workflow: &[Value]) -> Vec<ProcedureStep> {
     let mut steps = workflow
         .iter()
         .filter(|step| successful_workflow_step(step))
-        .filter_map(|step| {
-            let tool = step.get("tool")?.as_str()?;
-            let instruction = match tool {
-                "observe_desktop" | "list_windows" => {
-                    "Discover the current desktop and task applications."
-                }
-                "activate_window" => "Activate the current task application.",
-                "browser_navigate" => {
-                    "Navigate to `<CURRENT_DESTINATION>` in the current browser window."
-                }
-                "capture_screen"
-                | "inspect_screen_region"
-                | "query_screen_text"
-                | "query_window_tree" => {
-                    "Read the current application and resolve fresh UIA/OCR targets."
-                }
-                "click_target" => "Click the freshly resolved `<CURRENT_UI_LABEL>` target.",
-                "type_text" => {
-                    "Type the complete current task text into a freshly verified control."
-                }
-                "scroll_view" => "Scroll the freshly observed task region.",
-                "scroll_until_text" => {
-                    "Scroll until the current task's `<TARGET_TEXT>` is visible."
-                }
-                "simulate_input" => "Apply current task input only to a freshly verified control.",
-                "execute_action_batch" => {
-                    "Execute a freshly grounded action sequence using current task values."
-                }
-                "run_command" => "Run the verified command template and require a successful exit.",
-                _ => return None,
-            };
-            let procedure_step = ProcedureStep {
-                tool: tool.into(),
-                instruction: instruction.into(),
-            };
-            seen.insert((
-                procedure_step.tool.clone(),
-                procedure_step.instruction.clone(),
-            ))
-            .then_some(procedure_step)
+        .flat_map(|step| {
+            if step.get("tool").and_then(Value::as_str) == Some("fast_actions") {
+                return fast_actions_instructions(step)
+                    .into_iter()
+                    .map(|instruction| ProcedureStep {
+                        tool: "fast_actions".into(),
+                        instruction,
+                    })
+                    .collect::<Vec<_>>();
+            }
+            procedure_step(step).into_iter().collect()
         })
+        .filter(|step| seen.insert((step.tool.clone(), step.instruction.clone())))
         .collect::<Vec<_>>();
     steps.truncate(12);
     steps
+}
+
+fn procedure_step(step: &Value) -> Option<ProcedureStep> {
+    let tool = step.get("tool")?.as_str()?;
+    let instruction = match tool {
+        "observe_desktop" | "list_windows" => "Discover the current desktop and task applications.",
+        "activate_window" => "Activate the current task application.",
+        "open_application" => "Open the task application by name.",
+        "browser_navigate" => "Navigate to `<CURRENT_DESTINATION>` in the current browser window.",
+        "capture_screen" | "inspect_screen_region" | "query_screen_text" | "query_window_tree" => {
+            "Read the current application and resolve fresh UIA/OCR targets."
+        }
+        "click_target" => "Click the freshly resolved `<CURRENT_UI_LABEL>` target.",
+        "type_text" => "Type the complete current task text into a freshly verified control.",
+        "scroll_view" => "Scroll the freshly observed task region.",
+        "scroll_until_text" => "Scroll until the current task's `<TARGET_TEXT>` is visible.",
+        "simulate_input" => "Apply current task input only to a freshly verified control.",
+        "execute_action_batch" => {
+            "Execute a freshly grounded action sequence using current task values."
+        }
+        "run_command" => "Run the verified command template and require a successful exit.",
+        "managed_browser_open" => "Open `<CURRENT_DESTINATION>` in the managed browser.",
+        "managed_browser_snapshot" => "Read the current managed-browser page.",
+        "managed_browser_click" => {
+            "Click the freshly resolved `<CURRENT_UI_LABEL>` element in the managed browser."
+        }
+        "managed_browser_type" => {
+            "Type the current task text into a freshly resolved managed-browser field."
+        }
+        "managed_browser_select" => "Choose the current task value in a managed-browser list.",
+        "managed_browser_scroll" => "Scroll the managed-browser page.",
+        _ => return None,
+    };
+    Some(ProcedureStep {
+        tool: tool.into(),
+        instruction: instruction.into(),
+    })
 }
 
 pub(super) fn task_signature(prompt: &str) -> String {
@@ -834,6 +1375,7 @@ pub(super) fn procedure_fingerprint(
 pub(super) async fn curate_turn(
     brain: Arc<dyn Brain>,
     model: &str,
+    reasoning: &HelperReasoning,
     prompt: &str,
     answer: &str,
     workflow: &[Value],
@@ -862,28 +1404,17 @@ pub(super) async fn curate_turn(
         ],
         tools: Vec::new(),
         temperature: Some(0.0),
-        max_tokens: Some(800),
+        max_tokens: None,
         seed: Some(42),
         reasoning_effort: None,
     };
-    let mut stream = brain.stream(request);
-    let mut text = String::new();
-    loop {
-        tokio::select! {
-            () = cancellation.cancelled() => return Err(PokError::Cancelled),
-            event = stream.next() => match event {
-                Some(event) => {
-                    if let BrainEvent::TextDelta { text: delta } = event? {
-                        text.push_str(&delta);
-                    }
-                }
-                None => break,
-            }
-        }
-    }
-    let json = extract_json_object(&text)
-        .ok_or_else(|| PokError::Provider("curator returned no JSON object".into()))?;
-    Ok(serde_json::from_str::<CurationEnvelope>(json)?)
+    helper_reply(brain, request, reasoning, cancellation, |text| {
+        let json = extract_json_object(text).ok_or("curator returned no JSON object")?;
+        serde_json::from_str::<CurationEnvelope>(json)
+            .map_err(|error| format!("invalid curation JSON: {error}"))
+    })
+    .await?
+    .map_err(PokError::Provider)
 }
 
 pub(super) async fn verify_and_save_curated_memory(
@@ -1114,7 +1645,17 @@ impl Session {
                 json!({"reason": reason, "prompt": prompt}),
             );
         }
-        match learn_verified_procedures(&self.context.memory, &prompt, &workflow, &qualification) {
+        let model_curation_enabled = matches!(
+            self.context.policy.mode,
+            PolicyMode::Interactive | PolicyMode::Autonomous
+        );
+        // With model curation, skills are learned in the background with the
+        // router and LLM review below; otherwise deterministically here.
+        match if model_curation_enabled {
+            Ok(Vec::new())
+        } else {
+            learn_verified_procedures(&self.context.memory, &prompt, &workflow, &qualification)
+        } {
             Ok(records) => {
                 for (record, created) in records {
                     let _ = self.log(
@@ -1163,23 +1704,43 @@ impl Session {
                 }
             }
         }
-        let model_curation_enabled = matches!(
-            self.context.policy.mode,
-            PolicyMode::Interactive | PolicyMode::Autonomous
-        );
         let brain = self.brain.clone();
         let memory = self.context.memory.clone();
         let model = self.model.clone();
+        let reasoning = HelperReasoning {
+            chosen: self.reasoning_effort.clone(),
+            fallback: self.bounded_reasoning_effort.clone(),
+        };
         let artifact_dir = self.context.artifact_dir.clone();
         let decision_router = self.decision_router.clone();
         let decision_router_config = self.decision_router_config.clone();
         let observer = self.observer.clone();
         let curation_session_id = self.id;
-        tokio::spawn(async move {
+        let task = tokio::spawn(async move {
             if tokio::time::timeout(std::time::Duration::from_secs(3), cancellation.cancelled())
                 .await
                 .is_ok()
             {
+                // A follow-up arrived: skip the model calls, but keep what the
+                // run proved as a plain skill (no router or LLM review).
+                if model_curation_enabled
+                    && let Ok(records) =
+                        learn_verified_procedures(&memory, &prompt, &workflow, &qualification)
+                {
+                    for (record, created) in records {
+                        append_trace(
+                            &artifact_dir,
+                            curation_session_id,
+                            if created {
+                                "procedure_learned"
+                            } else {
+                                "procedure_reinforced"
+                            },
+                            json!({"id": record.id, "title": record.title,
+                                "success_count": record.success_count, "review": "skipped"}),
+                        );
+                    }
+                }
                 return;
             }
             if !model_curation_enabled {
@@ -1195,6 +1756,34 @@ impl Session {
                 );
                 return;
             }
+            let skill = learn_skill_with_review(
+                &memory,
+                decision_router.clone(),
+                decision_router_config.as_ref(),
+                brain.clone(),
+                &model,
+                &reasoning,
+                &prompt,
+                &workflow,
+                &qualification,
+                &cancellation,
+            )
+            .await;
+            append_trace(
+                &artifact_dir,
+                curation_session_id,
+                match &skill {
+                    Ok(Some(learned)) if learned.outcome == "created" => "procedure_learned",
+                    Ok(Some(_)) => "procedure_reinforced",
+                    Ok(None) => "procedure_not_learned",
+                    Err(_) => "procedure_rejected",
+                },
+                match &skill {
+                    Ok(Some(learned)) => serde_json::to_value(learned).unwrap_or_default(),
+                    Ok(None) => json!({"reason": "no eligible verified workflow"}),
+                    Err(error) => json!({"reason": error.to_string()}),
+                },
+            );
             let related_memories = memory
                 .related_memories(&format!("{prompt} {answer}"), 8)
                 .unwrap_or_default()
@@ -1212,6 +1801,7 @@ impl Session {
             let result = curate_turn(
                 brain,
                 &model,
+                &reasoning,
                 &prompt,
                 &answer,
                 &workflow,
@@ -1263,5 +1853,8 @@ impl Session {
                 &serde_json::to_vec_pretty(&artifact).unwrap_or_default(),
             );
         });
+        let mut tasks = self.curation_tasks.lock();
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(task);
     }
 }

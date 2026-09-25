@@ -236,10 +236,14 @@ impl MemoryStore {
         let connection = Connection::open(root.join("memory.db"))?;
         connection.execute_batch(SCHEMA)?;
         migrate_memory_schema(&connection, &root)?;
-        Ok(Arc::new(Self {
+        let store = Self {
             connection: Mutex::new(connection),
             root,
-        }))
+        };
+        // Stores written before same-task procedures were merged may hold
+        // many copies of one skill; fold them into one.
+        store.consolidate_procedures()?;
+        Ok(Arc::new(store))
     }
 
     pub fn save(&self, source: &str, text: &str, approved: bool) -> Result<MemoryRecord> {
@@ -838,7 +842,15 @@ impl MemoryStore {
                 "one-off commands are not eligible for durable memory".into(),
             ));
         }
-        if tombstone_exists(&connection, &procedure.fingerprint, "skill")? {
+        let applications = serde_json::to_string(&procedure.applications)?;
+        let task_key = task_tombstone_key(
+            procedure.kind.as_str(),
+            &procedure.task_signature,
+            &applications,
+        );
+        if tombstone_exists(&connection, &procedure.fingerprint, "skill")?
+            || tombstone_exists(&connection, &task_key, "skill")?
+        {
             return Err(PokError::Tool(
                 "this learned skill was previously deleted by the user".into(),
             ));
@@ -863,10 +875,29 @@ impl MemoryStore {
             )?;
             return Ok((load_procedure(&connection, &id)?, false));
         }
+        // The same task learned again (a run that looked around in a different
+        // order): reinforce the existing skill instead of adding a copy, and
+        // keep the leaner step list.
+        let same_task = connection
+            .query_row(
+                "SELECT id FROM procedures WHERE kind = ?1 AND task_signature = ?2
+                 AND applications = ?3 ORDER BY success_count DESC LIMIT 1",
+                params![
+                    procedure.kind.as_str(),
+                    procedure.task_signature,
+                    applications
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        if let Some(id) = same_task {
+            drop(connection);
+            let record = self.merge_into_procedure(&id, &procedure)?;
+            return Ok((record, false));
+        }
 
         let id = Uuid::new_v4();
         let now = Utc::now();
-        let applications = serde_json::to_string(&procedure.applications)?;
         let steps = serde_json::to_string(&procedure.steps)?;
         let searchable = procedure_searchable_text(&procedure);
         let transaction = connection.transaction()?;
@@ -907,6 +938,279 @@ impl MemoryStore {
         let record = load_procedure(&connection, &id.to_string())?;
         write_skill_file(&self.root, &record)?;
         Ok((record, true))
+    }
+
+    /// Count a newly verified run toward an existing skill: add its successes
+    /// and keep its step list when it is leaner than the stored one.
+    pub fn merge_into_procedure(
+        &self,
+        id: &str,
+        procedure: &NewProcedure,
+    ) -> Result<ProcedureRecord> {
+        let connection = self.connection.lock();
+        let existing = load_procedure(&connection, id)?;
+        // Guidance the LLM already rewrote only changes through another
+        // rewrite, never back to a shorter raw draft.
+        let rewritten: bool = connection.query_row(
+            "SELECT previous_version IS NOT NULL FROM procedures WHERE id = ?1",
+            params![id],
+            |row| row.get(0),
+        )?;
+        // Shorter only counts when no plan step is lost: a run that started
+        // part-way through a task has fewer steps but is not a better recipe.
+        let plan_steps = |steps: &[ProcedureStep]| {
+            steps
+                .iter()
+                .filter(|step| step.tool == "fast_actions")
+                .count()
+        };
+        let leaner = !rewritten
+            && !procedure.steps.is_empty()
+            && procedure.steps.len() < existing.steps.len()
+            && plan_steps(&procedure.steps) >= plan_steps(&existing.steps);
+        connection.execute(
+            "UPDATE procedures SET success_count = success_count + ?2, updated_at = ?3,
+             evidence = ?4, enabled = 1 WHERE id = ?1",
+            params![
+                id,
+                procedure.verified_successes,
+                Utc::now().to_rfc3339(),
+                procedure.evidence
+            ],
+        )?;
+        if leaner {
+            let fingerprint_taken = connection
+                .query_row(
+                    "SELECT 1 FROM procedures WHERE fingerprint = ?1",
+                    params![procedure.fingerprint],
+                    |_| Ok(()),
+                )
+                .optional()?
+                .is_some();
+            connection.execute(
+                "UPDATE procedures SET steps = ?2 WHERE id = ?1",
+                params![id, serde_json::to_string(&procedure.steps)?],
+            )?;
+            if !fingerprint_taken {
+                connection.execute(
+                    "UPDATE procedures SET fingerprint = ?2 WHERE id = ?1",
+                    params![id, procedure.fingerprint],
+                )?;
+            }
+        }
+        let record = load_procedure(&connection, id)?;
+        drop(connection);
+        if leaner {
+            write_skill_file(&self.root, &record)?;
+        }
+        Ok(record)
+    }
+
+    /// Replace a skill's title, summary, and steps with an improved version,
+    /// keeping the current text so `revert_procedure` can restore it.
+    pub fn rewrite_procedure(
+        &self,
+        id: Uuid,
+        title: &str,
+        summary: &str,
+        steps: &[ProcedureStep],
+    ) -> Result<ProcedureRecord> {
+        let mut connection = self.connection.lock();
+        let existing = load_procedure(&connection, &id.to_string())?;
+        let previous = serde_json::json!({
+            "title": existing.title,
+            "summary": existing.summary,
+            "steps": existing.steps,
+        });
+        let transaction = connection.transaction()?;
+        transaction.execute(
+            "UPDATE procedures SET title = ?2, summary = ?3, steps = ?4, previous_version = ?5,
+             updated_at = ?6 WHERE id = ?1",
+            params![
+                id.to_string(),
+                title,
+                summary,
+                serde_json::to_string(steps)?,
+                previous.to_string(),
+                Utc::now().to_rfc3339()
+            ],
+        )?;
+        transaction.execute(
+            "UPDATE procedures_fts SET title = ?2, summary = ?3 WHERE id = ?1",
+            params![id.to_string(), title, summary],
+        )?;
+        transaction.commit()?;
+        let record = load_procedure(&connection, &id.to_string())?;
+        drop(connection);
+        write_skill_file(&self.root, &record)?;
+        Ok(record)
+    }
+
+    /// Restore the skill text from before its latest rewrite.
+    pub fn revert_procedure(&self, id: Uuid) -> Result<bool> {
+        let previous = self
+            .connection
+            .lock()
+            .query_row(
+                "SELECT previous_version FROM procedures WHERE id = ?1",
+                params![id.to_string()],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        let Some(previous) = previous else {
+            return Ok(false);
+        };
+        let previous: serde_json::Value = serde_json::from_str(&previous)?;
+        let steps: Vec<ProcedureStep> = serde_json::from_value(previous["steps"].clone())?;
+        self.rewrite_procedure(
+            id,
+            previous["title"].as_str().unwrap_or_default(),
+            previous["summary"].as_str().unwrap_or_default(),
+            &steps,
+        )?;
+        self.connection.lock().execute(
+            "UPDATE procedures SET previous_version = NULL WHERE id = ?1",
+            params![id.to_string()],
+        )?;
+        Ok(true)
+    }
+
+    /// Saved skills for other tasks that look like this one: candidates for
+    /// "is this the same task as an existing skill?".
+    pub fn similar_procedures(
+        &self,
+        procedure: &NewProcedure,
+        limit: usize,
+    ) -> Result<Vec<ProcedureRecord>> {
+        let query = format!(
+            "{} {} {}",
+            procedure.title,
+            procedure.task_signature,
+            procedure.applications.join(" ")
+        );
+        Ok(self
+            .search_skills(&query, limit + 1)?
+            .into_iter()
+            .filter(|skill| {
+                skill.kind != procedure.kind
+                    || skill.task_signature != procedure.task_signature
+                    || skill.applications != procedure.applications
+            })
+            .take(limit)
+            .collect())
+    }
+
+    /// Relevant skills for a request with their relevance (share of the
+    /// request's meaningful terms they cover), best first.
+    pub fn search_skills_scored(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<(f64, ProcedureRecord)>> {
+        let terms = meaningful_terms(query);
+        let failures = {
+            let connection = self.connection.lock();
+            let mut statement = connection
+                .prepare("SELECT id, failure_count FROM procedures WHERE failure_count > 0")?;
+            statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, u64>(1)?))
+                })?
+                .collect::<std::result::Result<std::collections::HashMap<_, _>, _>>()?
+        };
+        let mut skills = self
+            .list_procedures(Some(ProcedureKind::Workflow), 200)?
+            .into_iter()
+            .filter(|skill| skill.enabled)
+            .filter_map(|skill| {
+                deterministic_relevance(
+                    &terms,
+                    &format!(
+                        "{} {} {} {}",
+                        skill.title,
+                        skill.summary,
+                        skill.task_signature,
+                        skill.applications.join(" ")
+                    ),
+                )
+                .map(|score| {
+                    // Relevance is scaled by the skill's track record: one that
+                    // failed as often as it worked counts about half.
+                    let failed = failures.get(&skill.id.to_string()).copied().unwrap_or(0);
+                    let record = (skill.success_count + 1) as f64
+                        / (skill.success_count + 1 + failed) as f64;
+                    (score * record, skill)
+                })
+            })
+            .collect::<Vec<_>>();
+        skills.sort_by(|left, right| {
+            right
+                .0
+                .total_cmp(&left.0)
+                .then_with(|| right.1.success_count.cmp(&left.1.success_count))
+        });
+        skills.truncate(limit.min(20));
+        Ok(skills)
+    }
+
+    /// Merge learned procedures for the same task (same kind, task signature,
+    /// and applications) into the most successful one, adding up their
+    /// success and retrieval counts and removing the copies and their skill
+    /// files. Returns how many copies were removed. This is housekeeping,
+    /// not a user deletion, so no tombstones are written.
+    pub fn consolidate_procedures(&self) -> Result<usize> {
+        let mut connection = self.connection.lock();
+        let rows = {
+            let mut statement = connection.prepare(
+                "SELECT id, kind, task_signature, applications, success_count, retrieval_count
+                 FROM procedures ORDER BY success_count DESC, retrieval_count DESC, created_at ASC",
+            )?;
+            statement
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        (
+                            row.get::<_, String>(1)?,
+                            row.get::<_, String>(2)?,
+                            row.get::<_, String>(3)?,
+                        ),
+                        row.get::<_, i64>(4)?,
+                        row.get::<_, i64>(5)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        let mut keeper: std::collections::HashMap<(String, String, String), String> =
+            std::collections::HashMap::new();
+        let mut removed = Vec::new();
+        let transaction = connection.transaction()?;
+        for (id, task, successes, retrievals) in rows {
+            match keeper.get(&task) {
+                None => {
+                    keeper.insert(task, id);
+                }
+                Some(kept) => {
+                    transaction.execute(
+                        "UPDATE procedures SET success_count = success_count + ?2,
+                         retrieval_count = retrieval_count + ?3 WHERE id = ?1",
+                        params![kept, successes, retrievals],
+                    )?;
+                    transaction.execute("DELETE FROM procedures_fts WHERE id = ?1", params![id])?;
+                    transaction.execute("DELETE FROM procedures WHERE id = ?1", params![id])?;
+                    removed.push(id);
+                }
+            }
+        }
+        transaction.commit()?;
+        drop(connection);
+        for id in &removed {
+            let dir = self.root.join("skills").join(id);
+            if dir.is_dir() {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+        }
+        Ok(removed.len())
     }
 
     pub fn list_procedures(
@@ -1005,6 +1309,23 @@ impl MemoryStore {
         )? == 1)
     }
 
+    /// Count a run that used this skill and did not end verified. A skill
+    /// that has failed at least three times and more often than it succeeded
+    /// is disabled (not deleted, so the user can re-enable it). Returns
+    /// whether it was disabled.
+    pub fn record_skill_failure(&self, id: Uuid) -> Result<bool> {
+        let connection = self.connection.lock();
+        connection.execute(
+            "UPDATE procedures SET failure_count = failure_count + 1 WHERE id = ?1",
+            params![id.to_string()],
+        )?;
+        Ok(connection.execute(
+            "UPDATE procedures SET enabled = 0, updated_at = ?2
+             WHERE id = ?1 AND enabled = 1 AND failure_count >= 3 AND failure_count > success_count",
+            params![id.to_string(), Utc::now().to_rfc3339()],
+        )? == 1)
+    }
+
     pub fn mark_skill_verified(&self, id: Uuid, evidence: &str) -> Result<bool> {
         Ok(self.connection.lock().execute(
             "UPDATE procedures SET success_count = success_count + 1, evidence = ?2,
@@ -1018,17 +1339,31 @@ impl MemoryStore {
         let transaction = connection.transaction()?;
         let record = transaction
             .query_row(
-                "SELECT fingerprint FROM procedures WHERE id = ?1",
+                "SELECT fingerprint, kind, task_signature, applications FROM procedures WHERE id = ?1",
                 params![id.to_string()],
-                |row| row.get::<_, String>(0),
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
             )
             .optional()?;
-        if let Some(fingerprint) = &record {
-            transaction.execute(
-                "INSERT OR REPLACE INTO memory_tombstones(fingerprint, item_type, deleted_at)
-                 VALUES (?1, 'skill', ?2)",
-                params![fingerprint, Utc::now().to_rfc3339()],
-            )?;
+        if let Some((fingerprint, kind, signature, applications)) = &record {
+            // Block this exact skill and the task itself, so the same task done
+            // in a different order is not learned again either.
+            for key in [
+                fingerprint.clone(),
+                task_tombstone_key(kind, signature, applications),
+            ] {
+                transaction.execute(
+                    "INSERT OR REPLACE INTO memory_tombstones(fingerprint, item_type, deleted_at)
+                     VALUES (?1, 'skill', ?2)",
+                    params![key, Utc::now().to_rfc3339()],
+                )?;
+            }
         }
         transaction.execute(
             "DELETE FROM procedures_fts WHERE id = ?1",
@@ -1121,6 +1456,26 @@ impl MemoryStore {
 }
 
 fn migrate_memory_schema(connection: &Connection, root: &Path) -> Result<()> {
+    {
+        let mut statement = connection.prepare("PRAGMA table_info(procedures)")?;
+        let columns = statement
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        // The skill text before the latest rewrite, so it can be restored.
+        if !columns.iter().any(|column| column == "previous_version") {
+            connection.execute(
+                "ALTER TABLE procedures ADD COLUMN previous_version TEXT",
+                [],
+            )?;
+        }
+        // Runs that used a skill and did not end verified.
+        if !columns.iter().any(|column| column == "failure_count") {
+            connection.execute(
+                "ALTER TABLE procedures ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0",
+                [],
+            )?;
+        }
+    }
     let mut statement = connection.prepare("PRAGMA table_info(memories)")?;
     let columns = statement
         .query_map([], |row| row.get::<_, String>(1))?
@@ -1320,6 +1675,12 @@ fn load_memory_record(connection: &Connection, id: &str) -> Result<MemoryRecord>
         params![id],
         memory_record_from_row,
     ))
+}
+
+/// Tombstone key for a learned task as a whole (kind, task signature, and
+/// applications), independent of the exact steps taken.
+fn task_tombstone_key(kind: &str, signature: &str, applications_json: &str) -> String {
+    format!("task|{kind}|{signature}|{applications_json}")
 }
 
 fn write_skill_file(root: &Path, record: &ProcedureRecord) -> Result<PathBuf> {
@@ -1771,6 +2132,161 @@ mod tests {
             fingerprint: fingerprint.into(),
             verified_successes: 1,
         }
+    }
+
+    #[test]
+    fn the_same_task_learned_again_reinforces_one_skill_with_leaner_steps() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory = MemoryStore::open(dir.path()).unwrap();
+        let mut first = procedure("open display settings", "fp-1", ProcedureKind::Workflow);
+        first.steps.insert(
+            0,
+            ProcedureStep {
+                tool: "list_windows".into(),
+                instruction: "Look around first.".into(),
+            },
+        );
+        let (kept, created) = memory.save_or_reinforce_procedure(first).unwrap();
+        assert!(created);
+        // Same task, another run: fewer steps and a different fingerprint.
+        let (again, created) = memory
+            .save_or_reinforce_procedure(procedure(
+                "open display settings",
+                "fp-2",
+                ProcedureKind::Workflow,
+            ))
+            .unwrap();
+        assert!(!created);
+        assert_eq!(again.id, kept.id);
+        assert_eq!(again.success_count, 2);
+        assert_eq!(again.steps.len(), 1);
+        assert_eq!(memory.list_procedures(None, 10).unwrap().len(), 1);
+        // A different task is its own skill.
+        let (_, created) = memory
+            .save_or_reinforce_procedure(procedure(
+                "open sound settings",
+                "fp-3",
+                ProcedureKind::Workflow,
+            ))
+            .unwrap();
+        assert!(created);
+    }
+
+    #[test]
+    fn a_run_that_started_part_way_does_not_shorten_a_plan_skill() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory = MemoryStore::open(dir.path()).unwrap();
+        let plan = |labels: &[&str]| {
+            labels
+                .iter()
+                .map(|label| ProcedureStep {
+                    tool: "fast_actions".into(),
+                    instruction: format!("target_hint \"{label}\"; done_when heading \"{label}\""),
+                })
+                .collect::<Vec<_>>()
+        };
+        let mut full = procedure(
+            "open advanced display settings",
+            "fp-1",
+            ProcedureKind::Workflow,
+        );
+        full.steps = plan(&["System", "Display", "Advanced display"]);
+        let (kept, _) = memory.save_or_reinforce_procedure(full).unwrap();
+        let mut partial = procedure(
+            "open advanced display settings",
+            "fp-2",
+            ProcedureKind::Workflow,
+        );
+        partial.steps = plan(&["Advanced display"]);
+        let (again, created) = memory.save_or_reinforce_procedure(partial).unwrap();
+        assert!(!created);
+        assert_eq!(again.id, kept.id);
+        assert_eq!(again.steps.len(), 3);
+    }
+
+    #[test]
+    fn a_skill_that_keeps_failing_ranks_lower_and_is_switched_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory = MemoryStore::open(dir.path()).unwrap();
+        let (skill, _) = memory
+            .save_or_reinforce_procedure(procedure(
+                "open display settings",
+                "fp-1",
+                ProcedureKind::Workflow,
+            ))
+            .unwrap();
+        let relevance = || {
+            memory
+                .search_skills_scored("open display settings", 3)
+                .unwrap()
+        };
+        let fresh = relevance()[0].0;
+        assert!(!memory.record_skill_failure(skill.id).unwrap());
+        let after_one = relevance()[0].0;
+        assert!(after_one < fresh, "{after_one} should rank below {fresh}");
+        assert!(!memory.record_skill_failure(skill.id).unwrap());
+        // Third failure, and more failures than its one success: off.
+        assert!(memory.record_skill_failure(skill.id).unwrap());
+        assert!(relevance().is_empty());
+        assert!(!memory.list_procedures(None, 10).unwrap()[0].enabled);
+    }
+
+    #[test]
+    fn existing_copies_of_one_task_are_merged_when_the_store_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        {
+            let memory = MemoryStore::open(dir.path()).unwrap();
+            memory
+                .save_or_reinforce_procedure(procedure(
+                    "open display settings",
+                    "fp-1",
+                    ProcedureKind::Workflow,
+                ))
+                .unwrap();
+            // Copies written by an older version that only matched exact
+            // fingerprints.
+            let connection = memory.connection.lock();
+            for (index, fingerprint) in ["fp-2", "fp-3"].iter().enumerate() {
+                connection
+                    .execute(
+                        "INSERT INTO procedures(id, kind, task_signature, title, summary, applications, steps,
+                         command_template, evidence, enabled, success_count, retrieval_count, created_at, updated_at, fingerprint)
+                         SELECT ?1, kind, task_signature, title, summary, applications, steps, command_template,
+                         evidence, 1, 1, ?2, created_at, updated_at, ?3 FROM procedures WHERE fingerprint = 'fp-1'",
+                        params![Uuid::new_v4().to_string(), index as i64 + 5, fingerprint],
+                    )
+                    .unwrap();
+            }
+        }
+        let memory = MemoryStore::open(dir.path()).unwrap();
+        let procedures = memory.list_procedures(None, 10).unwrap();
+        assert_eq!(procedures.len(), 1);
+        assert_eq!(procedures[0].success_count, 3);
+        assert_eq!(procedures[0].retrieval_count, 11);
+        assert_eq!(memory.consolidate_procedures().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_deleted_skill_is_not_relearned_in_a_different_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory = MemoryStore::open(dir.path()).unwrap();
+        let (skill, _) = memory
+            .save_or_reinforce_procedure(procedure(
+                "open display settings",
+                "fp-1",
+                ProcedureKind::Workflow,
+            ))
+            .unwrap();
+        assert!(memory.delete_procedure(skill.id).unwrap());
+        assert!(
+            memory
+                .save_or_reinforce_procedure(procedure(
+                    "open display settings",
+                    "fp-2",
+                    ProcedureKind::Workflow
+                ))
+                .is_err()
+        );
     }
 
     #[test]

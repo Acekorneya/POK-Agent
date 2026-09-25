@@ -369,10 +369,42 @@ At accepted task completion, verified desktop trajectories and successful comman
 templates are compiled into task-aware procedure records. The compiler preserves
 the reusable action pattern across window navigation, files, browsers, settings,
 forms, creative tools, and communication applications while omitting payloads,
-recipients, paths, coordinates, ephemeral target ids, and secrets. Matching
-fingerprints reinforce one record instead of producing duplicates. Retrieval is
-balanced across workflows, commands, and facts and is injected as guidance only;
-every new run must still obtain fresh observations and pass current safety checks.
+recipients, paths, coordinates, ephemeral target ids, and secrets. Retrieval of
+facts and command templates is injected as guidance only; every new run must
+still obtain fresh observations and pass current safety checks.
+
+### Skill lifecycle
+
+Workflow procedures are the agent's skills, and they improve with use:
+
+1. **Learn.** A verified run becomes a skill. Delegated `fast_actions` plans are
+   kept as replayable steps (`target_hint <quoted label>; done_when <condition>`,
+   one per subgoal that reached its goal); managed-browser actions count as state
+   changes when the page fingerprint changes.
+2. **No duplicates.** The same task (kind, task signature, applications)
+   reinforces its one skill (layer 1). A similar skill for a differently worded
+   task is offered to the decision router as "same task as skill A, B, C, or
+   new?" and merged when the answer clears `min_completion_probability`
+   (layer 2). Copies left by older versions are merged when the store opens, and
+   deleting a skill tombstones the task so it is not relearned in another order.
+3. **Rewrite.** A new or changed skill is rewritten by the primary LLM into short
+   guidance quoting visible labels (layer 3), at the user's reasoning level with
+   a light-level retry, validated (tools from the workflow only, nothing
+   personal), with the previous text kept for `revert_procedure`. A rewritten
+   skill changes only through another rewrite, and a run that started part-way
+   never drops its plan steps.
+4. **Use.** For each request, the closest skills (scored by relevance and track
+   record) are offered to the router, a strong local match is always eligible,
+   and up to two are loaded in full as `<loaded_skill>` context. The planner can
+   send a skill's plan steps as one `fast_actions` call.
+5. **Feedback.** A verified run reinforces its skill. A run that used a skill and
+   did not end verified records a failure: failures lower the skill's ranking,
+   and a skill with at least three failures and more failures than successes is
+   disabled (not deleted).
+
+Learning and curation run after the answer; the CLI waits for them (bounded)
+before exiting, and the live bench gives every arm its own data folder so
+benchmark runs never touch the user's skills.
 Unverified flows never become procedures, and inferred facts remain
 approval-gated curation drafts. Ordinary fact deletion retains only an exact
 fingerprint. The separate semantic-forget operation discloses and stores a

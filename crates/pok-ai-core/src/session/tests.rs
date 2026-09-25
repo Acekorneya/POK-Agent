@@ -4736,3 +4736,533 @@ async fn counting_brain_counts_every_request_and_usage() {
     assert_eq!(usage.prompt_tokens, 20);
     assert_eq!(usage.completion_tokens, 6);
 }
+
+struct SkillWriterBrain {
+    response: String,
+    calls: AtomicU64,
+}
+
+#[async_trait]
+impl Brain for SkillWriterBrain {
+    async fn list_models(&self) -> Result<Vec<String>> {
+        Ok(vec!["mock".into()])
+    }
+    fn stream(&self, _request: BrainRequest) -> crate::brain::BrainStream {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(futures::stream::iter(vec![
+            Ok(BrainEvent::TextDelta {
+                text: self.response.clone(),
+            }),
+            Ok(BrainEvent::Finished {
+                reason: Some("stop".into()),
+            }),
+        ]))
+    }
+}
+
+fn explorer_workflow() -> Vec<Value> {
+    vec![
+        workflow_step(
+            "capture_screen",
+            &json!({}),
+            &json!({"target": {"scope": "window", "app": "explorer.exe"}}),
+        )
+        .unwrap(),
+        workflow_step(
+            "click_target",
+            &json!({"target_id": "42"}),
+            &json!({
+                "executed": true,
+                "action": {"kind": "click_target", "target_id": "42", "label": "Open"},
+                "focus": {"app": "explorer.exe", "title": "Private Folder"},
+                "state_change": {"added_text": ["Folder opened"]},
+            }),
+        )
+        .unwrap(),
+        workflow_step(
+            "capture_screen",
+            &json!({}),
+            &json!({"target": {"scope": "window", "app": "explorer.exe"}}),
+        )
+        .unwrap(),
+    ]
+}
+
+#[test]
+fn written_skills_use_the_workflows_tools_and_stay_impersonal() {
+    let allowed = BTreeSet::from(["capture_screen".to_owned(), "click_target".to_owned()]);
+    let skill = |title: &str, tool: &str, instruction: &str| {
+        json!({"title": title, "summary": "Use to open a folder in File Explorer.",
+            "steps": [{"tool": tool, "instruction": instruction}]})
+        .to_string()
+    };
+    let good = parse_skill_text(
+        &format!(
+            "Here it is: {}",
+            skill(
+                "Open a folder in File Explorer",
+                "click_target",
+                "Click the folder named in the request, e.g. \"Documents\"."
+            )
+        ),
+        &allowed,
+    )
+    .unwrap();
+    assert_eq!(good.title, "Open a folder in File Explorer");
+    // A tool the workflow never used.
+    assert!(parse_skill_text(&skill("Open a folder", "run_command", "dir"), &allowed).is_err());
+    // Personal or run-specific details.
+    assert!(
+        parse_skill_text(
+            &skill(
+                "Open a folder",
+                "click_target",
+                "Open C:\\Users\\person\\Documents"
+            ),
+            &allowed
+        )
+        .is_err()
+    );
+    assert!(
+        parse_skill_text(
+            &skill("Open a folder", "click_target", "Search order 1234567890"),
+            &allowed
+        )
+        .is_err()
+    );
+    assert!(
+        parse_skill_text(
+            &skill("Mail someone@example.com", "click_target", "Open"),
+            &allowed
+        )
+        .is_err()
+    );
+    assert!(parse_skill_text("not json", &allowed).is_err());
+}
+
+#[tokio::test]
+async fn verified_workflows_grow_one_improved_skill_per_task() {
+    let dir = tempfile::tempdir().unwrap();
+    let memory = crate::memory::MemoryStore::open(dir.path()).unwrap();
+    let workflow = explorer_workflow();
+    let qualification = qualify_workflow(&workflow, &[]);
+    let brain = Arc::new(SkillWriterBrain {
+        response: json!({
+            "title": "Open a folder in File Explorer",
+            "summary": "Use to open a named folder in File Explorer.",
+            "steps": [
+                {"tool": "capture_screen", "instruction": "Capture the File Explorer window."},
+                {"tool": "click_target", "instruction": "Open the folder named in the request by its visible label."}
+            ]
+        })
+        .to_string(),
+        calls: AtomicU64::new(0),
+    });
+    let cancellation = CancellationToken::new();
+    let config = crate::config::DecisionRouterConfig::default();
+    let learn = |prompt: &'static str, router: Option<Arc<dyn DecisionRouter>>| {
+        let memory = memory.clone();
+        let brain = brain.clone();
+        let workflow = workflow.clone();
+        let qualification = qualification.clone();
+        let cancellation = cancellation.clone();
+        let config = config.clone();
+        async move {
+            learn_skill_with_review(
+                &memory,
+                router,
+                Some(&config),
+                brain,
+                "mock",
+                &HelperReasoning::default(),
+                prompt,
+                &workflow,
+                &qualification,
+                &cancellation,
+            )
+            .await
+            .unwrap()
+            .unwrap()
+        }
+    };
+    // A new task: created, then rewritten into reusable guidance.
+    let first = learn("open the requested folder", None).await;
+    assert_eq!((first.outcome, first.rewritten), ("created", true));
+    let skills = memory.list_procedures(None, 10).unwrap();
+    assert_eq!(skills[0].title, "Open a folder in File Explorer");
+    assert_eq!(skills[0].steps.len(), 2);
+    // The same task again only reinforces it.
+    let again = learn("open the requested folder", None).await;
+    assert_eq!((again.outcome, again.success_count), ("reinforced", 2));
+    // The same task in other words: the router judges it the same skill.
+    let mut router = fast_router(usize::MAX, 0.99);
+    router.condition_pick = Some("Open a folder in File Explorer");
+    router.condition_probability = 0.9;
+    let merged = learn(
+        "show the folder I asked for in explorer",
+        Some(Arc::new(router)),
+    )
+    .await;
+    assert_eq!(merged.outcome, "merged");
+    assert_eq!(memory.list_procedures(None, 10).unwrap().len(), 1);
+    // Below the router's bar it stays a separate skill.
+    let mut unsure = fast_router(usize::MAX, 0.99);
+    unsure.condition_pick = Some("Open a folder in File Explorer");
+    unsure.condition_probability = 0.7;
+    let separate = learn(
+        "list what is inside the folder in explorer",
+        Some(Arc::new(unsure)),
+    )
+    .await;
+    assert_eq!(separate.outcome, "created");
+    assert_eq!(memory.list_procedures(None, 10).unwrap().len(), 2);
+}
+
+#[test]
+fn a_rewritten_skill_can_be_restored() {
+    let dir = tempfile::tempdir().unwrap();
+    let memory = crate::memory::MemoryStore::open(dir.path()).unwrap();
+    let workflow = explorer_workflow();
+    let qualification = qualify_workflow(&workflow, &[]);
+    let (skill, _) = learn_verified_procedures(
+        &memory,
+        "open the requested folder",
+        &workflow,
+        &qualification,
+    )
+    .unwrap()
+    .remove(0);
+    let steps = vec![crate::memory::ProcedureStep {
+        tool: "click_target".into(),
+        instruction: "Open the folder by its label.".into(),
+    }];
+    memory
+        .rewrite_procedure(
+            skill.id,
+            "Open a folder in File Explorer",
+            "Use to open a folder.",
+            &steps,
+        )
+        .unwrap();
+    assert!(memory.revert_procedure(skill.id).unwrap());
+    let restored = memory.list_procedures(None, 10).unwrap().remove(0);
+    assert_eq!(restored.title, skill.title);
+    assert_eq!(restored.steps, skill.steps);
+    assert!(!memory.revert_procedure(skill.id).unwrap());
+}
+
+#[tokio::test]
+async fn a_relevant_learned_skill_is_given_to_the_model_once() {
+    let learned = tempfile::tempdir().unwrap();
+    let memory = MemoryStore::open(learned.path()).unwrap();
+    let workflow = explorer_workflow();
+    let qualification = qualify_workflow(&workflow, &[]);
+    learn_verified_procedures(
+        &memory,
+        "open the requested folder in explorer",
+        &workflow,
+        &qualification,
+    )
+    .unwrap();
+    let skill_messages = |session: &Session| {
+        session
+            .messages
+            .iter()
+            .filter(|message| {
+                serde_json::to_string(message)
+                    .unwrap()
+                    .contains("<loaded_skill")
+            })
+            .count()
+    };
+    for (prompt, expected) in [
+        ("open the requested folder in explorer", 1),
+        ("what time is it in Tokyo", 0),
+    ] {
+        let mut harness = fast_harness(
+            fast_router(usize::MAX, 0.99),
+            Vec::new(),
+            crate::config::DecisionRouterMode::Delegated,
+        );
+        harness.session.context.memory = memory.clone();
+        harness.session.brain = Arc::new(SkillWriterBrain {
+            response: "Done.".into(),
+            calls: AtomicU64::new(0),
+        });
+        harness.session.run(prompt).await.unwrap();
+        assert_eq!(skill_messages(&harness.session), expected, "{prompt}");
+    }
+    // The run answered without any verified on-screen result, so the skill
+    // it used is charged one failure (and ranks a little lower).
+    let skill = memory.list_procedures(None, 10).unwrap().remove(0);
+    let ranked = memory
+        .search_skills_scored("open the requested folder in explorer", 1)
+        .unwrap();
+    assert_eq!(ranked[0].1.id, skill.id);
+    assert!(ranked[0].0 < 1.0);
+}
+
+#[test]
+fn a_delegated_plan_becomes_a_replayable_skill() {
+    let arguments = json!({
+        "goal": "open the System page",
+        "target_hint": "list item \"System\"",
+        "done_when": "heading \"System\" is visible",
+        "allowed_operations": ["click"],
+        "then": [{
+            "goal": "open the Display page",
+            "target_hint": "list item \"Display\"",
+            "done_when": "heading \"Display\" is visible",
+        }, {
+            "goal": "open the Sound page",
+            "target_hint": "list item \"Sound\"",
+            "done_when": "heading \"Sound\" is visible",
+        }],
+    });
+    let clicked = |label: &str| {
+        json!([{"tool": "click_target", "ok": true, "outcome": "progress",
+            "target": format!("\"{label}\" (list item, enabled)")}])
+    };
+    let result = json!({
+        "status": "stuck",
+        "observation": {"target": {"scope": "window", "app": "SystemSettings.exe"}},
+        "subgoals": [
+            {"goal": "open the System page", "done_when": "heading \"System\" is visible",
+             "status": "done", "steps": clicked("System")},
+            {"goal": "open the Display page", "done_when": "heading \"Display\" is visible",
+             "status": "unverified", "steps": clicked("Display")},
+            {"goal": "open the Sound page", "done_when": "heading \"Sound\" is visible",
+             "status": "stuck", "steps": []},
+        ],
+    });
+    let step = workflow_step("fast_actions", &arguments, &result).unwrap();
+    assert_eq!(step["state_change_count"], 2);
+    // Handed back at the third subgoal, but the first two were reached.
+    assert_eq!(step["success"], true);
+    assert_eq!(step["subgoals"].as_array().unwrap().len(), 2);
+    let done = json!({"status": "done", "subgoals": result["subgoals"].as_array().unwrap()[..2]});
+    let workflow = vec![workflow_step("fast_actions", &arguments, &done).unwrap()];
+    let qualification = qualify_workflow(&workflow, &[]);
+    assert!(qualification.eligible);
+    let procedure =
+        verified_procedure("open the display settings page", &workflow, &qualification).unwrap();
+    let instructions = procedure
+        .steps
+        .iter()
+        .map(|step| (step.tool.as_str(), step.instruction.as_str()))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        instructions,
+        [
+            (
+                "fast_actions",
+                "target_hint list item \"System\"; done_when heading \"System\" is visible"
+            ),
+            (
+                "fast_actions",
+                "target_hint list item \"Display\"; done_when heading \"Display\" is visible"
+            ),
+        ]
+    );
+}
+
+#[test]
+fn browser_clicks_that_change_the_page_make_a_learnable_workflow() {
+    let page = |fingerprint: &str| json!({"fingerprint": fingerprint, "url": "https://example.test/", "title": "Example"});
+    let mut workflow = Vec::new();
+    for (tool, fingerprint) in [
+        ("managed_browser_open", "page-a"),
+        ("managed_browser_click", "page-a"),
+        ("managed_browser_snapshot", "page-b"),
+    ] {
+        push_workflow_step(
+            &mut workflow,
+            workflow_step(tool, &json!({}), &page(fingerprint)).unwrap(),
+        );
+    }
+    // Nothing changed the page yet: an unchanged click and a snapshot.
+    assert!(workflow.iter().all(|step| step["state_change_count"] == 0));
+    assert!(!qualify_workflow(&workflow, &[]).eligible);
+    push_workflow_step(
+        &mut workflow,
+        workflow_step("managed_browser_click", &json!({}), &page("page-c")).unwrap(),
+    );
+    assert_eq!(workflow[3]["state_change_count"], 1);
+    let qualification = qualify_workflow(&workflow, &[]);
+    assert!(qualification.eligible);
+    let procedure = verified_procedure(
+        "open the example chapter in the browser",
+        &workflow,
+        &qualification,
+    )
+    .unwrap();
+    assert!(
+        procedure
+            .steps
+            .iter()
+            .any(|step| step.tool == "managed_browser_click")
+    );
+}
+
+struct StallingBrain {
+    calls: AtomicU64,
+}
+
+#[async_trait]
+impl Brain for StallingBrain {
+    async fn list_models(&self) -> Result<Vec<String>> {
+        Ok(vec!["mock".into()])
+    }
+    fn max_retries(&self) -> u32 {
+        2
+    }
+    fn stream(&self, _request: BrainRequest) -> crate::brain::BrainStream {
+        if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            // The first request never answers.
+            Box::pin(futures::stream::pending())
+        } else {
+            Box::pin(futures::stream::iter(vec![
+                Ok(BrainEvent::TextDelta {
+                    text: "Answered after a retry.".into(),
+                }),
+                Ok(BrainEvent::Finished {
+                    reason: Some("stop".into()),
+                }),
+            ]))
+        }
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_silent_provider_stream_is_retried_instead_of_hanging() {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        Vec::new(),
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let brain = Arc::new(StallingBrain {
+        calls: AtomicU64::new(0),
+    });
+    harness.session.brain = brain.clone();
+    let result = harness.session.run("say hello").await.unwrap();
+    assert_eq!(result.answer, "Answered after a retry.");
+    assert_eq!(brain.calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn a_confirmed_browser_plan_step_counts_as_a_state_change() {
+    let result = json!({
+        "status": "done",
+        "goal": "open the chapter",
+        "done_when": "page title shows \"Chapter Four\"",
+        "steps": [{"tool": "managed_browser_click", "ok": true, "outcome": "observed",
+            "target": "\"4. Chapter Four\" (browser link, visible)"}],
+    });
+    let arguments = json!({"goal": "open the chapter", "target_hint": "link \"4. Chapter Four\"",
+        "done_when": "page title shows \"Chapter Four\""});
+    let workflow = vec![workflow_step("fast_actions", &arguments, &result).unwrap()];
+    assert_eq!(workflow[0]["state_change_count"], 1);
+    let qualification = qualify_workflow(&workflow, &[]);
+    assert!(qualification.eligible);
+    let procedure = verified_procedure(
+        "open chapter four of the example book",
+        &workflow,
+        &qualification,
+    )
+    .unwrap();
+    assert_eq!(
+        procedure.steps[0].instruction,
+        "target_hint link \"4. Chapter Four\"; done_when page title shows \"Chapter Four\""
+    );
+}
+
+#[tokio::test]
+async fn an_unusable_helper_reply_is_retried_at_the_light_reasoning_level() {
+    struct EffortBrain {
+        efforts: parking_lot::Mutex<Vec<Option<String>>>,
+    }
+    #[async_trait]
+    impl Brain for EffortBrain {
+        async fn list_models(&self) -> Result<Vec<String>> {
+            Ok(vec!["mock".into()])
+        }
+        fn stream(&self, request: BrainRequest) -> crate::brain::BrainStream {
+            let effort = request.reasoning_effort.clone();
+            self.efforts.lock().push(effort.clone());
+            // At the user's maximum level this model runs out of room.
+            let events = if effort.as_deref() == Some("max") {
+                vec![Ok(BrainEvent::Finished {
+                    reason: Some("length".into()),
+                })]
+            } else {
+                vec![
+                    Ok(BrainEvent::TextDelta {
+                        text: "{\"proposals\":[]}".into(),
+                    }),
+                    Ok(BrainEvent::Finished {
+                        reason: Some("stop".into()),
+                    }),
+                ]
+            };
+            Box::pin(futures::stream::iter(events))
+        }
+    }
+    let brain = Arc::new(EffortBrain {
+        efforts: Default::default(),
+    });
+    let reasoning = HelperReasoning {
+        chosen: Some("max".into()),
+        fallback: Some("low".into()),
+    };
+    let envelope = curate_turn(
+        brain.clone(),
+        "mock",
+        &reasoning,
+        "open the folder",
+        "Opened.",
+        &[],
+        &qualify_workflow(&[], &[]),
+        &[],
+        &CancellationToken::new(),
+    )
+    .await
+    .unwrap();
+    assert!(envelope.proposals.is_empty());
+    assert_eq!(
+        *brain.efforts.lock(),
+        [Some("max".to_owned()), Some("low".to_owned())]
+    );
+}
+
+#[tokio::test]
+async fn a_follow_up_that_cancels_review_still_keeps_the_learned_skill() {
+    let harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        Vec::new(),
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let cancellation = CancellationToken::new();
+    harness.session.schedule_curation(
+        "open the requested folder in explorer".into(),
+        "Opened the folder.".into(),
+        explorer_workflow(),
+        Vec::new(),
+        true,
+        RunMetrics::default(),
+        cancellation.clone(),
+    );
+    // The user sends a follow-up right away.
+    cancellation.cancel();
+    harness
+        .session
+        .finish_background_work(Duration::from_secs(10))
+        .await;
+    let skills = harness
+        .session
+        .context
+        .memory
+        .list_procedures(None, 10)
+        .unwrap();
+    assert_eq!(skills.len(), 1);
+    assert_eq!(skills[0].success_count, 1);
+}

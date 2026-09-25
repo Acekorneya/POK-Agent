@@ -165,6 +165,12 @@ personal browser; it activates that browser and submits the address atomically. 
 const TEXT_ONLY_GROUNDING_NOTE: &str = "This model does not accept images. Desktop captures are still processed locally and represented as compact numbered OCR/UI Automation targets. Use click_target whenever possible and do not ask for image input.";
 const MAX_UNCHANGED_PLAN_UPDATES: u32 = 3;
 
+/// How long a model stream may stay silent (no text, reasoning, tool-call, or
+/// usage event) before the request is treated as stalled and retried. Long
+/// enough for a local model's prompt processing or a reasoning model's
+/// thinking, which stream progress events.
+pub(super) const PROVIDER_STREAM_IDLE_LIMIT: Duration = Duration::from_secs(300);
+
 pub struct Session {
     pub id: Uuid,
     brain: Arc<dyn Brain>,
@@ -188,6 +194,8 @@ pub struct Session {
     schema_references_unsupported: bool,
     temporal_anchor: TemporalAnchor,
     curation_cancellation: CancellationToken,
+    /// Background learning and curation started after verified runs.
+    curation_tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     manual_compaction_requested: bool,
     last_prompt_tokens: Option<u64>,
     average_turn_growth: f64,
@@ -388,6 +396,7 @@ impl Session {
             schema_references_unsupported: false,
             temporal_anchor,
             curation_cancellation: CancellationToken::new(),
+            curation_tasks: Mutex::default(),
             manual_compaction_requested: false,
             last_prompt_tokens: None,
             average_turn_growth: 0.0,
@@ -553,6 +562,14 @@ impl Session {
             messages: sanitized_persisted_messages(&self.messages),
             state: serde_json::to_value(state)?,
         })
+    }
+
+    /// Wait up to `limit` for skill learning and memory curation from
+    /// finished runs. A short-lived process (the CLI) calls this before it
+    /// exits so what a run learned is saved; the desktop app never needs to.
+    pub async fn finish_background_work(&self, limit: std::time::Duration) {
+        let tasks = std::mem::take(&mut *self.curation_tasks.lock());
+        let _ = tokio::time::timeout(limit, futures::future::join_all(tasks)).await;
     }
 
     pub fn with_observer(mut self, observer: Arc<dyn SessionObserver>) -> Self {

@@ -197,8 +197,18 @@ enum SessionCommands {
     },
 }
 
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+fn main() -> anyhow::Result<()> {
+    // Agent runs nest deep async state machines (a delegated plan inside a
+    // tool call inside the run loop). Run them on a worker with a roomy stack
+    // instead of the main thread, whose stack is 1 MiB on Windows.
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .thread_stack_size(16 * 1024 * 1024)
+        .build()?;
+    runtime.block_on(async { tokio::spawn(run_cli()).await? })
+}
+
+async fn run_cli() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
@@ -583,6 +593,9 @@ async fn main() -> anyhow::Result<()> {
                 .with_observer(Arc::new(ConsoleObserver { router_name }));
             let result = session.run(prompt).await?;
             println!("{}", result.answer);
+            session
+                .finish_background_work(std::time::Duration::from_secs(120))
+                .await;
             eprintln!("\nArtifacts: {}", result.artifact_dir.display());
         }
         Commands::Sessions { command } => match command {

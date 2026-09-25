@@ -115,6 +115,10 @@ struct BrowserConnection {
     /// its DevTools endpoint answers.
     child: Option<Box<dyn ChildWrapper>>,
     port: u16,
+    /// The tab every DevTools call goes to. A restored or reused profile can
+    /// hold several tabs whose listing order changes, so the first tab used
+    /// is kept, and a click that opens a new tab moves here to it.
+    page_target: Option<String>,
     snapshot_id: Option<String>,
     target_guards: HashMap<String, String>,
     last_snapshot: Option<Value>,
@@ -125,6 +129,7 @@ impl BrowserConnection {
         Self {
             child,
             port,
+            page_target: None,
             snapshot_id: None,
             target_guards: HashMap::new(),
             last_snapshot: None,
@@ -242,6 +247,14 @@ impl ManagedBrowser {
                 .arg(format!("--user-data-dir={}", self.profile_dir.display()))
                 .arg("--no-first-run")
                 .arg("--no-default-browser-check")
+                // The agent works while this window is behind others or on
+                // another monitor. Chromium otherwise pauses rendering, timers,
+                // and input for windows it considers hidden, so clicks sent
+                // over DevTools would wait until the user brought it up.
+                .arg("--disable-backgrounding-occluded-windows")
+                .arg("--disable-renderer-backgrounding")
+                .arg("--disable-background-timer-throttling")
+                .arg("--disable-features=CalculateNativeWinOcclusion")
                 .arg("about:blank");
         });
         command.wrap(KillOnDrop);
@@ -285,7 +298,8 @@ impl ManagedBrowser {
         )))
     }
 
-    async fn page_websocket(port: u16) -> Result<String> {
+    /// Open tabs as (target id, DevTools WebSocket URL, page URL).
+    async fn page_targets(port: u16) -> Result<Vec<(String, String, String)>> {
         let pages = devtools_http_client()?
             .get(format!("http://127.0.0.1:{port}/json/list"))
             .send()
@@ -294,18 +308,44 @@ impl ManagedBrowser {
             .json::<Vec<Value>>()
             .await
             .map_err(|error| PokError::Tool(format!("invalid CDP target list: {error}")))?;
-        pages
+        Ok(pages
             .iter()
-            .find(|page| page.get("type").and_then(Value::as_str) == Some("page"))
-            .and_then(|page| page.get("webSocketDebuggerUrl"))
-            .and_then(Value::as_str)
-            .map(str::to_owned)
-            .ok_or_else(|| PokError::Tool("managed browser has no page target".into()))
+            .filter(|page| page.get("type").and_then(Value::as_str) == Some("page"))
+            .filter_map(|page| {
+                Some((
+                    page.get("id")?.as_str()?.to_owned(),
+                    page.get("webSocketDebuggerUrl")?.as_str()?.to_owned(),
+                    page.get("url")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_owned(),
+                ))
+            })
+            .collect())
     }
 
-    async fn cdp(port: u16, method: &str, params: Value) -> Result<Value> {
-        match tokio::time::timeout(CDP_OPERATION_TIMEOUT, Self::cdp_inner(port, method, params))
-            .await
+    /// The pinned tab's WebSocket, pinning a web page (else any tab) when
+    /// none is pinned or the pinned tab was closed.
+    async fn page_websocket(connection: &mut BrowserConnection) -> Result<String> {
+        let pages = Self::page_targets(connection.port).await?;
+        let pinned = connection
+            .page_target
+            .as_ref()
+            .and_then(|id| pages.iter().find(|(page_id, _, _)| page_id == id));
+        let (id, socket, _) = pinned
+            .or_else(|| pages.iter().find(|(_, _, url)| url.starts_with("http")))
+            .or_else(|| pages.first())
+            .ok_or_else(|| PokError::Tool("managed browser has no page target".into()))?;
+        connection.page_target = Some(id.clone());
+        Ok(socket.clone())
+    }
+
+    async fn cdp(connection: &mut BrowserConnection, method: &str, params: Value) -> Result<Value> {
+        match tokio::time::timeout(
+            CDP_OPERATION_TIMEOUT,
+            Self::cdp_inner(connection, method, params),
+        )
+        .await
         {
             Ok(result) => result,
             Err(_) => Err(PokError::Tool(format!(
@@ -315,8 +355,12 @@ impl ManagedBrowser {
         }
     }
 
-    async fn cdp_inner(port: u16, method: &str, params: Value) -> Result<Value> {
-        let endpoint = Self::page_websocket(port).await?;
+    async fn cdp_inner(
+        connection: &mut BrowserConnection,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        let endpoint = Self::page_websocket(connection).await?;
         let (mut socket, _) = connect_async(endpoint)
             .await
             .map_err(|error| PokError::Tool(format!("CDP connection failed: {error}")))?;
@@ -352,7 +396,7 @@ impl ManagedBrowser {
 
     async fn snapshot_locked(connection: &mut BrowserConnection) -> Result<Value> {
         let result = Self::cdp(
-            connection.port,
+            connection,
             "Runtime.evaluate",
             json!({"expression": SNAPSHOT_SCRIPT, "returnByValue": true, "awaitPromise": true}),
         )
@@ -402,12 +446,7 @@ impl ManagedBrowser {
         self.ensure_started().await?;
         let mut state = self.state.lock().await;
         let connection = state.as_mut().expect("browser started");
-        Self::cdp(
-            connection.port,
-            "Page.navigate",
-            json!({"url": parsed.as_str()}),
-        )
-        .await?;
+        Self::cdp(connection, "Page.navigate", json!({"url": parsed.as_str()})).await?;
         tokio::time::sleep(Duration::from_millis(400)).await;
         Self::snapshot_locked(connection).await
     }
@@ -470,7 +509,7 @@ impl ManagedBrowser {
         }})()"#
         );
         let result = Self::cdp(
-            connection.port,
+            connection,
             "Runtime.evaluate",
             json!({"expression": expression, "returnByValue": true}),
         )
@@ -494,9 +533,10 @@ impl ManagedBrowser {
             .unwrap_or_default();
         match operation {
             "click" => {
+                let before = Self::page_targets(connection.port).await?;
                 for event in ["mousePressed", "mouseReleased"] {
                     Self::cdp(
-                        connection.port,
+                        connection,
                         "Input.dispatchMouseEvent",
                         json!({
                             "type": event, "x": x, "y": y, "button": "left", "clickCount": 1
@@ -504,10 +544,20 @@ impl ManagedBrowser {
                     )
                     .await?;
                 }
+                // A link that opens a new tab: continue in that tab.
+                tokio::time::sleep(Duration::from_millis(400)).await;
+                if let Some((id, _, _)) = Self::page_targets(connection.port)
+                    .await?
+                    .into_iter()
+                    .rev()
+                    .find(|(id, _, _)| !before.iter().any(|(known, _, _)| known == id))
+                {
+                    connection.page_target = Some(id);
+                }
             }
             "hover" => {
                 Self::cdp(
-                    connection.port,
+                    connection,
                     "Input.dispatchMouseEvent",
                     json!({
                         "type": "mouseMoved", "x": x, "y": y
@@ -516,11 +566,11 @@ impl ManagedBrowser {
                 .await?;
             }
             "type" => {
-                Self::cdp(connection.port, "Input.dispatchKeyEvent", json!({
+                Self::cdp(connection, "Input.dispatchKeyEvent", json!({
                     "type": "keyDown", "key": "a", "code": "KeyA", "modifiers": 2, "commands": ["selectAll"]
                 })).await?;
                 Self::cdp(
-                    connection.port,
+                    connection,
                     "Input.dispatchKeyEvent",
                     json!({
                         "type": "keyUp", "key": "a", "code": "KeyA", "modifiers": 2
@@ -528,7 +578,7 @@ impl ManagedBrowser {
                 )
                 .await?;
                 Self::cdp(
-                    connection.port,
+                    connection,
                     "Input.insertText",
                     json!({"text": value.unwrap_or_default()}),
                 )
@@ -1045,7 +1095,7 @@ impl Tool for BrowserScrollTool {
         let multiplier = if args.direction == "up" { -1.0 } else { 1.0 };
         let fraction = if args.page { 0.85 } else { 0.35 };
         ManagedBrowser::cdp(
-            connection.port,
+            connection,
             "Runtime.evaluate",
             json!({"expression": format!("scrollBy(0, innerHeight * {})", multiplier * fraction)}),
         )

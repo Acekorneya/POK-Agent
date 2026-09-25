@@ -28,6 +28,7 @@
    "id": "discord",
    "prompt": "Discord is already open; do not close, restart, or reopen it, and never join or click any voice channel. By clicking in the Discord window, switch to the {discord_server_a} server and read the latest messages in its general text channel, then switch to the {discord_server_b} server and read the latest messages in its general text channel. Tell me who posted the most recent message in each server's general channel and what it was about.",
    "answer_regex": "(?is)({discord_server_a}.*{discord_server_b}|{discord_server_b}.*{discord_server_a})",
+   "requires_env": {"discord_server_a": "POK_BENCH_DISCORD_SERVER_A", "discord_server_b": "POK_BENCH_DISCORD_SERVER_B"},
    "requires_process": "Discord",
    "reset": []
   },

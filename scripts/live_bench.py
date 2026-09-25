@@ -17,6 +17,12 @@ Usage (Windows Python, from the repository root):
     python scripts\\live_bench.py summary
 Arguments are documented in --help. Results go to diagnostics/bench/live/
 (ignored by git; traces can contain private screen text).
+
+Runs never touch the user's own memory, skills, USER.md, or browser profile:
+each gets a data folder under diagnostics/bench/live/data/. With
+`--memory arm` (the default) the runs of one arm share a folder, so later
+repetitions can reuse skills the first ones learned; `--memory run` gives
+every run a fresh folder, a no-learning baseline.
 """
 
 from __future__ import annotations
@@ -25,6 +31,7 @@ import argparse
 import json
 import os
 import re
+import sqlite3
 import statistics
 import subprocess
 import sys
@@ -133,8 +140,9 @@ def set_key(section: list[str], key: str, value: str) -> list[str]:
     return section[:1] + [f"{key} = {value}"] + section[1:]
 
 
-def arm_config(llm: str, arm: str) -> str:
-    """pok-ai.toml with the arm's router settings and the LLM provider."""
+def arm_config(llm: str, arm: str, data_dir: Path) -> str:
+    """pok-ai.toml with the arm's router settings, the LLM provider, and an
+    isolated data folder."""
     spec, model = ARMS[arm], LLMS[llm]
     sections: list[list[str]] = [[]]
     for line in (REPO / "pok-ai.toml").read_text(encoding="utf-8").splitlines():
@@ -145,6 +153,7 @@ def arm_config(llm: str, arm: str) -> str:
     for position, section in enumerate(sections):
         header = section[0].strip() if position and section else ""
         if position == 0:
+            section = set_key(section, "data_dir", json.dumps(str(data_dir).replace("\\", "/")))
             section = set_key(section, "diagnostics_dir", json.dumps(str(LIVE_DIR).replace("\\", "/")))
             section = set_key(section, "default_provider", json.dumps(model["provider"]))
             section = set_key(section, "default_model", json.dumps(model["model"]))
@@ -328,6 +337,36 @@ def trace_metrics(artifact_dir: Path) -> dict:
     return metrics
 
 
+def skill_counts(data_dir: Path) -> dict:
+    """Learned skills in a bench data folder: how many, and how many tasks
+    they cover (more skills than tasks means duplicates)."""
+    database = data_dir / "memory" / "memory.db"
+    if not database.exists():
+        return {"skills": 0, "skill_tasks": 0}
+    with sqlite3.connect(f"file:{database}?mode=ro", uri=True) as connection:
+        skills, tasks, successes = connection.execute(
+            "SELECT COUNT(*), COUNT(DISTINCT kind || task_signature || applications), COALESCE(SUM(success_count), 0) "
+            "FROM procedures WHERE kind = 'workflow'"
+        ).fetchone()
+    return {"skills": skills, "skill_tasks": tasks, "skill_successes": successes}
+
+
+def trace_memory(artifact_dir: Path) -> dict:
+    """Skills given to the model and what the run learned."""
+    loaded, learned = [], []
+    for line in (artifact_dir / "trace.jsonl").read_text(encoding="utf-8", errors="replace").splitlines():
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        kind, payload = record.get("kind"), record.get("payload") or {}
+        if kind == "skill_auto_loaded":
+            loaded.append(payload.get("title"))
+        elif kind in {"procedure_learned", "procedure_reinforced", "procedure_not_learned", "procedure_rejected"}:
+            learned.append(payload.get("outcome") or kind.removeprefix("procedure_"))
+    return {"skills_loaded": loaded, "skill_outcomes": learned}
+
+
 def run(args: argparse.Namespace) -> None:
     tasks = {task["id"]: task for task in json.loads((REPO / "scripts" / "live-bench-tasks.json").read_text())["tasks"]}
     LIVE_DIR.mkdir(parents=True, exist_ok=True)
@@ -347,7 +386,7 @@ def run(args: argparse.Namespace) -> None:
     for llm in args.llm.split(","):
         for arm in args.arms.split(","):
             config_path = LIVE_DIR / "configs" / f"{llm}-{arm}.toml"
-            config_path.write_text(arm_config(llm, arm), encoding="utf-8")
+            config_path.write_text(arm_config(llm, arm, LIVE_DIR / "data" / f"{args.tag}-{llm}-{arm}"), encoding="utf-8")
             wanted = LLMS[llm]["lm_models"] + ([ARMS[arm]["llm_model"]] if "llm_model" in ARMS[arm] else [])
             if wanted or args.unload_idle:
                 lmstudio_models.ensure(LM_SERVER, wanted)
@@ -364,6 +403,19 @@ def run_arm(args, env, tasks, llm, arm, config_path) -> None:
         for rep in range(1, args.reps + 1):
             label = f"{args.tag}-{llm}-{arm}-{task_id}-{rep}"
             record = {"label": label, "llm": llm, "arm": arm, "task": task_id, "rep": rep}
+            # Tasks about the user's own accounts (for example which chat
+            # servers to read) take those names from the environment, so they
+            # never live in the repository.
+            names = {key: os.environ.get(variable, "") for key, variable in task.get("requires_env", {}).items()}
+            if not all(names.values()):
+                record["skipped"] = "set " + ", ".join(task["requires_env"].values())
+                print(json.dumps(record), flush=True)
+                continue
+            if names:
+                task = dict(task)
+                for key, value in names.items():
+                    task["prompt"] = task["prompt"].replace("{" + key + "}", value)
+                    task["answer_regex"] = task["answer_regex"].replace("{" + key + "}", re.escape(value))
             if task.get("requires_process") and not process_running(task["requires_process"]):
                 record["skipped"] = f"{task['requires_process']} is not running"
                 print(json.dumps(record), flush=True)
@@ -378,6 +430,10 @@ def run_arm(args, env, tasks, llm, arm, config_path) -> None:
                 print(json.dumps({"reset_closed": closed}), flush=True)
             powershell(DISMISS_SHELL)
             time.sleep(3)
+            data_dir = LIVE_DIR / "data" / f"{args.tag}-{llm}-{arm}"
+            if args.memory == "run":
+                data_dir = LIVE_DIR / "data" / label
+                config_path.write_text(arm_config(llm, arm, data_dir), encoding="utf-8")
             log_path = LIVE_DIR / "logs" / f"{label}.log"
             started = time.monotonic()
             with open(log_path, "w", encoding="utf-8", errors="replace") as log:
@@ -397,6 +453,7 @@ def run_arm(args, env, tasks, llm, arm, config_path) -> None:
             if artifacts:
                 record["artifact_dir"] = artifacts.group(1).strip()
                 record.update(trace_metrics(Path(record["artifact_dir"])))
+                record.update(trace_memory(Path(record["artifact_dir"])))
             else:
                 record["log_tail"] = text[-400:]
             record["success"] = bool(re.search(task["answer_regex"], record.get("answer", "")))
@@ -407,6 +464,7 @@ def run_arm(args, env, tasks, llm, arm, config_path) -> None:
                 # Only an application this task opened; never one the user had open.
                 if process_name.lower() not in args.initial_processes:
                     subprocess.run(["taskkill", "/IM", f"{process_name}.exe", "/F"], capture_output=True)
+            record.update(skill_counts(data_dir))
             with open(RESULTS, "a", encoding="utf-8") as results:
                 results.write(json.dumps(record) + "\n")
             extras = (record.get("run_metrics") or {}).get("extras") or {}
@@ -415,6 +473,8 @@ def run_arm(args, env, tasks, llm, arm, config_path) -> None:
                 "file_check": record.get("file_check"),
                 "llm_requests": extras.get("primary_model_requests"),
                 "fast": record.get("fast_statuses"), "timeout": record.get("timeout", False),
+                "skills_loaded": record.get("skills_loaded"), "skill_outcomes": record.get("skill_outcomes"),
+                "skills": record.get("skills"), "skill_tasks": record.get("skill_tasks"),
             }), flush=True)
 
 
@@ -451,6 +511,8 @@ def main() -> None:
     run_parser.add_argument("--reps", type=int, default=3)
     run_parser.add_argument("--timeout", type=int, default=600)
     run_parser.add_argument("--tag", default=time.strftime("live%m%d%H%M"))
+    run_parser.add_argument("--memory", choices=["arm", "run"], default="arm",
+                            help="share one isolated data folder per arm (learning) or use a fresh one per run")
     run_parser.add_argument("--unload-idle", action="store_true", help="unload LM Studio models for arms that need none")
     run_parser.add_argument("--exe", default=str(Path(os.environ.get("LOCALAPPDATA", "")) / "Temp" / "pokbench" / "target" / "debug" / "pok-ai.exe"))
     summary_parser = sub.add_parser("summary")

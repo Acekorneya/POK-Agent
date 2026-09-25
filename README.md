@@ -316,7 +316,10 @@ file management, browsers, settings, forms, creative tools, and communication ap
 External text submissions additionally require exact non-editable UIA/OCR evidence. Learned skills
 record the reusable action pattern while replacing recipients, message contents, paths, coordinates,
 and target numbers with fresh-task placeholders. They are written as `SKILL.md`, indexed in FTS5,
-and can enter later sessions through normal memory recall.
+and relevant ones are loaded into later requests, so a repeated task can be replayed as one
+delegated plan. One task keeps one skill: repeats reinforce it, differently worded versions of the
+same task are merged, the LLM rewrites new skills into clean guidance, and skills that keep failing
+lose rank and are disabled. See "Skill lifecycle" in `docs/ARCHITECTURE.md`.
 Exam sessions never run the curator or learn skills.
 
 The desktop keeps one live conversation for the selected model and workspace. Follow-up prompts
@@ -330,7 +333,8 @@ model/workspace starts a clean conversation automatically, and **New conversatio
 explicitly. Existing diagnostic traces are offered as reconstructed legacy conversations. Approved
 memories and learned skills remain available across new conversations and application restarts.
 Background LLM curation is idle-debounced and cancelled by a follow-up so it never competes with
-the active local-model request; deterministic verified skills are still saved immediately.
+the active local-model request; when a follow-up cancels it, the verified skill is still saved
+without the review.
 
 The desktop presents messages and compact live tool steps in one conversation. Expand a step
 to inspect command output, file changes, or results; reasoning and the task plan also expand on
