@@ -206,6 +206,11 @@ Both local checkpoints are **pinned to validated Hugging Face revisions** (`setu
 `docs/decision-router-backends.md` for the full benchmark evidence, cascade tables, and the
 cross-model judge design.
 
+The research question behind all of this (can a fast System 1 do most of the acting while a
+System 2 planner thinks, and does the agent get faster with practice?) is tracked, with results
+and the remaining work, in `docs/SYSTEM1-SYSTEM2-ROADMAP.md`. Windows Agent Arena runs live in
+`scripts/arena/`.
+
 ### What you'll see in the dashboard
 
 The chat feed tells you who is acting, in plain language:

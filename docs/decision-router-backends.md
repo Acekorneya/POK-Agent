@@ -563,6 +563,12 @@ python scripts/build_router_dataset.py --output dataset/ \
   --input "%LOCALAPPDATA%/POK-Ai/POK-Ai/data/router-training" --input other-pc/
 ```
 
+Windows Agent Arena runs (`scripts/arena/`) are the other source. Their
+tasks run in a clean VM, so the records hold no personal data. Each session
+is joined with its task's automatic score (`run_arena.py dataset`), and
+teacher answers can be limited to tasks that passed
+(`--outcomes … --teacher-successful-only`).
+
 To distill a stronger backend into Laya, collect with that backend selected
 (for example JEV, whose probabilities are calibrated) and add
 `--teacher jev --teacher-min 0.9`: where no proven label exists, the

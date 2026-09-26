@@ -31,6 +31,12 @@ Usage:
 answer from that backend (JEV's calibrated probabilities) becomes a soft
 target. Proven labels always take precedence.
 
+`--outcomes` joins each session's task result (JSONL of {session_id, score},
+written by `scripts/arena/run_arena.py dataset`), and
+`--teacher-successful-only` keeps teacher answers only from sessions whose
+task passed. Folders are searched recursively, so an arena run folder works
+as an input directly.
+
 The default input is the app's data folder (`%LOCALAPPDATA%\\POK-Ai\\POK-Ai\\
 data\\router-training` on Windows). The logs stay local; review a sample
 before sharing a dataset anywhere.
@@ -61,7 +67,10 @@ def read_records(folders: list[str]) -> tuple[dict[str, dict], list[dict]]:
     questions: dict[str, dict] = {}
     labels: list[dict] = []
     for folder in folders:
-        for path in sorted(glob.glob(os.path.join(folder, "*.jsonl"))):
+        for path in sorted(glob.glob(os.path.join(folder, "**", "*.jsonl"), recursive=True)):
+            # Session traces and result tables share the extension; skip them.
+            if os.path.basename(path) in {"trace.jsonl", "results.jsonl", "outcomes.jsonl"}:
+                continue
             with open(path, encoding="utf-8") as handle:
                 for line in handle:
                     line = line.strip()
@@ -104,7 +113,20 @@ def main() -> int:
         help="also learn from this backend's confident answers (model name prefix, e.g. jev) where no proven label exists",
     )
     parser.add_argument("--teacher-min", type=float, default=0.9, help="minimum teacher probability for its choice")
+    parser.add_argument("--outcomes", help="JSONL of {session_id, score} task results (from the arena)")
+    parser.add_argument(
+        "--teacher-successful-only",
+        action="store_true",
+        help="use teacher answers only from sessions whose task passed (needs --outcomes)",
+    )
     args = parser.parse_args()
+    scores: dict[str, float] = {}
+    if args.outcomes:
+        with open(args.outcomes, encoding="utf-8") as handle:
+            for line in handle:
+                if line.strip():
+                    row = json.loads(line)
+                    scores[str(row["session_id"])] = float(row["score"])
 
     questions, labels = read_records(args.input or default_input())
     # First proven label per (record, question) wins; later ones are ignored.
@@ -122,6 +144,8 @@ def main() -> int:
         for record_id, record in questions.items():
             model = str(record.get("model") or "").lower()
             if record.get("source") != "router" or not any(model.startswith(t.lower()) for t in args.teacher):
+                continue
+            if args.teacher_successful_only and scores.get(str(record.get("session_id")), 0.0) <= 0.0:
                 continue
             for key, answer in (record.get("answers") or {}).items():
                 if key in gold_by_record.get(record_id, {}) or not isinstance(answer, dict):
@@ -182,6 +206,8 @@ def main() -> int:
             "state": json.dumps(state, ensure_ascii=False),
             "questions": json.dumps(kept_questions, ensure_ascii=False),
             "gold": json.dumps(kept_gold, ensure_ascii=False),
+            # The task's result when known (arena runs); None otherwise.
+            "outcome": scores.get(str(record.get("session_id"))),
         })
 
     output = Path(args.output)
