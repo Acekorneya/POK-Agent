@@ -25,7 +25,7 @@ far the grounded evidence alone carries a decision.
 
 Usage:
     POK_LLM_CHOICE_TOKEN=dev-llm-token python scripts/llm_choice_sidecar.py \
-        --base-url http://169.254.83.107:512/v1 --model lfm2.5-8b-a1b --port 43211
+        --base-url http://localhost:1234/v1 --model lfm2.5-8b-a1b --port 43211
 """
 
 from __future__ import annotations

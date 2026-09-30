@@ -46,7 +46,7 @@ import lmstudio_models  # noqa: E402
 
 LIVE_DIR = REPO / "diagnostics" / "bench" / "live"
 RESULTS = LIVE_DIR / "results.jsonl"
-LM_SERVER = os.environ.get("POK_LM_SERVER", "http://169.254.83.107:512")
+LM_SERVER = os.environ.get("POK_LM_SERVER", "http://localhost:1234")
 
 LLMS = {
     "qwen": {

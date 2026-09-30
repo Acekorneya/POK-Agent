@@ -7,9 +7,9 @@ what it does, using LM Studio's REST API (`/api/v1/models`, `/load`,
 `/unload`).
 
 Usage:
-    python scripts/lmstudio_models.py --server http://169.254.83.107:512 --ensure qwen3.8-27b@q2_k_xl
-    python scripts/lmstudio_models.py --server http://169.254.83.107:512 --ensure qwen3.8-27b@q2_k_xl,lfm2.5-8b-a1b
-    python scripts/lmstudio_models.py --server http://169.254.83.107:512 --unload-all
+    python scripts/lmstudio_models.py --server http://localhost:1234 --ensure qwen3.8-27b@q2_k_xl
+    python scripts/lmstudio_models.py --server http://localhost:1234 --ensure qwen3.8-27b@q2_k_xl,lfm2.5-8b-a1b
+    python scripts/lmstudio_models.py --server http://localhost:1234 --unload-all
 """
 
 from __future__ import annotations

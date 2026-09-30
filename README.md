@@ -27,6 +27,26 @@ Windows runtime has a shared CLI and Tauri dashboard, typed tools, risk-based
 approval, SQLite FTS5 memory, restricted coding subagents, and a deterministic
 model exam. The internal code and package name remains POK-Ai.
 
+## Download
+
+Get the latest Windows build from
+[Releases](https://github.com/Acekorneya/POK-Agent/releases/latest):
+
+| File | Use it when |
+| --- | --- |
+| `POK-Ai-windows-x64-setup.exe` | You want a normal install with a Start menu entry (recommended). |
+| `POK-Ai-windows-x64.exe` | You want to run the app without installing it. |
+| `POK-Ai-windows-x64.zip` | You want a portable folder with the example configuration. |
+| `SHA256SUMS.txt` | You want to verify the downloads. |
+
+The builds are not code-signed yet, so Windows SmartScreen may say "Windows
+protected your PC". Choose **More info → Run anyway**. After it starts, open
+**Settings → Model** and pick a provider: a local model through
+[LM Studio](https://lmstudio.ai) or [Ollama](https://ollama.com), or a cloud
+provider with your own API key (stored in Windows Credential Manager). A
+System 1 router (JEV or Laya) is optional; the agent works without one. To
+build from source instead, see [Quick start](#quick-start).
+
 ## Research: System 1 and System 2 for computer use
 
 Most computer-use agents send every click through a large language model. POK-Agent splits the
@@ -190,7 +210,8 @@ with tool use works (vision recommended), including local models in LM Studio or
   Windows procedures are compiled into sanitized, approved skills for future recall.
 - When the built-ins are insufficient, the agent can author a task-specific PowerShell, Python,
   or source-code helper inside the approved workspace, execute it, inspect output, and revise it.
-- Voice, Discord gateway integration, and vector memory are intentionally deferred.
+- Spoken replies (text-to-speech), Telegram and Discord gateways, and scheduled jobs are planned
+  but not built yet. Voice input (offline speech-to-text) is available.
 
 ## Quick start
 

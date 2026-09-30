@@ -1,0 +1,56 @@
+name: Bug report
+description: Something went wrong while using POK-Agent.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please remove anything private (names, emails, screen text, API keys) from what you paste.
+        Security problems go through the Security tab instead: https://github.com/Acekorneya/POK-Agent/security/advisories/new
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you asked the agent to do, what it did, and what you expected.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open ...
+        2. Ask "..."
+        3. The agent ...
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Release tag (for example v0.1.0) or commit.
+    validations:
+      required: true
+  - type: input
+    id: model
+    attributes:
+      label: Model and provider
+      placeholder: "for example qwen3 on LM Studio, or a cloud provider"
+  - type: dropdown
+    id: router
+    attributes:
+      label: System 1 router
+      options:
+        - None
+        - JEV
+        - Laya
+        - Other
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: "Windows 11 24H2"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs or trace excerpt
+      description: Relevant lines from the session's trace.jsonl, with private content removed.
+      render: text
