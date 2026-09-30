@@ -18,13 +18,13 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$Description = "POK-Agent: a Windows computer-use AI agent. A large model plans, a small fast model acts on screen, and repeated tasks become muscle memory, so the big model is called less every time. Local-first, voice and vision, Rust + Tauri, open source."
+$Description = "POK-Agent: a Windows computer-use AI agent. A large model plans (System 2) and a small fast model acts on screen (System 1: JEV or local Laya). Repeated tasks become muscle memory, so the big model is called less every time. Local-first, voice and vision, Rust + Tauri, open source."
 
 $Topics = @(
-    "computer-use", "ai-agent", "agentic-ai", "desktop-automation", "windows",
-    "llm", "system-1-system-2", "ui-automation", "rpa", "local-first",
-    "speech-to-text", "vision-language-model", "rust", "tauri",
-    "lm-studio", "ollama", "openrouter", "self-improving-ai", "windows-agent-arena"
+    "computer-use", "ai-agent", "desktop-automation", "windows", "llm",
+    "system-1", "system-2", "system-1-system-2", "jev", "laya",
+    "ui-automation", "local-first", "speech-to-text", "vision-language-model",
+    "rust", "tauri", "lm-studio", "ollama", "self-improving-ai", "windows-agent-arena"
 )
 
 gh repo edit $Repository --description $Description
