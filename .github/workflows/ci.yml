@@ -1,0 +1,56 @@
+# Checks on every push and pull request. Linux is enough for the core,
+# CLI, voice (stub), and frontend checks and costs half as much as
+# Windows in a private repository.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.88.0
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: checks
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy -p pok-ai-core -p pok-ai-cli -p pok-ai-windows -p pok-ai-voice --all-targets -- -D warnings
+
+      - name: Rust tests
+        run: |
+          cargo test -p pok-ai-core --lib
+          cargo test -p pok-ai-cli
+          cargo test -p pok-ai-voice
+
+      - name: Frontend tests and build
+        run: |
+          npm --prefix apps/desktop ci
+          npm --prefix apps/desktop test
+          npm --prefix apps/desktop run build

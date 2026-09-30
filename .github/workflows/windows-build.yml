@@ -1,0 +1,67 @@
+# Builds the Windows executable and installers for every code change on
+# main. Download them from the run's "Artifacts" section.
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "scripts/arena/**"
+      - "exams/**"
+  workflow_dispatch:
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.88.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-release
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install and build the frontend
+        run: |
+          npm --prefix apps/desktop ci
+          npm --prefix apps/desktop run build
+
+      - name: Desktop tests
+        run: cargo test -p pok-ai-desktop
+
+      - name: Build executable and installers
+        run: npm --prefix apps/desktop run tauri -- build
+
+      - name: Name the build
+        id: name
+        shell: pwsh
+        run: |
+          $short = "${{ github.sha }}".Substring(0, 7)
+          "label=POK-Ai-windows-x64-$short" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.name.outputs.label }}
+          retention-days: 14
+          if-no-files-found: error
+          path: |
+            target/release/pok-ai-desktop.exe
+            target/release/bundle/nsis/*-setup.exe
+            target/release/bundle/msi/*.msi

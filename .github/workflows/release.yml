@@ -1,0 +1,86 @@
+# Publishes a GitHub release when a version tag is pushed:
+#   .\scripts\bump-version.ps1 -Version 0.2.0
+#   git push origin main v0.2.0
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build and publish, e.g. v0.2.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - name: Check the tag matches the version
+        id: version
+        shell: pwsh
+        run: |
+          $tauri = (Get-Content apps/desktop/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          $cargo = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          if ($tauri -ne $cargo) { throw "tauri.conf.json is $tauri but Cargo.toml is $cargo" }
+          if ("v$tauri" -ne $env:TAG) { throw "Tag $env:TAG does not match version v$tauri; run scripts/bump-version.ps1" }
+          "version=$tauri" >> $env:GITHUB_OUTPUT
+
+      - uses: dtolnay/rust-toolchain@1.88.0
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: windows-release
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+
+      - name: Install and build the frontend
+        run: |
+          npm --prefix apps/desktop ci
+          npm --prefix apps/desktop run build
+
+      - name: Tests
+        run: |
+          cargo test -p pok-ai-core --lib
+          cargo test -p pok-ai-desktop
+          npm --prefix apps/desktop test
+
+      - name: Build executable and installers
+        run: npm --prefix apps/desktop run tauri -- build
+
+      - name: Package release files
+        id: package
+        shell: pwsh
+        run: |
+          $dir = (.\scripts\package-release.ps1 -Version ${{ steps.version.outputs.version }} | Select-Object -Last 1).Trim()
+          "dir=$dir" >> $env:GITHUB_OUTPUT
+
+      - name: Publish the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $dir = "${{ steps.package.outputs.dir }}"
+          gh release create $env:TAG `
+            "$dir/POK-Ai-windows-x64.exe" `
+            "$dir/POK-Ai-windows-x64-setup.exe" `
+            "$dir/POK-Ai-windows-x64.zip" `
+            "$dir/SHA256SUMS.txt" `
+            --repo "${{ github.repository }}" `
+            --title "POK-Ai $env:TAG" `
+            --generate-notes `
+            --latest

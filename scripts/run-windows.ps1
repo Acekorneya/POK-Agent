@@ -175,41 +175,11 @@ function Assert-GitHubReleaseReady {
 }
 
 function Publish-GitHubRelease($Metadata) {
-    $BundleDir = Join-Path $TargetDir "release/bundle"
-    $NsisDir = Join-Path $BundleDir "nsis"
-    $NsisInstallers = @(
-        Get-ChildItem -Path $NsisDir -Filter "*-setup.exe" -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -like "*$($Metadata.Version)*" }
-    )
-    if ($NsisInstallers.Count -ne 1) {
-        throw "Expected exactly one NSIS installer for version $($Metadata.Version) in $NsisDir, but found $($NsisInstallers.Count)."
-    }
-
-    $PublishDir = Join-Path $TargetDir "release/publish/$($Metadata.Tag)"
-    $PortableDir = Join-Path $PublishDir "portable"
-    if (Test-Path $PublishDir) {
-        Remove-Item -Path $PublishDir -Recurse -Force
-    }
-    New-Item -ItemType Directory -Path $PortableDir -Force | Out-Null
-
+    $PublishDir = (& (Join-Path $PSScriptRoot "package-release.ps1") -Version $Metadata.Version | Select-Object -Last 1).Trim()
     $ExecutableAsset = Join-Path $PublishDir "POK-Ai-windows-x64.exe"
     $InstallerAsset = Join-Path $PublishDir "POK-Ai-windows-x64-setup.exe"
     $ZipAsset = Join-Path $PublishDir "POK-Ai-windows-x64.zip"
     $ChecksumAsset = Join-Path $PublishDir "SHA256SUMS.txt"
-
-    Copy-Item $ReleaseExe $ExecutableAsset -Force
-    Copy-Item $NsisInstallers[0].FullName $InstallerAsset -Force
-    Copy-Item $ReleaseExe (Join-Path $PortableDir "POK-Ai.exe") -Force
-    foreach ($File in @("LICENSE", "NOTICE", "README.md", "pok-ai.example.toml")) {
-        Copy-Item (Join-Path $ProjectDir $File) (Join-Path $PortableDir $File) -Force
-    }
-    Compress-Archive -Path (Join-Path $PortableDir "*") -DestinationPath $ZipAsset -CompressionLevel Optimal -Force
-
-    $ChecksumLines = foreach ($Asset in @($ExecutableAsset, $InstallerAsset, $ZipAsset)) {
-        $Hash = (Get-FileHash -Path $Asset -Algorithm SHA256).Hash.ToLowerInvariant()
-        "$Hash  $([System.IO.Path]::GetFileName($Asset))"
-    }
-    Set-Content -Path $ChecksumAsset -Value $ChecksumLines -Encoding ascii
 
     Write-Host "Publishing $($Metadata.Tag) to $($Metadata.Repository)..." -ForegroundColor Cyan
     & gh release create $Metadata.Tag $ExecutableAsset $InstallerAsset $ZipAsset $ChecksumAsset `

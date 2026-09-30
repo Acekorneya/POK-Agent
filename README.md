@@ -11,6 +11,12 @@ and repeated tasks become muscle memory.
 
 <p align="center">
 
+[![CI](https://github.com/Acekorneya/POK_Ai/actions/workflows/ci.yml/badge.svg)](https://github.com/Acekorneya/POK_Ai/actions/workflows/ci.yml)
+[![Windows build](https://github.com/Acekorneya/POK_Ai/actions/workflows/windows-build.yml/badge.svg)](https://github.com/Acekorneya/POK_Ai/actions/workflows/windows-build.yml)
+[![Latest release](https://img.shields.io/github/v/release/Acekorneya/POK_Ai?label=download)](https://github.com/Acekorneya/POK_Ai/releases/latest)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+![Platform: Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6)
+
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://www.buymeacoffee.com/acekorneyab)
 
 </p>
@@ -222,25 +228,32 @@ Pass `-SkipChecks` only when checks already passed for the same commit, or `-NoL
 artifact should be built without starting it. Use `-Clean` to discard generated Rust build artifacts
 before a build; the launcher also does this automatically once when its Rust build profile changes.
 
-### Publish a GitHub release
+### Builds and releases (GitHub Actions)
 
-Once a change is ready for users, bump the matching versions in the workspace `Cargo.toml` and
-`apps/desktop/src-tauri/tauri.conf.json`, commit the change, and push it to the branch's upstream.
-Install and authenticate [GitHub CLI](https://cli.github.com/) once, then run this from native
-Windows PowerShell:
+Three workflows in `.github/workflows/` automate builds:
+
+| Workflow | Runs on | What it does |
+| --- | --- | --- |
+| **CI** (`ci.yml`) | every push and pull request | formatting, clippy, core/CLI/voice tests, frontend tests and build (Linux) |
+| **Windows build** (`windows-build.yml`) | every code change pushed to `main` | builds `pok-ai-desktop.exe` plus the NSIS and MSI installers; download them from the run's **Artifacts** (kept 14 days) |
+| **Release** (`release.yml`) | a pushed `v*` tag, or run by hand for an existing tag | checks the tag matches the version, runs tests, builds, and publishes a GitHub release |
+
+To publish a release:
 
 ```powershell
-gh auth login
-.\scripts\run-windows.ps1 -Mode Shipped -Release
+.\scripts\bump-version.ps1 -Version 0.2.0   # sets Cargo.toml and tauri.conf.json, commits, tags v0.2.0
+git push origin main v0.2.0                 # the Release workflow does the rest
 ```
 
-`-Release` runs the normal native checks and Tauri build, creates a `v<version>` GitHub release with
-generated notes, and uploads stable-named x64 assets: the standalone executable, NSIS installer,
-portable ZIP, and `SHA256SUMS.txt`. The ZIP contains the executable, example configuration, README,
-license, and notice. Publishing stops before the build if the working tree is dirty, the commit is
-not pushed, the Cargo and Tauri versions differ, authentication is missing, or that release/tag
-already exists. A publishing run never launches the built app. Do not combine `-Release` with
-`-SkipChecks` unless the exact pushed commit has already passed the native checks.
+The release contains `POK-Ai-windows-x64.exe` (standalone), `POK-Ai-windows-x64-setup.exe`
+(installer), `POK-Ai-windows-x64.zip` (portable: executable, example configuration, README,
+license, notice), and `SHA256SUMS.txt`. `scripts/package-release.ps1` builds these files, both in
+the workflow and locally.
+
+A release can still be published from a Windows PC with GitHub CLI:
+`gh auth login`, then `.\scripts\run-windows.ps1 -Mode Shipped -Release`. It runs the native
+checks, builds, and publishes the same files; it stops if the working tree is dirty, the commit
+is not pushed, the Cargo and Tauri versions differ, or the release already exists.
 
 These community builds are currently unsigned because generally trusted Windows code-signing
 certificates are not free. Windows may therefore show a SmartScreen warning. Users can inspect the

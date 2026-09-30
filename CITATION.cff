@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+message: "If you use POK-Agent in research, please cite it as below."
+title: "POK-Agent: a System 1 and System 2 computer-use agent for Windows"
+abstract: >-
+  POK-Agent is a Windows computer-use harness in which a large language model
+  plans (System 2) and a small, fast decision model carries out bounded
+  on-screen steps (System 1). Verified runs are stored as motor programs that
+  System 1 replays for repeated tasks, reducing planner calls over time. The
+  repository includes a Windows Agent Arena evaluation suite.
+type: software
+authors:
+  - name: "KNY Industries"
+repository-code: "https://github.com/Acekorneya/POK_Ai"
+license: Apache-2.0
+keywords:
+  - computer use
+  - AI agents
+  - desktop automation
+  - System 1 and System 2
+  - Windows Agent Arena
