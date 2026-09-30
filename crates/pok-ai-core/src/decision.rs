@@ -2617,6 +2617,102 @@ pub fn condition_has_unquoted_clause(condition: &str) -> bool {
         .any(|word| CHANGE_WORDS.contains(&word))
 }
 
+/// Whether a condition claims more than its quoted labels show: words such as
+/// "the Explore page is open showing \"Trending\" and news stories" name a
+/// page and content that the quote alone cannot prove. Presence wording
+/// ("is visible", "is selected", "heading") adds nothing beyond the quotes.
+pub fn condition_claims_beyond_quotes(condition: &str) -> bool {
+    const PRESENCE_WORDS: &[&str] = &[
+        "the",
+        "and",
+        "are",
+        "is",
+        "its",
+        "with",
+        "that",
+        "this",
+        "for",
+        "from",
+        "has",
+        "have",
+        "now",
+        "shown",
+        "showing",
+        "shows",
+        "show",
+        "visible",
+        "displayed",
+        "display",
+        "displays",
+        "appears",
+        "appear",
+        "present",
+        "open",
+        "opened",
+        "opens",
+        "selected",
+        "active",
+        "checked",
+        "highlighted",
+        "focused",
+        "enabled",
+        "label",
+        "labeled",
+        "labelled",
+        "text",
+        "heading",
+        "title",
+        "button",
+        "link",
+        "tab",
+        "item",
+        "entry",
+        "option",
+        "field",
+        "menu",
+        "screen",
+        "view",
+        "window",
+        "dialog",
+        "row",
+        "cell",
+        "value",
+        "reads",
+        "contains",
+        "containing",
+        "says",
+        "named",
+        "called",
+        "above",
+        "below",
+        "top",
+        "bottom",
+        "under",
+        "near",
+        "next",
+    ];
+    let mut outside = String::new();
+    let mut quoted = false;
+    for character in condition.chars() {
+        if matches!(character, '"' | '“' | '”') {
+            quoted = !quoted;
+            outside.push(' ');
+        } else if !quoted {
+            outside.push(character);
+        }
+    }
+    outside
+        .split(|character: char| !character.is_alphanumeric())
+        .map(str::to_lowercase)
+        .filter(|word| {
+            word.chars()
+                .filter(|character| character.is_alphabetic())
+                .count()
+                >= 3
+        })
+        .any(|word| !PRESENCE_WORDS.contains(&word.as_str()))
+}
+
 /// Whether every label a condition quotes is part of the target the planner
 /// named. Before that target is acted on, finding such a label proves only
 /// that the target is visible, not that the goal was reached.
@@ -3009,6 +3105,17 @@ mod tests {
             "the display row"
         ));
         assert!(!condition_quotes_only_target("\"Display\" is visible", ""));
+        // A page and content named outside the quotes need a judgment;
+        // a quoted label with presence wording does not.
+        assert!(condition_claims_beyond_quotes(
+            "the Explore page is open showing \"Trending\" and news stories"
+        ));
+        assert!(!condition_claims_beyond_quotes(
+            "heading \"Advanced display\" is visible"
+        ));
+        assert!(!condition_claims_beyond_quotes(
+            "the \"Mentions\" tab is selected"
+        ));
     }
 
     #[test]

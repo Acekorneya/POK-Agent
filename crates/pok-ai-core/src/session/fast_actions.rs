@@ -2144,6 +2144,26 @@ impl Session {
                     Some(true) if crate::decision::condition_has_unquoted_clause(&done_when) => {
                         None
                     }
+                    // Nothing has been done yet toward a named target, and
+                    // the quoted words were already on screen (a sidebar
+                    // "Trending" before Explore was opened): the rest of the
+                    // condition needs a judgment before the step is skipped.
+                    // A window or page title that shows the quotes is real
+                    // evidence and still counts.
+                    Some(true)
+                        if (steps.is_empty() || unchanged_since_start)
+                            && !hint.trim().is_empty()
+                            && crate::decision::condition_claims_beyond_quotes(&done_when)
+                            && crate::decision::grounded_condition(
+                                &done_when,
+                                &crate::decision::title_evidence_text(
+                                    observation.as_ref(),
+                                    &browser_state,
+                                ),
+                            ) != Some(true) =>
+                    {
+                        None
+                    }
                     grounded => grounded,
                 };
                 grounding_proof = proof;

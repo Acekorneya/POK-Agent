@@ -7286,3 +7286,31 @@ fn a_page_note_keeps_readable_text_in_order_without_repeats() {
     assert_eq!(page, "social.example/notifications");
     assert_eq!(note, "Notifications | Recent post from Example Author");
 }
+
+#[tokio::test]
+async fn a_word_already_on_screen_does_not_skip_opening_the_named_page() {
+    // The home page's sidebar already shows "Trending"; the plan opens the
+    // Explore page and quotes "Trending" in its condition. The step must
+    // still open Explore instead of reporting done without acting.
+    let mut harness = fast_harness(
+        fast_router(1, 0.99),
+        vec![fast_link("t1", "Explore"), fast_link("t2", "Trending")],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let mut metrics = RunMetrics::default();
+    let result = harness
+        .session
+        .run_fast_actions(
+            1,
+            &json!({"goal": "Open the Explore page", "target_hint": "\"Explore\"",
+                "done_when": "the Explore page is open showing \"Trending\" and news stories",
+                "allowed_operations": ["click"], "max_steps": 3}),
+            &mut metrics,
+        )
+        .await
+        .unwrap();
+    let clicks = harness.clicks.lock();
+    assert_eq!(clicks.len(), 1, "{result}");
+    assert_eq!(clicks[0]["target_id"], "t1", "Explore is opened first");
+    assert_eq!(result["status"], "done");
+}
