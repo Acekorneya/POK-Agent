@@ -48,6 +48,25 @@ provider with your own API key (stored in Windows Credential Manager). A
 System 1 router (JEV or Laya) is optional; the agent works without one. To
 build from source instead, see [Quick start](#quick-start).
 
+### Platform support
+
+POK-Agent is a **Windows 10/11** app: seeing and controlling the desktop is
+built on Windows UI Automation, Windows OCR, and Windows input.
+
+| | Windows 10/11 | Linux (including WSL) | macOS |
+| --- | --- | --- | --- |
+| Desktop app | ✅ | ❌ | ❌ |
+| Computer use (screen capture, OCR, clicking, typing) | ✅ | ❌ | ❌ |
+| Voice input | ✅ | ❌ | ❌ |
+| CLI, agent core, memory, and System 1 router | ✅ | ✅ | untested |
+| Coding tools (files, search, edits, commands) | ✅ | ✅ | untested |
+
+On Linux the CLI runs as a coding agent, and the desktop tools report
+"unsupported". Linux desktop control is possible later: all screen access goes
+through one interface (`DesktopPlatform`), so a port means adding an
+implementation based on AT-SPI accessibility and X11 or Wayland capture and
+input.
+
 ## Research: System 1 and System 2 for computer use
 
 Most computer-use agents send every click through a large language model. POK-Agent splits the
