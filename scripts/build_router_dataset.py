@@ -29,7 +29,17 @@ Usage:
 
 `--teacher BACKEND` adds soft labels: where no proven label exists, a
 confident answer recorded from that decision backend becomes a soft target.
-Proven labels always take precedence.
+Proven labels always take precedence. Only backends whose terms allow it can
+be teachers: hosted TypeSafe models (JEV) are refused, because TypeSafe's
+Master Customer Agreement (section 2.3(b)) forbids using their output to
+distill or train a model that imitates it.
+
+For the same reason, sessions that used hosted JEV are left out of the
+dataset by default, proven labels included: the agreement also forbids using
+the service to develop a similar or competing product.
+`--include-hosted-sessions` keeps them, for use only with TypeSafe's written
+permission. Collect Laya training data with a local backend (Laya, kev,
+llm_choice) or without a router.
 
 `--outcomes` joins each session's task result (JSONL of {session_id, score},
 written by `scripts/arena/run_arena.py dataset`), and
@@ -54,6 +64,10 @@ import sys
 from pathlib import Path
 
 WORKFLOW = "pok_ai_desktop"
+
+# Hosted decision models whose terms forbid training on their output
+# (TypeSafe Master Customer Agreement, section 2.3(b)).
+NO_TEACHING = ("jev",)
 
 
 def default_input() -> list[str]:
@@ -175,7 +189,7 @@ def main() -> int:
         "--teacher",
         action="append",
         default=[],
-        help="also learn from this backend's confident answers (model name prefix, e.g. jev) where no proven label exists",
+        help="also learn from this backend's confident answers (model name prefix, e.g. laya) where no proven label exists",
     )
     parser.add_argument("--teacher-min", type=float, default=0.9, help="minimum teacher probability for its choice")
     parser.add_argument("--outcomes", help="JSONL of {session_id, score} task results (from the arena)")
@@ -184,7 +198,19 @@ def main() -> int:
         action="store_true",
         help="use teacher answers only from sessions whose task passed (needs --outcomes)",
     )
+    parser.add_argument(
+        "--include-hosted-sessions",
+        action="store_true",
+        help="keep sessions that used hosted JEV (only with TypeSafe's written permission; "
+        "their Master Customer Agreement 2.3(b) forbids using the service to develop a competing model)",
+    )
     args = parser.parse_args()
+    refused = [teacher for teacher in args.teacher if teacher.lower().startswith(NO_TEACHING)]
+    if refused:
+        parser.error(
+            f"--teacher {', '.join(refused)}: TypeSafe's terms (Master Customer Agreement 2.3(b)) "
+            "forbid training a model on its output; use proven labels or a local backend instead"
+        )
     scores: dict[str, float] = {}
     if args.outcomes:
         with open(args.outcomes, encoding="utf-8") as handle:
@@ -194,6 +220,20 @@ def main() -> int:
                     scores[str(row["session_id"])] = float(row["score"])
 
     questions, labels, handbacks = read_records(args.input or default_input())
+    # Sessions a hosted model with no-training terms took part in are left
+    # out entirely unless you have the provider's permission.
+    hosted = {
+        str(record.get("session_id"))
+        for record in questions.values()
+        if str(record.get("model") or "").lower().startswith(NO_TEACHING)
+    }
+    if hosted and not args.include_hosted_sessions:
+        kept = {key: record for key, record in questions.items() if str(record.get("session_id")) not in hosted}
+        dropped = set(questions) - set(kept)
+        questions = kept
+        labels = [label for label in labels if label.get("id") not in dropped]
+        handbacks = [item for item in handbacks if str(item.get("session_id")) not in hosted]
+        print(f"left out {len(hosted)} sessions that used a hosted JEV backend (see --include-hosted-sessions)")
     handback_stats: collections.Counter = collections.Counter()
     handback_labels, handback_questions = handback_examples(handbacks, questions, handback_stats)
     questions.update(handback_questions)

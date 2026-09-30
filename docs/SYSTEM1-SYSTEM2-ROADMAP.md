@@ -90,7 +90,7 @@ Target: System 1 action share from 15% toward 70–90%.
 | Typed-decision router (JEV, Laya, LLM choice) with thresholds and hand-back | done | `decision.rs`, `session/decision_router.rs` |
 | Cursor-free input (UI Automation patterns first) and background work | done | `builtins/input.rs`, `agent_window.rs` |
 | Skills: learn, deduplicate (3 layers), rewrite, load, reinforce, fail and disable | done | `memory.rs`, `session/curation.rs`, `session/run_loop.rs` |
-| Router training log (questions, proven labels, backend answers as soft labels) | done | `router_training.rs`, `scripts/build_router_dataset.py` |
+| Router training log (questions, proven labels, local backend answers as soft labels; JEV sessions excluded per TypeSafe's terms) | done | `router_training.rs`, `scripts/build_router_dataset.py` |
 | Windows Agent Arena suite: parallel VMs, memory modes, per-task data, manifests | done | `scripts/arena/` |
 | System 1 motor skills: typing and key chains the planner writes, right-click, hover, drag between quoted labels | done | `session/fast_actions.rs`, `builtins/targeting.rs` |
 | Popup reflex: an unexpected dialog is read (title, text, buttons) and handed back as text | done | `session/fast_actions.rs` |
@@ -366,8 +366,9 @@ Change one thing at a time, so every result has a single explanation.
    from the old harness. A fresh-memory-per-task control can run alongside.
 4. **Pass 2 (and 3) with v2's skills**: the same harness and JEV, only memory
    changes. The difference is pure self-improvement; fit $C(N)$.
-5. **Laya, clean**: fine-tune Laya on `base1` + v2 data with applications held
-   out; run a clean arena pass with the same harness and protocol (held-out
+5. **Laya, clean**: fine-tune Laya on data from runs with a local System 1
+   (not the JEV runs: TypeSafe's terms, section 2.3(b), forbid using JEV to
+   develop a competing model) with applications held out; run a clean arena pass with the same harness and protocol (held-out
    applications first). Compared with v2 this isolates the trained System 1.
    Needs the VM-to-GPU bridge.
 6. **Laya + skills**: the full system, compared with pass 2.

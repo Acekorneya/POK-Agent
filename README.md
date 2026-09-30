@@ -1,6 +1,19 @@
-# POK-Agent
+<p align="center">
+  <img src="docs/media/pok-logo.png" alt="POK-Agent" width="320">
+</p>
+
+<h1 align="center">POK-Agent</h1>
+
+<p align="center">
+A Windows computer-use agent where a large model plans and a small, fast model acts,<br>
+and repeated tasks become muscle memory.
+</p>
+
+<p align="center">
 
 [![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black)](https://www.buymeacoffee.com/acekorneyab)
+
+</p>
 
 POK-Agent is an autonomous general computer and coding harness built primarily
 for local models, with cloud bring-your-own-model (BYOM) support. The Rust-first
@@ -32,8 +45,9 @@ work the way people do:
   fingerprinted.
 - **Self-improvement.** Skills gain trust with every verified run and lose it with every failure.
   A replay that no longer fits is replaced by the path that finished the job, a leaner path
-  replaces a longer one, and every System 1 question, answer, and planner hand-back becomes
-  training data for fine-tuning the local System 1.
+  replaces a longer one, and System 1 questions with proven answers and planner hand-backs are
+  logged as training data for fine-tuning the local System 1 (from runs with a local System 1;
+  hosted JEV's terms do not allow training other models on it).
 
 ### See it work
 
@@ -109,8 +123,7 @@ differences of a few tasks are noise. A program is saved when the agent's own ch
 succeeded; about 3 in 10 of those runs failed the benchmark's stricter check, so skill trust,
 not the self-check alone, has to weed out wrong programs. Some applications (Clock's pickers,
 canvas-like controls) are still visible only to the planner's vision, not to System 1. The local
-System 1 (Laya) has not yet been fine-tuned on the collected data; the runs above use the hosted
-JEV.
+System 1 (Laya) has not yet been fine-tuned; the runs above use the hosted JEV.
 
 ### How POK-Agent works
 
@@ -257,28 +270,25 @@ through numbered targets and `click_target`.
 
 ## Optional JEV or Laya decision router
 
-JEV is TypeSafe's hosted System-1 decision model (state + typed questions in, calibrated
-probabilities out — no text generation). POK-Agent speaks the same bounded contract to either the
-hosted JEV endpoint or a local Laya/zeiger sidecar, so the architecture is identical; only the
-model behind the endpoint differs. JEV is an experimental, optional decision layer for bounded actions, evidence, optional retrieved
-context, and inferred-memory review. POK-Agent filters and ranks candidates locally before sending a
-small candidate set. For actions, JEV first chooses an operation and then an exact harness-supplied
-target. It continues through a bounded structured browser or desktop flow until it selects DONE or
-BLOCKED; every action still passes through normal policy, freshness, target, and post-action
-verification checks. A low-confidence decision or BLOCKED response with viable reversible actions
-starts an adaptive refresh-and-narrow loop instead of immediately waking the primary model. The
-operation and exact-target confidences have separate thresholds; repeated uncertain semantic
-targets are temporarily withheld for the unchanged state so JEV explores an alternative. Failed
-targets are suppressed individually, while the action class remains available for other targets.
-After confidence stops improving, at most one tool-free bounded vision request per state may select
-only from the current harness candidates before control returns to JEV. Sensitive fields are redacted
-individually so one unsafe label does not discard the safe action space. The primary model remains
-the reasoning and conversational brain: it generates missing text, reviews consequential commits,
-handles unsupported work, and turns fresh evidence into the final user-facing answer. A verified
-high-confidence DONE enters persistent tool-free finalization: malformed output may be retried, but
-tools remain disabled until the visible answer is produced. Live web-information requests are routed
-to the managed browser without unrelated desktop orientation. JEV does not bypass the harness safety
-boundary. With JEV disabled, the primary model retains the complete original agent loop and tool use.
+JEV is TypeSafe's hosted System 1 decision model: state and typed questions go in, calibrated
+probabilities come out, with no text generation. POK-Agent speaks the same bounded contract to the
+hosted JEV endpoint or to a local Laya or kev sidecar, so only the model behind the endpoint
+changes. The router is optional and off by default; with it off, the primary model keeps the
+complete agent loop and every tool.
+
+- **Small questions only.** POK-Agent filters and ranks candidates locally and sends a small
+  candidate set. The model picks an operation, then an exact harness-supplied target, or answers
+  whether a condition holds. Operation and target confidences have separate thresholds.
+- **Uncertainty is handled, not guessed.** A low-confidence answer starts a bounded
+  refresh-and-narrow loop; repeatedly uncertain targets are set aside so another is tried; failed
+  targets are suppressed individually. When confidence stops improving, control returns to the
+  primary model.
+- **Nothing bypasses the harness.** Every action still passes policy, observation freshness,
+  target, and post-action verification checks. Sensitive fields are redacted one by one, so one
+  unsafe label does not hide the safe actions.
+- **The primary model stays the brain.** It writes any text, reviews consequential commits
+  (sending, saving, deleting), handles unsupported work, and turns fresh evidence into the answer.
+  A verified DONE ends in a tool-free final answer.
 
 The same bounded router contract can run through **Laya**, the local open-source option, with an
 optional **local cross-model judge** (zeiger) as a second opinion. All local decision models run as
@@ -319,7 +329,8 @@ re-judged. Every attempt logs per-question votes and confidences, replayable off
 The primary model is consulted only when the fast loop reaches a terminal DONE (fresh evidence is
 sufficient to answer), a BLOCKED state, a judge decline, or the bounded action budget — and then it
 receives the *curated* working set (window title, relevant targets, OCR text, screenshot), not raw
-desktop dumps. Measured on the same real Windows task before/after these changes: **24 turns / 44
+desktop dumps. In an early single-task measurement (before the arena runs above) on the same
+real Windows task before/after these changes: **24 turns / 44
 tool calls / ~314k prompt tokens → 2-3 turns / 4 tool calls / ~35k prompt tokens**, at parity with
 hosted JEV on that task (3 turns / 8 calls / ~65k). JEV remains the higher-accuracy picker on the
 20-case harness suite (90% vs. 75% raw picks); closing that gap locally means fine-tuning the

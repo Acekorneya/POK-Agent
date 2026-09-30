@@ -569,8 +569,15 @@ is joined with its task's automatic score (`run_arena.py dataset`), and
 backend answers can be limited to tasks that passed
 (`--outcomes … --teacher-successful-only`).
 
+**Terms.** TypeSafe's Master Customer Agreement (section 2.3(b)) forbids using
+hosted JEV or its output to distill, train a model that imitates it, or develop
+a competing product. The dataset builder therefore refuses JEV as a teacher and
+leaves out sessions that used JEV (`--include-hosted-sessions` keeps them, only
+with TypeSafe's written permission). Collect training data with a local backend
+(Laya, kev, llm_choice) or without a router.
+
 Soft labels: with `--teacher <backend> --teacher-min 0.9`, where no proven
-label exists, a confident answer recorded from the configured backend becomes
+label exists, a confident answer recorded from a local backend becomes
 a soft target (its full probability spread). Proven labels always take
 precedence, so the trained model can still improve on any backend where
 grounding knows better.

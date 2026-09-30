@@ -10,7 +10,9 @@ in a clean Windows 11 VM. It serves three purposes:
    memory, so later passes show whether learned skills make it faster and more reliable.
 3. **Training data.** Router questions and their answers from every task, joined with
    the task's result, become a System 1 training set. The VM holds no personal data, so
-   the set can be shared.
+   the set can be shared. Only runs with a local backend (Laya, kev, llm_choice) or no
+   router count: TypeSafe's terms forbid training a model on JEV or developing a
+   competing model with it, so sessions that used JEV are left out.
 
 ## How it works
 
@@ -134,9 +136,12 @@ python3 scripts/arena/run_arena.py dataset --tag waa1 --output dataset/waa1
 ```
 
 This joins every task's router records with the task's arena score. It builds a Laya
-typed-decisions set (`scripts/build_router_dataset.py`) from proven labels, plus JEV's
-confident answers from tasks that passed. Each row keeps its `outcome`, for further
-filtering.
+typed-decisions set (`scripts/build_router_dataset.py`) from proven labels, plus a local
+backend's confident answers from tasks that passed. Each row keeps its `outcome`, for
+further filtering. Sessions that used hosted JEV are left out, and JEV can't be a teacher:
+TypeSafe's Master Customer Agreement (section 2.3(b)) forbids distilling from its output or
+using it to develop a competing model. `--include-hosted-sessions` on the dataset builder
+is only for use with TypeSafe's written permission.
 
 ## Demo clips
 

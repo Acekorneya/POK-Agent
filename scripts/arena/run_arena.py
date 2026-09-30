@@ -746,10 +746,11 @@ def dataset(args: argparse.Namespace) -> None:
     outcomes = RUNS / args.tag / "outcomes.jsonl"
     teacher = args.teacher
     if not teacher:
-        # The decision backend the run itself used supplies the soft labels.
+        # The decision backend the run itself used supplies the soft labels,
+        # unless its terms forbid training on its output (hosted JEV).
         manifest = json.loads((RUNS / args.tag / "manifest.json").read_text(encoding="utf-8"))
         backends = [arm.get("backend") for arm in manifest.get("arms", {}).values() if arm.get("backend")]
-        teacher = backends[0] if backends else ""
+        teacher = next((backend for backend in backends if backend.lower() != "jev"), "")
     with open(outcomes, "w", encoding="utf-8") as handle:
         for row in load_rows(args.tag):
             if row.get("session_id") and row.get("score") is not None:
@@ -830,7 +831,7 @@ def main() -> None:
     dataset_parser.add_argument("--tag", required=True)
     dataset_parser.add_argument("--output", required=True)
     dataset_parser.add_argument("--teacher", help="decision backend whose confident answers become soft labels "
-                                "(default: the backend the run used)")
+                                "(default: the backend the run used, unless its terms forbid training on its output, as JEV's do)")
     args = parser.parse_args()
     {"run": run, "summary": summary, "dataset": dataset, "finalize": finalize, "clean": clean}[args.command](args)
 
