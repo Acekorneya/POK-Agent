@@ -137,3 +137,11 @@ This joins every task's router records with the task's arena score. It builds a 
 typed-decisions set (`scripts/build_router_dataset.py`) from proven labels, plus JEV's
 confident answers from tasks that passed. Each row keeps its `outcome`, for further
 filtering.
+
+## Demo clips
+
+`record_demo.py record --tag <tag>` runs next to `run_arena.py run --tag <tag>` and saves
+two screenshots a second from every VM of that run. `record_demo.py render --tag <tag>`
+then cuts one MP4 and GIF per task into `~/arena/runs/<tag>/demo-clips/`, keeping only the
+time POK-Ai was running and dropping frames where nothing changed. The README's clips in
+`docs/media/` come from these.

@@ -35,6 +35,36 @@ work the way people do:
   replaces a longer one, and every System 1 question, answer, and planner hand-back becomes
   training data for fine-tuning the local System 1.
 
+### See it work
+
+Recorded in clean Windows 11 VMs from Windows Agent Arena, with no human input. The agent was
+given only the task sentence. Moments where the screen did not change (the planner thinking)
+are cut, so each clip shows the actions only; the real time is given beside it.
+
+**Muscle memory: the same task, first time and again.** Chrome, *"set the default font size to
+the largest"*. The first attempt is planned step by step. The second time, System 1 replays the
+recorded program and the planner only checks the result.
+
+| First attempt: 9 planner calls, 231 s | With muscle memory: 4 planner calls, 38 s |
+| --- | --- |
+| <img src="docs/media/chrome-font-size.gif" alt="First attempt at setting Chrome's font size" width="400"> | <img src="docs/media/chrome-font-size-replay.gif" alt="System 1 replaying the recorded program for Chrome's font size" width="400"> |
+
+Settings, *"change my desktop background to a solid color"*. Left: no memory. Right: a program
+learned in an earlier arena run, replayed end to end by System 1 (5 of 5 steps).
+
+| No memory: 19 planner calls, 196 s | With muscle memory: 5 planner calls, 51 s |
+| --- | --- |
+| <img src="docs/media/settings-background-first.gif" alt="First attempt at a solid desktop background" width="400"> | <img src="docs/media/settings-background-replay.gif" alt="System 1 replaying the solid background program" width="400"> |
+
+**Folders and spreadsheets.**
+
+| File Explorer: *"create a folder named Archive in Documents and move all .docx files into it"* (20 planner calls, 241 s) | LibreOffice Calc: *"add a Profit column: Sales minus COGS"* (first 40 s of a 639 s run, which the agent spent mostly re-checking its result) |
+| --- | --- |
+| <img src="docs/media/explorer-archive.gif" alt="Creating an Archive folder and moving documents into it" width="400"> | <img src="docs/media/calc-profit-column.gif" alt="Adding a Profit column in LibreOffice Calc" width="400"> |
+
+All six runs passed the benchmark's own checker. The clips are made with
+`scripts/arena/record_demo.py`, which records the VM screens during an arena run.
+
 ### Results on Windows Agent Arena
 
 Measured on [Windows Agent Arena](https://github.com/microsoft/WindowsAgentArena): 154 scored
