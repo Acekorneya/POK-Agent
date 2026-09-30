@@ -886,18 +886,24 @@ impl MemoryStore {
         // The same task learned again (a run that looked around in a different
         // order): reinforce the existing skill instead of adding a copy, and
         // keep the leaner step list.
-        let same_task = connection
-            .query_row(
-                "SELECT id FROM procedures WHERE kind = ?1 AND task_signature = ?2
-                 AND applications = ?3 ORDER BY success_count DESC LIMIT 1",
-                params![
-                    procedure.kind.as_str(),
-                    procedure.task_signature,
-                    applications
-                ],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?;
+        // An application that was merely open during the run (a mixer, an
+        // editor, a terminal) does not make it a different task.
+        let same_task = {
+            let mut statement = connection.prepare(
+                "SELECT id, applications FROM procedures WHERE kind = ?1 AND task_signature = ?2
+                 ORDER BY success_count DESC",
+            )?;
+            let candidates = statement
+                .query_map(
+                    params![procedure.kind.as_str(), procedure.task_signature],
+                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+                )?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            candidates
+                .into_iter()
+                .find(|(_, existing)| same_skill_applications(existing, &applications))
+                .map(|(id, _)| id)
+        };
         if let Some(id) = same_task {
             drop(connection);
             let record = self.merge_into_procedure(&id, &procedure)?;
@@ -1189,20 +1195,30 @@ impl MemoryStore {
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()?
         };
-        let mut keeper: std::collections::HashMap<(String, String, String), String> =
+        // Keepers per task, strongest first; a copy joins the first keeper
+        // whose applications overlap its own.
+        let mut keepers: std::collections::HashMap<(String, String), Vec<(String, String)>> =
             std::collections::HashMap::new();
         let mut removed = Vec::new();
         let transaction = connection.transaction()?;
-        for (id, task, successes, retrievals) in rows {
-            match keeper.get(&task) {
-                None => {
-                    keeper.insert(task, id);
-                }
+        for (id, (kind, signature, applications), successes, retrievals) in rows {
+            let group = keepers.entry((kind, signature)).or_default();
+            match group
+                .iter()
+                .find(|(_, kept_applications)| {
+                    same_skill_applications(kept_applications, &applications)
+                })
+                .map(|(kept, _)| kept.clone())
+            {
+                None => group.push((id, applications)),
                 Some(kept) => {
                     transaction.execute(
                         "UPDATE procedures SET success_count = success_count + ?2,
-                         retrieval_count = retrieval_count + ?3 WHERE id = ?1",
-                        params![kept, successes, retrievals],
+                         retrieval_count = retrieval_count + ?3,
+                         failure_count = failure_count + (SELECT failure_count FROM procedures WHERE id = ?4),
+                         program = COALESCE(program, (SELECT program FROM procedures WHERE id = ?4))
+                         WHERE id = ?1",
+                        params![kept, successes, retrievals, id],
                     )?;
                     transaction.execute("DELETE FROM procedures_fts WHERE id = ?1", params![id])?;
                     transaction.execute("DELETE FROM procedures WHERE id = ?1", params![id])?;
@@ -1969,6 +1985,22 @@ pub fn atomic_write(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Whether two skills for the same task are one skill: their applications
+/// overlap, or one of them recorded none. JSON arrays, as stored.
+pub(crate) fn same_skill_applications(left: &str, right: &str) -> bool {
+    let parse = |text: &str| -> Vec<String> {
+        serde_json::from_str::<Vec<String>>(text)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|application| application.to_ascii_lowercase())
+            .collect()
+    };
+    let (left, right) = (parse(left), parse(right));
+    left.is_empty()
+        || right.is_empty()
+        || left.iter().any(|application| right.contains(application))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2226,6 +2258,87 @@ mod tests {
             ))
             .unwrap();
         assert!(created);
+    }
+
+    #[test]
+    fn an_application_merely_open_during_the_run_does_not_split_a_skill() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory = MemoryStore::open(dir.path()).unwrap();
+        let (kept, _) = memory
+            .save_or_reinforce_procedure(procedure(
+                "type two lines",
+                "fp-1",
+                ProcedureKind::Workflow,
+            ))
+            .unwrap();
+        // The same task while an audio mixer happened to be open.
+        let mut noisy = procedure("type two lines", "fp-2", ProcedureKind::Workflow);
+        noisy.applications = vec!["example.exe".into(), "mixer.exe".into()];
+        let (again, created) = memory.save_or_reinforce_procedure(noisy).unwrap();
+        assert!(!created);
+        assert_eq!(again.id, kept.id);
+        assert_eq!(again.success_count, 2);
+        assert_eq!(
+            again.applications,
+            ["example.exe"],
+            "incidental apps are not added"
+        );
+        // A skill that recorded no application is the same skill too.
+        let mut bare = procedure("type two lines", "fp-3", ProcedureKind::Workflow);
+        bare.applications.clear();
+        assert!(!memory.save_or_reinforce_procedure(bare).unwrap().1);
+        // The same words in an unrelated application stay a separate skill.
+        let mut elsewhere = procedure("type two lines", "fp-4", ProcedureKind::Workflow);
+        elsewhere.applications = vec!["paint.exe".into()];
+        assert!(memory.save_or_reinforce_procedure(elsewhere).unwrap().1);
+        assert_eq!(memory.list_procedures(None, 10).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn copies_left_by_older_versions_are_folded_into_the_strongest_skill() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory = MemoryStore::open(dir.path()).unwrap();
+        let (kept, _) = memory
+            .save_or_reinforce_procedure(procedure(
+                "open the folder",
+                "fp-1",
+                ProcedureKind::Workflow,
+            ))
+            .unwrap();
+        memory
+            .save_or_reinforce_procedure(procedure(
+                "open the folder",
+                "fp-2",
+                ProcedureKind::Workflow,
+            ))
+            .unwrap();
+        // Write a copy the way older versions did: same task, one extra app,
+        // fewer successes.
+        memory
+            .connection
+            .lock()
+            .execute(
+                "INSERT INTO procedures(id, kind, task_signature, title, summary, applications, steps,
+                   command_template, evidence, enabled, success_count, retrieval_count, created_at,
+                   updated_at, fingerprint, failure_count)
+                 SELECT ?1, kind, task_signature, title, summary, ?2, steps, command_template,
+                   evidence, enabled, 1, 4, created_at, updated_at, 'fp-copy', 0
+                 FROM procedures WHERE id = ?3",
+                params![
+                    Uuid::new_v4().to_string(),
+                    r#"["example.exe","mixer.exe"]"#,
+                    kept.id.to_string()
+                ],
+            )
+            .unwrap();
+        drop(memory);
+        let memory = MemoryStore::open(dir.path()).unwrap();
+        let skills = memory.list_procedures(None, 10).unwrap();
+        assert_eq!(skills.len(), 1);
+        assert_eq!(skills[0].id, kept.id);
+        assert_eq!(skills[0].success_count, 3);
+        assert_eq!(skills[0].retrieval_count, 4);
+        assert_eq!(skills[0].applications, ["example.exe"]);
     }
 
     #[test]
