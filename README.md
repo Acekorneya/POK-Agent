@@ -82,18 +82,45 @@ canvas-like controls) are still visible only to the planner's vision, not to Sys
 System 1 (Laya) has not yet been fine-tuned on the collected data; the runs above use the hosted
 JEV.
 
-### What comes next
+### How POK-Agent works
 
-1. **Fine-tune the local System 1** on the harness's own labeled decisions (proven outcomes and
-   the planner's resolutions of hand-backs), so the whole loop runs on local hardware.
-2. **Broaden muscle memory** to more task shapes, and measure the learning curve of planner calls
-   over repeated passes.
-3. **Close the perception gaps** that force the planner's vision (grids, pickers, unnamed icons).
-4. **Transfer to small local planners**: measure how much of the gap between a small local
-   planner and a large hosted one learned skills and a trained System 1 can close.
+Every request runs through the same Rust session, whichever model is behind it:
 
-Each full arena pass takes 5-6 hours on five VMs; GPU time for fine-tuning and more parallel VMs
-would speed up all four directly.
+```text
+request
+  → match learned skills (words the agent wrote for itself after earlier runs)
+  → muscle memory: System 1 replays the matching motor program, if one exists   [System 1 only]
+  → first look: the application in front is captured and grounded
+  → System 2 plans ──┬─ with System 1: one fast_actions plan tree, run step by step
+                     └─ without:     one tool call per action (click, type, scroll, ...)
+  → every action: safety policy → cursor-free UI Automation or input → re-capture → verify
+  → answer, then curation: the run teaches or reinforces a skill (and records its program)
+```
+
+**Grounding** turns each screen into numbered targets by fusing Windows UI Automation (names,
+roles, states) with OCR, so models point at "target 12, the *Display* list item" instead of
+guessing pixels. **Verification** compares the screen before and after each action and reports
+what actually changed. **Safety** is enforced in Rust, not in the prompt: no password fields, no
+UAC or elevated windows, no input outside the authorized window, no joining calls, approval for
+risky commands, and the agent waits while the user is typing or moving the mouse.
+
+**With a System 1 router** (`[decision_router] mode = "delegated"`, Laya or JEV), the planner
+stops issuing clicks one by one. It writes a `fast_actions` plan tree: steps with quoted target
+labels, `done_when` checks, branches, interrupt rules ("if a cookie banner appears, accept it"),
+and values to read back. System 1 runs the tree. Quoted labels are checked locally against the
+grounded screen; only unquoted questions go to the fast model, and only answers above calibrated
+thresholds are acted on. Anything uncertain, stalled, or consequential (sending, saving,
+deleting) hands back to the planner with the new screen. Verified runs record their exact actions
+as a motor program, which System 1 replays the next time.
+
+**Without a router (the default)**, POK-Agent is a complete computer-use and coding agent on its
+own, exactly as before System 1 was added. The router is optional (`[decision_router]
+enabled = false` out of the box). The planner sees the grounded screen and calls the desktop,
+browser, coding, command, and memory tools itself, one action per call, with the same grounding,
+verification, safety boundary, first look, and learned skills. What a router adds is speed and
+cost: plan trees that run many steps per planner call, and muscle-memory replays of verified
+runs. Without it, each action is one planner call. Any OpenAI-compatible or Anthropic provider
+with tool use works (vision recommended), including local models in LM Studio or Ollama.
 
 ## Current MVP boundaries
 

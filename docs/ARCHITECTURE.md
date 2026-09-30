@@ -45,7 +45,7 @@ touches one focused file. Child modules share their parent's imports
 | `model_output.rs` | Recovering malformed or XML-style tool calls, classifying each turn's payload |
 | `intent.rs` | Classifying the request: apps, URLs, commits, live-information, desktop, visual or artifact outcomes |
 | `curation.rs` | Post-turn memory curation and learning procedures and helper tools from verified workflows; one general lesson from a run that did not succeed |
-| `skill_replay.rs` | Direct skill execution: System 1 replays a trusted, relevant skill's opening steps (or, for the same task, its whole program) before the planner's first call |
+| `skill_replay.rs` | Direct skill execution: System 1 replays a trusted skill's whole motor program for the same task before the planner's first call |
 | `motor_program.rs` | Motor programs: a verified run's exact actions recorded as they happen, stored on its skill, and replayed end to end by System 1; the leaner program wins, a stale one is replaced |
 | `tests.rs` | Session tests |
 
