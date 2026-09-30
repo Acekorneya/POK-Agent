@@ -125,6 +125,7 @@ impl Tool for SpawnSubagentTool {
             task_hint: parent.task_hint.clone(),
             input_ledger: Default::default(),
             artifact_evidence: Default::default(),
+            attached_paths: Default::default(),
             session_files: Default::default(),
             active_task: Default::default(),
             focused_control: Default::default(),

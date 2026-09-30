@@ -4,7 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { Appearance, MarkdownMessage } from "./components/workspace";
 import { appendStreamDelta } from "./session-display";
-import { appendDictation } from "./components/voice";
+import { appendDictation, shortcutFromEvent } from "./components/voice";
 import { App } from "./main";
 
 const mock = vi.hoisted(() => ({ invoke: vi.fn(), listeners: new Map<string, (event: { payload: any }) => void>() }));
@@ -91,7 +91,7 @@ describe("workspace presentation", () => {
     const png = new File([Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0))], "chart.png", { type: "image/png" });
     const panel = document.querySelector(".panel.agent")!;
     fireEvent.dragEnter(panel, { dataTransfer: { types: ["Files"], files: [png] } });
-    expect(screen.getByText("Drop images to attach them")).not.toBeNull();
+    expect(screen.getByText("Drop files, folders or images to attach them")).not.toBeNull();
     fireEvent.drop(panel, { dataTransfer: { types: ["Files"], files: [png] } });
     expect(await screen.findByRole("img", { name: "chart.png" })).not.toBeNull();
     // Images alone can be sent; the question defaults to describing them.
@@ -118,6 +118,15 @@ describe("workspace presentation", () => {
     expect(screen.getByRole("alert").textContent).toContain("can't see images");
     expect(mock.invoke).not.toHaveBeenCalledWith("run_prompt", expect.anything());
   });
+  it("records a voice shortcut the system can register", () => {
+    const press = (code: string, mods: Partial<Record<"ctrlKey" | "altKey" | "shiftKey" | "metaKey", boolean>> = {}) =>
+      shortcutFromEvent({ ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, code, ...mods });
+    expect(press("KeyM", { ctrlKey: true, altKey: true })).toBe("Ctrl+Alt+M");
+    expect(press("Space", { ctrlKey: true, shiftKey: true })).toBe("Ctrl+Shift+Space");
+    expect(press("F9")).toBe("F9");
+    expect(press("Digit5", { altKey: true })).toBe("Alt+5");
+    expect(press("ControlLeft", { ctrlKey: true })).toBeNull();
+  });
   it("adds dictated phrases to what is already typed", () => {
     expect(appendDictation("", " Open Settings. ")).toBe("Open Settings.");
     expect(appendDictation("Please", "open Settings.")).toBe("Please open Settings.");
@@ -128,10 +137,10 @@ describe("workspace presentation", () => {
     const previous = mock.invoke.getMockImplementation()!;
     mock.invoke.mockImplementation((name, args) => name === "voice_status"
       ? Promise.resolve({ supported: true, mode: "english", device: null, devices: ["Test Mic"], english_ready: true, multilingual_ready: false,
-        listening: false, installing: false, english_download_mb: 0, multilingual_download_mb: 465 })
+        listening: false, installing: false, english_download_mb: 0, multilingual_download_mb: 465, hotkey: "Ctrl+Alt+M", hotkey_active: true, hotkey_mode: "toggle" })
       : name === "start_voice" || name === "stop_voice" ? Promise.resolve(null) : previous(name, args));
     await renderApp();
-    const mic = await screen.findByRole("button", { name: "Start voice input (Ctrl+M)" });
+    const mic = await screen.findByRole("button", { name: "Start voice input (Ctrl+Alt+M)" });
     await userEvent.click(mic);
     expect(mock.invoke).toHaveBeenCalledWith("start_voice");
     emit({ kind: "listening" }, "voice_event");
@@ -142,7 +151,7 @@ describe("workspace presentation", () => {
     emit({ kind: "final", segment: 0, text: "Open the Settings app." }, "voice_event");
     expect(box.value).toBe("Open the Settings app.");
     expect(screen.queryByText("Open the settings")).toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: "Stop voice input (Ctrl+M)" }));
+    await userEvent.click(screen.getByRole("button", { name: "Stop voice input (Ctrl+Alt+M)" }));
     expect(mock.invoke).toHaveBeenCalledWith("stop_voice");
   });
   it("sends the user to voice setup when the models are not installed", async () => {

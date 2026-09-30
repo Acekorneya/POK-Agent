@@ -548,6 +548,7 @@ async fn run_cli() -> anyhow::Result<()> {
                 task_hint: Default::default(),
                 input_ledger: Default::default(),
                 artifact_evidence: Default::default(),
+                attached_paths: Default::default(),
                 session_files: Default::default(),
                 active_task: Default::default(),
                 focused_control: Default::default(),

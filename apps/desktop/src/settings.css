@@ -234,3 +234,14 @@
 .panel.agent.drop-active .composer { border-color: var(--accent); }
 .drop-overlay { position: absolute; inset: 8px; z-index: 20; display: grid; place-items: center; border: 2px dashed var(--accent); border-radius: 16px; background: color-mix(in srgb, var(--canvas) 70%, transparent); pointer-events: none; }
 .drop-overlay span { padding: 10px 18px; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-weight: 600; font-size: 13px; }
+
+.app-shell .hotkey-recorder { min-width: 180px; padding: 7px 12px; font-size: 12px; }
+.hotkey-recorder kbd { font: 600 12px ui-monospace, monospace; padding: 2px 8px; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 6px; background: var(--canvas); color: var(--text); }
+.app-shell .hotkey-recorder.recording { color: var(--accent); border-color: var(--accent); }
+
+/* Attached files and folders */
+.file-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 240px; padding: 5px 6px 5px 10px; border-radius: 10px; border: 1px solid var(--border); background: var(--raised); font-size: 12px; color: var(--text); }
+.file-chip-icon { color: var(--accent); }
+.file-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.app-shell .file-chip button { width: 18px; height: 18px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 50%; background: transparent; color: var(--muted); font-size: 13px; line-height: 1; }
+.prompt-files { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }

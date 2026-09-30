@@ -744,9 +744,42 @@ impl Session {
         self.run(prompt).await
     }
 
+    /// Run a request with images (for a vision model) and files or folders
+    /// the user attached. Attached paths become readable for the agent even
+    /// outside the workspace, and the request lists them so the agent opens
+    /// them with its file tools or a helper it writes.
+    pub async fn run_with_attachments(
+        &mut self,
+        prompt: impl Into<String>,
+        images: Vec<String>,
+        files: Vec<String>,
+    ) -> Result<RunSummary> {
+        let mut prompt = prompt.into();
+        let attached = attached_file_paths(&files)?;
+        if !attached.is_empty() {
+            prompt.push_str(&attached_files_block(&attached));
+            self.grant_attached_paths(attached);
+        }
+        self.pending_user_images = validated_user_images(images)?;
+        self.run(prompt).await
+    }
+
+    fn grant_attached_paths(&mut self, paths: Vec<std::path::PathBuf>) {
+        let mut granted = self.context.attached_paths.lock();
+        for path in paths {
+            if !granted.contains(&path) {
+                granted.push(path);
+            }
+        }
+    }
+
     pub async fn run(&mut self, prompt: impl Into<String>) -> Result<RunSummary> {
         self.terminal_logged = false;
-        let result = self.run_inner(prompt.into()).await;
+        let prompt = prompt.into();
+        // A file or folder the user names by its full path may be read.
+        let named = paths_named_in(&prompt);
+        self.grant_attached_paths(named);
+        let result = self.run_inner(prompt).await;
         if let Err(error) = &result
             && !self.terminal_logged
         {
@@ -921,4 +954,106 @@ fn validated_user_images(images: Vec<String>) -> Result<Vec<String>> {
             Ok(encoded)
         })
         .collect()
+}
+
+/// Files and folders one request may attach.
+pub const MAX_ATTACHED_FILES: usize = 20;
+
+fn attached_file_paths(files: &[String]) -> Result<Vec<std::path::PathBuf>> {
+    if files.len() > MAX_ATTACHED_FILES {
+        return Err(PokError::Tool(format!(
+            "attach at most {MAX_ATTACHED_FILES} files or folders to one message"
+        )));
+    }
+    files
+        .iter()
+        .map(|file| {
+            dunce::canonicalize(file.trim())
+                .map_err(|_| PokError::Tool(format!("the attached file {file:?} no longer exists")))
+        })
+        .collect()
+}
+
+fn human_size(bytes: u64) -> String {
+    match bytes {
+        0..1_024 => format!("{bytes} B"),
+        1_024..1_048_576 => format!("{:.1} KB", bytes as f64 / 1_024.0),
+        1_048_576..1_073_741_824 => format!("{:.1} MB", bytes as f64 / 1_048_576.0),
+        _ => format!("{:.1} GB", bytes as f64 / 1_073_741_824.0),
+    }
+}
+
+/// The note appended to a request that lists what the user attached.
+pub(crate) fn attached_files_block(paths: &[std::path::PathBuf]) -> String {
+    let lines = paths
+        .iter()
+        .map(|path| {
+            let metadata = std::fs::metadata(path).ok();
+            if metadata.as_ref().is_some_and(std::fs::Metadata::is_dir) {
+                let entries = std::fs::read_dir(path).map(Iterator::count).unwrap_or(0);
+                format!("- {} (folder, {entries} entries)", path.display())
+            } else {
+                let kind = path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .map_or_else(
+                        || "file".to_owned(),
+                        |extension| format!(".{} file", extension.to_ascii_lowercase()),
+                    );
+                let size = metadata.map_or_else(String::new, |metadata| {
+                    format!(", {}", human_size(metadata.len()))
+                });
+                format!("- {} ({kind}{size})", path.display())
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "\n\n<attached_files>\nThe user attached these; they are readable even outside the workspace:\n{lines}\n\
+         Open them to answer: read text files directly; for other formats (documents, spreadsheets, archives, media) \
+         write a small helper script or run a command that extracts the content, rather than guessing from the name.\n</attached_files>"
+    )
+}
+
+/// Absolute Windows paths written in a request that exist on this computer.
+/// A path with spaces is tried at its full length first, then shortened a
+/// word at a time, so trailing prose is not taken for part of the path.
+pub(crate) fn paths_named_in(prompt: &str) -> Vec<std::path::PathBuf> {
+    // Unix paths (tests, WSL) must start a word, so "x.com/home" is not one.
+    let expression = if cfg!(windows) {
+        r#"()([A-Za-z]:[\\/][^"<>|*?\r\n]+)"#
+    } else {
+        r#"(^|[\s"'(])((?:[A-Za-z]:[\\/]|/)[^"<>|*?\r\n]+)"#
+    };
+    let Ok(pattern) = regex::Regex::new(expression) else {
+        return Vec::new();
+    };
+    let mut found = Vec::new();
+    for candidate in pattern
+        .captures_iter(prompt)
+        .filter_map(|captures| captures.get(2))
+    {
+        let mut text = candidate
+            .as_str()
+            .trim_end_matches(['.', ',', ';', ':', ')', '\'', ' '])
+            .to_owned();
+        loop {
+            if let Ok(path) = dunce::canonicalize(&text) {
+                if !found.contains(&path) {
+                    found.push(path);
+                }
+                break;
+            }
+            match text.rfind(' ') {
+                Some(space) => {
+                    text.truncate(space);
+                    text = text
+                        .trim_end_matches(['.', ',', ';', ':', ')', '\''])
+                        .to_owned();
+                }
+                None => break,
+            }
+        }
+    }
+    found
 }

@@ -87,6 +87,11 @@ export function ConversationMessage({ message: msg }: { message: ChatMessage }) 
         {msg.images && msg.images.length > 0 && <div className="prompt-images">
           {msg.images.map((image, index) => <img key={index} src={image} alt={`Attached image ${index + 1}`} />)}
         </div>}
+        {msg.files && msg.files.length > 0 && <div className="prompt-files">
+          {msg.files.map((path) => <span key={path} className="file-chip" title={path}>
+            <span className="file-chip-icon" aria-hidden="true">▤</span><span className="file-chip-name">{path.split(/[\\/]/).filter(Boolean).pop()}</span>
+          </span>)}
+        </div>}
         {msg.text}
       </div>;
     case "guidance":

@@ -2182,6 +2182,7 @@ async fn pause_interrupts_model_stream_and_resume_starts_fresh_turn() {
         task_hint: Default::default(),
         input_ledger: Default::default(),
         artifact_evidence: Default::default(),
+        attached_paths: Default::default(),
         session_files: Default::default(),
         active_task: Default::default(),
         focused_control: Default::default(),
@@ -2287,6 +2288,7 @@ async fn test_compress_history_if_needed() {
         task_hint: Default::default(),
         input_ledger: Default::default(),
         artifact_evidence: Default::default(),
+        attached_paths: Default::default(),
         session_files: Default::default(),
         active_task: Default::default(),
         focused_control: Default::default(),
@@ -3236,6 +3238,7 @@ fn fast_harness(
         task_hint: Default::default(),
         input_ledger: Default::default(),
         artifact_evidence: Default::default(),
+        attached_paths: Default::default(),
         session_files: Default::default(),
         active_task: Default::default(),
         focused_control: Default::default(),
@@ -7313,4 +7316,84 @@ async fn a_word_already_on_screen_does_not_skip_opening_the_named_page() {
     assert_eq!(clicks.len(), 1, "{result}");
     assert_eq!(clicks[0]["target_id"], "t1", "Explore is opened first");
     assert_eq!(result["status"], "done");
+}
+
+#[test]
+fn files_named_or_attached_become_readable_even_outside_the_workspace() {
+    let outside = tempfile::tempdir().unwrap();
+    let report = outside.path().join("quarterly report.xlsx");
+    std::fs::write(&report, b"PK\x03\x04 example").unwrap();
+    let folder = outside.path().join("photos");
+    std::fs::create_dir(&folder).unwrap();
+    std::fs::write(folder.join("a.png"), b"x").unwrap();
+
+    // Named in the request, with prose after the path.
+    let prompt = format!("summarize {} for me please", report.display());
+    let named = paths_named_in(&prompt);
+    assert_eq!(named, [dunce::canonicalize(&report).unwrap()]);
+    // A web address is not a path.
+    assert!(paths_named_in("open x.com/home and read it").is_empty());
+
+    let block = attached_files_block(&[
+        dunce::canonicalize(&report).unwrap(),
+        dunce::canonicalize(&folder).unwrap(),
+    ]);
+    assert!(
+        block.contains("quarterly report.xlsx (.xlsx file, 12 B)"),
+        "{block}"
+    );
+    assert!(block.contains("photos (folder, 1 entries)"), "{block}");
+    assert!(block.contains("write a small helper script"));
+    assert!(
+        attached_file_paths(&[outside.path().join("missing.txt").display().to_string()]).is_err()
+    );
+}
+
+#[tokio::test]
+async fn an_attached_file_outside_the_workspace_can_be_read_by_the_file_tools() {
+    let outside = tempfile::tempdir().unwrap();
+    let notes = outside.path().join("notes.txt");
+    std::fs::write(&notes, b"hello").unwrap();
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        Vec::new(),
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    assert!(
+        harness
+            .session
+            .context
+            .resolve_readable_artifact(&notes)
+            .is_err()
+    );
+    harness.session.brain = Arc::new(ImageCheckingBrain {
+        user_images: Default::default(),
+    });
+    harness
+        .session
+        .run_with_attachments(
+            "what does this say?",
+            Vec::new(),
+            vec![notes.display().to_string()],
+        )
+        .await
+        .unwrap();
+    assert!(
+        harness
+            .session
+            .context
+            .resolve_readable_artifact(&notes)
+            .is_ok()
+    );
+    let request = harness
+        .session
+        .messages
+        .iter()
+        .rev()
+        .find(|message| message.origin == MessageOrigin::UserInput)
+        .unwrap();
+    let MessageContent::Text { text } = &request.content[0] else {
+        panic!()
+    };
+    assert!(text.contains("<attached_files>") && text.contains("notes.txt"));
 }

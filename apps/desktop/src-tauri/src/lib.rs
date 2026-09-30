@@ -1490,6 +1490,38 @@ async fn resume_conversation(
     })
 }
 
+/// An image the user dropped on the window, as a data URL, so the dashboard
+/// can attach it for a vision model. Only common image types, up to 30 MB.
+#[tauri::command]
+fn read_dropped_image(path: String) -> std::result::Result<String, String> {
+    use base64::Engine as _;
+    let path = std::path::PathBuf::from(path);
+    let mime = match path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(str::to_ascii_lowercase)
+        .as_deref()
+    {
+        Some("png") => "image/png",
+        Some("jpg" | "jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("bmp") => "image/bmp",
+        _ => return Err("not an image".into()),
+    };
+    let size = std::fs::metadata(&path)
+        .map_err(|error| error.to_string())?
+        .len();
+    if size > 30 * 1024 * 1024 {
+        return Err("the image is larger than 30 MB".into());
+    }
+    let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
+    Ok(format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
 /// A saved observation frame for the dashboard's agent view, as a data URL.
 /// Only `observation-*.png` files inside the diagnostics folder are served.
 #[tauri::command]
@@ -1603,6 +1635,7 @@ async fn run_prompt(
     decision_router_enabled: Option<bool>,
     decision_router_backend: Option<DecisionRouterBackend>,
     images: Option<Vec<String>>,
+    files: Option<Vec<String>>,
     app: tauri::AppHandle,
     runtime: State<'_, AppRuntime>,
     broker: State<'_, Arc<ApprovalBroker>>,
@@ -1917,6 +1950,7 @@ async fn run_prompt(
             task_hint: Default::default(),
             input_ledger: Default::default(),
             artifact_evidence: Default::default(),
+            attached_paths: Default::default(),
             session_files: Default::default(),
             active_task: Default::default(),
             focused_control: Default::default(),
@@ -1993,7 +2027,11 @@ async fn run_prompt(
     });
     session.prepare_follow_up(cancellation);
     session
-        .run_with_images(prompt, images.unwrap_or_default())
+        .run_with_attachments(
+            prompt,
+            images.unwrap_or_default(),
+            files.unwrap_or_default(),
+        )
         .await
         .map(|summary| summary.answer)
         .map_err(|error| error.to_string())
@@ -3129,6 +3167,15 @@ pub fn run() {
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
+                    if shortcut != &emergency_shortcut
+                        && voice::hotkey_event(
+                            app,
+                            shortcut,
+                            event.state() == ShortcutState::Pressed,
+                        )
+                    {
+                        return;
+                    }
                     if shortcut == &emergency_shortcut && event.state() == ShortcutState::Pressed {
                         app.state::<AppRuntime>().cancellation.lock().cancel();
                         let _ = app.emit("emergency_stopped", ());
@@ -3148,16 +3195,20 @@ pub fn run() {
             let _ = broker_setup.app.set(app.handle().clone());
             let _ = question_broker_setup.app.set(app.handle().clone());
             app.global_shortcut().register(emergency_shortcut)?;
+            voice::register_saved_hotkey(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             get_status,
             read_observation_frame,
+            read_dropped_image,
             voice::voice_status,
             voice::set_voice_settings,
             voice::install_voice_models,
             voice::start_voice,
             voice::stop_voice,
+            voice::set_voice_hotkey,
+            voice::set_voice_hotkey_mode,
             update_provider_endpoint,
             get_local_model_status,
             load_model,

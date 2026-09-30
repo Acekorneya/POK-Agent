@@ -15,6 +15,8 @@ export type ChatMessage = {
   durationMs?: number;
   /** Images the user attached to a prompt (PNG data URLs). */
   images?: string[];
+  /** Paths of files or folders the user attached to a prompt. */
+  files?: string[];
 };
 
 export function appendStreamDelta(

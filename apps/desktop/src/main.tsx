@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import "./styles.css";
 import { Appearance, Composer, ConversationSidebar, useDialogFocus } from "./components/workspace";
 import { MicButton, VoiceCaption, VoiceSettingsPage, appendDictation, useVoice } from "./components/voice";
-import { AttachButton, AttachmentStrip, useAttachments, useImageDrop } from "./components/attachments";
+import { AttachButton, AttachmentStrip, useAttachments, useImageDrop, useNativeDrop } from "./components/attachments";
 import { AgentView, type FrameTarget, type ObservationFrame } from "./components/agent-view";
 import { SettingsCard, SettingRow, SettingsDrawer, StatusPill, Switch, type SettingsSection } from "./components/settings-drawer";
 import "./workspace.css";
@@ -2203,7 +2203,8 @@ export function App() {
     }
 
     const images = attachments.items.map((item) => item.dataUrl);
-    if ((!prompt.trim() && images.length === 0) || !model || modelTransitioning) return;
+    const files = attachments.files.map((file) => file.path);
+    if ((!prompt.trim() && images.length === 0 && files.length === 0) || !model || modelTransitioning) return;
     if (images.length > 0 && !modelCanSee) {
       attachments.setError(`${model} can't see images. Choose a vision model, or turn Vision input on in Settings → Model if it can.`);
       return;
@@ -2211,7 +2212,9 @@ export function App() {
     setBusy(true);
     setAgentFrame(null);
     emergencyStopRequested.current = false;
-    const currentPrompt = prompt.trim() ? prompt : images.length > 1 ? "What is in these images?" : "What is in this image?";
+    const currentPrompt = prompt.trim() ? prompt
+      : files.length > 0 ? (files.length + images.length > 1 ? "Look at these and tell me what they contain." : "Look at this and tell me what it contains.")
+      : images.length > 1 ? "What is in these images?" : "What is in this image?";
     attachments.clear();
     setCurrentTurn(0);
     setLiveActivity({ phase: "starting", label: "Starting the task", startedAt: Date.now() });
@@ -2226,6 +2229,7 @@ export function App() {
         text: currentPrompt,
         timestamp: new Date(),
         images: images.length > 0 ? images : undefined,
+        files: files.length > 0 ? files : undefined,
       }
     ]);
     
@@ -2242,6 +2246,7 @@ export function App() {
         decisionRouterEnabled: jevEnabled,
         decisionRouterBackend,
         images: images.length > 0 ? images : null,
+        files: files.length > 0 ? files : null,
       });
     }
     catch (error) {
@@ -2539,11 +2544,7 @@ export function App() {
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.ctrlKey && !event.altKey && event.key.toLowerCase() === "m") {
-      event.preventDefault();
-      if (voice.ready) voice.toggle(); else openSettings("voice");
-      return;
-    }
+
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {
       event.preventDefault();
       void run();
@@ -2556,6 +2557,8 @@ export function App() {
   // Unknown vision support is allowed; the provider reports a refusal.
   const modelCanSee = visionMode === "on" || (visionMode !== "off" && modelCapabilities?.vision !== false);
   const imageDrop = useImageDrop(attachments, !busy);
+  const nativeDragging = useNativeDrop(attachments, !busy);
+  const dropActive = imageDrop.dragging || nativeDragging;
 
   return <main className={`app-shell ${navigationOpen ? "navigation-open" : "navigation-closed"}`}>
     {navigationOpen && <><button className="navigation-backdrop" aria-label="Close navigation" onClick={() => setNavigationOpen(false)} /><ConversationSidebar conversations={conversations} activeId={activeConversationId} disabled={busy || modelTransitioning}
@@ -2873,8 +2876,8 @@ export function App() {
           </SettingsCard>
         </>}
       </SettingsDrawer>
-      <section className={`panel agent ${imageDrop.dragging ? "drop-active" : ""}`} {...imageDrop.handlers}>
-        {imageDrop.dragging && <div className="drop-overlay" aria-hidden="true"><span>Drop images to attach them</span></div>}
+      <section className={`panel agent ${dropActive ? "drop-active" : ""}`} {...imageDrop.handlers}>
+        {dropActive && <div className="drop-overlay" aria-hidden="true"><span>Drop files, folders or images to attach them</span></div>}
         {agentViewOpen && (agentFrame || busy) && <AgentView frame={agentFrame} onClose={() => toggleAgentView(false)} />}
         <details className="session-details"><summary>Session details <span>{model || "No model selected"} · {usage.totalCompletion.toLocaleString()} output tokens</span></summary>
         {jevEnabled && <div className="jev-scorecard" role="status" aria-label="Decision router performance diagnostics">
@@ -3008,7 +3011,7 @@ export function App() {
             <button className="stop" aria-label="Emergency stop · Ctrl+Alt+Esc" title="Emergency stop (Ctrl+Alt+Esc)" onClick={() => invoke("emergency_stop")}>
               <span className="stop-icon" aria-hidden="true" /><span className="stop-label">Stop</span>
             </button>
-            <button className="primary" disabled={(!prompt.trim() && (busy || attachments.items.length === 0)) || !model || pauseState !== "running" || (!busy && modelTransitioning)} onClick={run}>
+            <button className="primary" disabled={(!prompt.trim() && (busy || (attachments.items.length === 0 && attachments.files.length === 0))) || !model || pauseState !== "running" || (!busy && modelTransitioning)} onClick={run}>
               {busy ? "Send Guidance" : "Run task"}
             </button>
           </div>

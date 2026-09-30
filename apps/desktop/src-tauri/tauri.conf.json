@@ -5,7 +5,7 @@
   "identifier": "ai.pok.desktop",
   "build": { "beforeDevCommand": "npm run dev", "devUrl": "http://localhost:1430", "beforeBuildCommand": "npm run build", "frontendDist": "../dist" },
   "app": {
-    "windows": [{ "title": "POK-Agent", "width": 980, "height": 700, "minWidth": 640, "minHeight": 520, "dragDropEnabled": false }],
+    "windows": [{ "title": "POK-Agent", "width": 980, "height": 700, "minWidth": 640, "minHeight": 520 }],
     "security": { "csp": "default-src 'self'; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; connect-src ipc: http://ipc.localhost" }
   },
   "bundle": {

@@ -188,6 +188,9 @@ pub struct ToolContext {
     pub task_hint: Arc<Mutex<String>>,
     pub input_ledger: Arc<Mutex<InputLedger>>,
     pub artifact_evidence: Arc<Mutex<Vec<ArtifactEvidence>>>,
+    /// Files and folders the user attached or named in the request: readable
+    /// (never writable) even outside the workspace.
+    pub attached_paths: Arc<Mutex<Vec<PathBuf>>>,
     pub session_files: Arc<Mutex<BTreeMap<PathBuf, SessionFileRecord>>>,
     pub active_task: Arc<Mutex<ActiveTaskState>>,
     pub focused_control: Arc<Mutex<Option<FocusedControl>>>,
@@ -297,6 +300,11 @@ impl ToolContext {
                         .iter()
                         .any(|evidence| &evidence.path == canonical)
                         || self.requested_and_written_this_task(canonical)
+                        || self
+                            .attached_paths
+                            .lock()
+                            .iter()
+                            .any(|attached| canonical.starts_with(attached))
                 })
                 .ok_or(error)
         })

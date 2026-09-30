@@ -7,6 +7,7 @@ export type VoiceMode = "english" | "multilingual";
 export type VoiceStatus = {
   supported: boolean; mode: VoiceMode; device: string | null; devices: string[];
   english_ready: boolean; multilingual_ready: boolean; listening: boolean; installing: boolean;
+  hotkey: string; hotkey_active: boolean; hotkey_mode: "toggle" | "push_to_talk";
   english_download_mb: number; multilingual_download_mb: number;
 };
 type VoiceEventPayload =
@@ -96,7 +97,18 @@ export function useVoice(onText: (text: string) => void) {
     void refresh();
   }, [refresh]);
 
-  return { status, phase, level, caption, error, install, ready, toggle, stop, refresh, installModels, saveSettings };
+  const setHotkey = useCallback(async (hotkey: string) => {
+    setError("");
+    try { await invoke<string>("set_voice_hotkey", { hotkey }); } catch (reason) { setError(String(reason)); }
+    void refresh();
+  }, [refresh]);
+
+  const setHotkeyMode = useCallback(async (mode: VoiceStatus["hotkey_mode"]) => {
+    try { await invoke("set_voice_hotkey_mode", { mode }); } catch (reason) { setError(String(reason)); }
+    void refresh();
+  }, [refresh]);
+
+  return { status, phase, level, caption, error, install, ready, toggle, stop, refresh, installModels, saveSettings, setHotkey, setHotkeyMode };
 }
 export type Voice = ReturnType<typeof useVoice>;
 
@@ -110,9 +122,11 @@ function MicIcon() {
 export function MicButton({ voice, onSetup }: { voice: Voice; onSetup: () => void }) {
   const active = voice.phase === "listening" || voice.phase === "loading";
   const unavailable = voice.status !== null && !voice.status.supported;
+  const shortcut = voice.status?.hotkey_active
+    ? ` (${voice.status.hotkey_mode === "push_to_talk" ? "hold " : ""}${voice.status.hotkey})` : "";
   const label = unavailable ? "Voice input needs Windows"
     : !voice.ready ? "Set up voice input"
-    : active ? "Stop voice input (Ctrl+M)" : "Start voice input (Ctrl+M)";
+    : active ? `Stop voice input${shortcut}` : `Start voice input${shortcut}`;
   return <button type="button" className={`mic-button phase-${voice.phase}`} aria-label={label} title={label}
     aria-pressed={active} disabled={unavailable || voice.phase === "stopping"}
     style={{ "--mic-level": String(voice.phase === "listening" ? voice.level : 0) } as React.CSSProperties}
@@ -148,7 +162,7 @@ export function VoiceSettingsPage({ voice }: { voice: Voice }) {
   return <>
     <SettingsCard title="Voice input"
       status={voice.ready ? <StatusPill tone="ok">Ready</StatusPill> : <StatusPill tone="off">Not installed</StatusPill>}
-      description="Speak into the message box with the microphone button or Ctrl+M. Speech is transcribed on this computer; audio never leaves it and is not saved. Nothing is sent until you press Enter.">
+      description={<>Speak into the message box with the microphone button or {status.hotkey}, which works from any application. Speech is transcribed on this computer; audio never leaves it and is not saved. Nothing is sent until you press Enter.</>}>
       <div className="choice-cards" role="radiogroup" aria-label="Voice mode">
         {modes.map(([mode, title, text, ready, download]) => <button key={mode} type="button" role="radio" aria-checked={status.mode === mode}
           className={status.mode === mode ? "selected" : ""} disabled={voice.phase !== "off"}
@@ -167,6 +181,22 @@ export function VoiceSettingsPage({ voice }: { voice: Voice }) {
       </div>}
       {voice.error && <p className="error-text">{voice.error}</p>}
     </SettingsCard>
+    <SettingsCard title="Shortcut"
+      status={status.hotkey_active ? <StatusPill tone="ok">Active everywhere</StatusPill> : <StatusPill tone="warn">Not registered</StatusPill>}
+      description="Works from any application, even when POK-Agent is in the background. The words go into POK-Agent's message box.">
+      <div className="choice-cards" role="radiogroup" aria-label="Shortcut behaviour">
+        {([
+          ["toggle", "Toggle", "Press once to start listening, again to stop."],
+          ["push_to_talk", "Push-to-talk", "Hold the shortcut while you speak; release to stop."],
+        ] as const).map(([mode, title, text]) => <button key={mode} type="button" role="radio" aria-checked={status.hotkey_mode === mode}
+          className={status.hotkey_mode === mode ? "selected" : ""} onClick={() => void voice.setHotkeyMode(mode)}>
+          <strong>{title}</strong><small>{text}</small>
+        </button>)}
+      </div>
+      <SettingRow label={status.hotkey_mode === "push_to_talk" ? "Hold to talk" : "Toggle listening"} help={status.hotkey_active ? undefined : "Another application may own this shortcut; record a different one."}>
+        <HotkeyRecorder current={status.hotkey} onRecord={(hotkey) => void voice.setHotkey(hotkey)} />
+      </SettingRow>
+    </SettingsCard>
     <SettingsCard title="Microphone" actions={<button type="button" onClick={() => void voice.refresh()}>Refresh</button>}>
       <SettingRow label="Input device">
         <select aria-label="Microphone" value={status.device ?? ""} disabled={voice.phase !== "off"}
@@ -179,4 +209,39 @@ export function VoiceSettingsPage({ voice }: { voice: Voice }) {
     </SettingsCard>
     <SettingsCard title="Models" description={<>Live captions use a streaming Zipformer model (Apache-2.0). Accurate text uses NVIDIA Parakeet TDT 0.6B v3 (CC-BY-4.0). Both run with sherpa-onnx (Apache-2.0).</>} />
   </>;
+}
+
+/** Shortcut text the system hotkey parser accepts, from a key press. */
+export function shortcutFromEvent(event: Pick<KeyboardEvent, "ctrlKey" | "altKey" | "shiftKey" | "metaKey" | "code">): string | null {
+  const code = event.code;
+  if (/^(Control|Alt|Shift|Meta|OS)(Left|Right)?$/.test(code)) return null;
+  const key = code.startsWith("Key") ? code.slice(3)
+    : code.startsWith("Digit") ? code.slice(5)
+    : /^F\d{1,2}$/.test(code) || ["Space", "Enter", "Tab", "Backquote", "Minus", "Equal", "Comma", "Period", "Slash", "Semicolon", "Quote", "BracketLeft", "BracketRight", "Backslash", "Insert", "Home", "End", "PageUp", "PageDown", "Pause"].includes(code) ? code
+    : null;
+  if (!key) return null;
+  return [event.ctrlKey && "Ctrl", event.altKey && "Alt", event.shiftKey && "Shift", event.metaKey && "Super", key].filter(Boolean).join("+");
+}
+
+/** Click, then press the new combination. Escape cancels. */
+function HotkeyRecorder({ current, onRecord }: { current: string; onRecord: (hotkey: string) => void }) {
+  const [recording, setRecording] = useState(false);
+  useEffect(() => {
+    if (!recording) return;
+    const onKey = (event: KeyboardEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.code === "Escape" && !event.ctrlKey && !event.altKey) { setRecording(false); return; }
+      const shortcut = shortcutFromEvent(event);
+      if (!shortcut) return;
+      setRecording(false);
+      onRecord(shortcut);
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [recording, onRecord]);
+  return <button type="button" className={`hotkey-recorder ${recording ? "recording" : ""}`} aria-label="Voice shortcut"
+    onClick={() => setRecording((value) => !value)}>
+    {recording ? "Press the new shortcut…" : <kbd>{current}</kbd>}
+  </button>;
 }

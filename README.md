@@ -392,18 +392,24 @@ The chat feed tells you who is acting, in plain language:
   recent frames, enlarge it, turn the target boxes off, or hide it with **Agent view** in the
   header; the choice is remembered. Frames are read from the session's diagnostics folder on this
   computer and never leave it.
+- **Files and folders.** Drop any file or folder on the window (or type its full path in the
+  message): it appears as a chip, and the agent receives its path, type, and size. Attached and
+  named paths are readable for the agent even outside the workspace (never writable); for formats
+  it cannot read directly it writes a small helper or runs a command to extract the content.
 - **Images for vision models.** Drag images onto the conversation, paste them (Ctrl+V), or use the
   paperclip next to the microphone. Thumbnails appear above the message box and can be removed
   before sending; the model receives them with your message (up to 8, scaled to fit, sent as PNG).
   Ask about them, or send images alone for a description. A model that reports no vision is
   refused with a clear message instead of silently dropping the picture.
-- **Voice input.** Press the microphone button next to Run (or Ctrl+M) and speak: words appear
+- **Voice input.** Press the microphone button next to Run, or the voice shortcut (Ctrl+Alt+M by
+  default, changeable in Settings → Voice) from any application, and speak: words appear
   live as you talk, and at each pause the phrase is replaced by accurate text with punctuation.
   Dictation lands in the message box and nothing is sent until you press Enter. Speech is
   transcribed on this computer with sherpa-onnx (a streaming Zipformer for the live words, NVIDIA
   Parakeet TDT v3 for the final text, about 0.2 s per phrase on the CPU); audio never leaves the
-  device and is not saved. **Settings → Voice** downloads the models once (about 760 MB) and
-  offers a multilingual mode (25 European languages, text per phrase) and a microphone choice.
+  device and is not saved. The shortcut can toggle listening or work as push-to-talk (listen
+  while held). **Settings → Voice** downloads the models once (about 760 MB) and offers a
+  multilingual mode (25 European languages, text per phrase) and a microphone choice.
 - **Settings** open as one window with a page per area: General (appearance, workspace,
   permissions), Model (provider, API key, request tuning, context budget), Voice, System 1 (router, JEV,
   Laya, judge, training data), Memory & skills, and Generated tools.
