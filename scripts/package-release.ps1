@@ -6,9 +6,9 @@ Packages a built release into the files published on GitHub.
 Expects `npm run tauri -- build` to have produced target/release/pok-ai-desktop.exe
 and the NSIS installer. Writes to target/release/publish/v<version>:
 
-  POK-Ai-windows-x64.exe        standalone executable
-  POK-Ai-windows-x64-setup.exe  NSIS installer
-  POK-Ai-windows-x64.zip        portable ZIP (exe, example config, README, LICENSE, NOTICE)
+  POK-Agent-windows-x64.exe        standalone executable
+  POK-Agent-windows-x64-setup.exe  NSIS installer
+  POK-Agent-windows-x64.zip        portable ZIP (exe, example config, README, LICENSE, NOTICE)
   SHA256SUMS.txt                checksums of the three files above
 
 Prints the output folder. Used by run-windows.ps1 -Release and the release workflow.
@@ -45,14 +45,14 @@ if (Test-Path $PublishDir) {
 }
 New-Item -ItemType Directory -Path $PortableDir -Force | Out-Null
 
-$ExecutableAsset = Join-Path $PublishDir "POK-Ai-windows-x64.exe"
-$InstallerAsset = Join-Path $PublishDir "POK-Ai-windows-x64-setup.exe"
-$ZipAsset = Join-Path $PublishDir "POK-Ai-windows-x64.zip"
+$ExecutableAsset = Join-Path $PublishDir "POK-Agent-windows-x64.exe"
+$InstallerAsset = Join-Path $PublishDir "POK-Agent-windows-x64-setup.exe"
+$ZipAsset = Join-Path $PublishDir "POK-Agent-windows-x64.zip"
 $ChecksumAsset = Join-Path $PublishDir "SHA256SUMS.txt"
 
 Copy-Item $ReleaseExe $ExecutableAsset -Force
 Copy-Item $NsisInstallers[0].FullName $InstallerAsset -Force
-Copy-Item $ReleaseExe (Join-Path $PortableDir "POK-Ai.exe") -Force
+Copy-Item $ReleaseExe (Join-Path $PortableDir "POK-Agent.exe") -Force
 foreach ($File in @("LICENSE", "NOTICE", "README.md", "pok-ai.example.toml")) {
     Copy-Item (Join-Path $ProjectDir $File) (Join-Path $PortableDir $File) -Force
 }

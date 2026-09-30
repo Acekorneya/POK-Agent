@@ -1,4 +1,4 @@
-"""Loopback sidecar that answers POK-Ai typed decision questions with a small LLM.
+"""Loopback sidecar that answers POK-Agent typed decision questions with a small LLM.
 
 It speaks the same `/health` + `/v1/systemone` contract as `laya_sidecar.py`
 (see docs/decision-router-backends.md) and forwards each question to an
@@ -130,7 +130,7 @@ def create_app(
 ) -> FastAPI:
     started_at = time.monotonic()
     pool = ThreadPoolExecutor(max_workers=8)
-    app = FastAPI(title="POK-Ai LLM choice sidecar", docs_url=None, redoc_url=None)
+    app = FastAPI(title="POK-Agent LLM choice sidecar", docs_url=None, redoc_url=None)
 
     def authenticate(authorization: str | None = Header(default=None)) -> None:
         expected = f"Bearer {token}"

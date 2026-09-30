@@ -25,7 +25,8 @@ POK-Agent is an autonomous general computer and coding harness built primarily
 for local models, with cloud bring-your-own-model (BYOM) support. The Rust-first
 Windows runtime has a shared CLI and Tauri dashboard, typed tools, risk-based
 approval, SQLite FTS5 memory, restricted coding subagents, and a deterministic
-model exam. The internal code and package name remains POK-Ai.
+model exam. Code, crates, and files use the short name `pok-ai` (for example
+`pok-ai.toml`), and app data lives under `%LOCALAPPDATA%\POK-Ai`.
 
 ## Download
 
@@ -34,9 +35,9 @@ Get the latest Windows build from
 
 | File | Use it when |
 | --- | --- |
-| `POK-Ai-windows-x64-setup.exe` | You want a normal install with a Start menu entry (recommended). |
-| `POK-Ai-windows-x64.exe` | You want to run the app without installing it. |
-| `POK-Ai-windows-x64.zip` | You want a portable folder with the example configuration. |
+| `POK-Agent-windows-x64-setup.exe` | You want a normal install with a Start menu entry (recommended). |
+| `POK-Agent-windows-x64.exe` | You want to run the app without installing it. |
+| `POK-Agent-windows-x64.zip` | You want a portable folder with the example configuration. |
 | `SHA256SUMS.txt` | You want to verify the downloads. |
 
 The builds are not code-signed yet, so Windows SmartScreen may say "Windows
@@ -205,7 +206,7 @@ with tool use works (vision recommended), including local models in LM Studio or
   without approval. Commands that can change OS-critical files, boot or disk state, machine-wide
   security, accounts, services, drivers, or system policy still require approval. Native
   secure-desktop and password protections remain.
-- POK-Ai does not interact with UAC/secure desktop, password fields, or elevated windows.
+- POK-Agent does not interact with UAC/secure desktop, password fields, or elevated windows.
 - Post-turn curation is tool-free. Facts remain approval-gated drafts, while verified general
   Windows procedures are compiled into sanitized, approved skills for future recall.
 - When the built-ins are insufficient, the agent can author a task-specific PowerShell, Python,
@@ -262,8 +263,8 @@ To publish a release:
 git push origin main v0.2.0                 # the Release workflow does the rest
 ```
 
-The release contains `POK-Ai-windows-x64.exe` (standalone), `POK-Ai-windows-x64-setup.exe`
-(installer), `POK-Ai-windows-x64.zip` (portable: executable, example configuration, README,
+The release contains `POK-Agent-windows-x64.exe` (standalone), `POK-Agent-windows-x64-setup.exe`
+(installer), `POK-Agent-windows-x64.zip` (portable: executable, example configuration, README,
 license, notice), and `SHA256SUMS.txt`. `scripts/package-release.ps1` builds these files, both in
 the workflow and locally.
 
@@ -288,13 +289,13 @@ Copy `pok-ai.example.toml` to `%LOCALAPPDATA%\POK-Ai\pok-ai.toml` or pass
 `--config` to override it. Start LM Studio's local server and select a
 tool-capable model; vision is optional.
 
-POK-Ai controls main-agent sampling with `agent_temperature` in `pok-ai.toml`.
+POK-Agent controls main-agent sampling with `agent_temperature` in `pok-ai.toml`.
 It defaults to `0.0` for reliable tool and coding work. Set a numeric value from
 `0` to `2`, or set `agent_temperature = "server_default"` to omit the parameter
 and let the selected model/provider choose its required sampling policy.
 
 An image-capable model is not required for desktop testing. When LM Studio or a cloud provider
-reports that vision is unavailable, POK-Ai automatically switches that session to text-only
+reports that vision is unavailable, POK-Agent automatically switches that session to text-only
 grounding. OCR and UIA still run locally, screenshots remain in diagnostics, and the model operates
 through numbered targets and `click_target`.
 
@@ -465,7 +466,7 @@ control beside the chat composer. The choice is stored per conversation; changin
 conversation starts creates a new conversation after confirmation.
 The enable checkbox remains unavailable until a non-empty key has been stored securely in Windows
 Credential Manager. Rust enforces the same requirement, so JEV cannot be enabled by bypassing the
-interface. If configuration says JEV is enabled but its key is unavailable at startup, POK-Ai starts
+interface. If configuration says JEV is enabled but its key is unavailable at startup, POK-Agent starts
 with JEV disabled and explains the requirement in Settings. Clearing or losing the key never causes
 the primary task to be sent to JEV.
 
@@ -540,7 +541,7 @@ The desktop keeps one live conversation for the selected model and workspace. Fo
 reuse the complete message/tool history and the same submission ledger; older cycles are compacted
 into the continuity ledger as the conversation grows. Protocol-safe checkpoints are also stored in
 `conversations.db` under the resolved data directory. Select a conversation in the left sidebar
-after restarting the app; POK-Ai restores the saved provider, model, and workspace while
+after restarting the app; POK-Agent restores the saved provider, model, and workspace while
 discarding stale desktop authority and cached approvals. The CLI provides `pok-ai sessions list`,
 `pok-ai run --continue "follow-up"`, and `pok-ai run --session <UUID> "follow-up"`. Changing
 model/workspace starts a clean conversation automatically, and **New conversation** resets it
@@ -587,7 +588,7 @@ use optimized dependencies so screenshot resizing and PNG encoding remain respon
 automation still rejects elevated windows, password controls, stale captures,
 and coordinates outside the selected window or monitor. Desktop overviews never
 authorize input. Exam automation is limited to disposable fixture
-repositories and the titled POK-Ai exam window. Every run writes a JSONL trace
+repositories and the titled POK-Agent exam window. Every run writes a JSONL trace
 and artifacts under `%LOCALAPPDATA%\POK-Ai`.
 
 Single keys and plus-separated shortcuts are supported through the same input tool,
@@ -618,7 +619,7 @@ environment; it does not delete the original helper source from the workspace.
 
 ## Support the Project
 
-If you find POK-Ai useful and would like to support its development, you can
+If you find POK-Agent useful and would like to support its development, you can
 buy me a coffee. Your support helps me continue maintaining and improving the
 project.
 
@@ -628,16 +629,16 @@ Your contributions will help support:
 
 - New features and enhancements
 - Maintenance, testing, and bug fixes
-- Continued development of POK-Ai
+- Continued development of POK-Agent
 
 Thank you for your support!
 
 ## License and attribution
 
-POK-Agent (POK-Ai) is developed by **KNY Industries**. It is free and open-source software
+POK-Agent is developed by **KNY Industries**. It is free and open-source software
 licensed under the [Apache License 2.0](LICENSE). You may use, modify, and redistribute it,
 including for commercial purposes, subject to that license.
 
 Redistributions and derivative works must include the Apache 2.0 license and
-retain the KNY Industries attribution in [NOTICE](NOTICE). Contributions back to POK-Ai
+retain the KNY Industries attribution in [NOTICE](NOTICE). Contributions back to POK-Agent
 are welcomed and appreciated, but they are not required by the license.

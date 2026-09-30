@@ -1,6 +1,6 @@
 # LM Studio API Compatibility
 
-POK-Ai uses LM Studio's OpenAI-compatible `POST /v1/chat/completions` endpoint
+POK-Agent uses LM Studio's OpenAI-compatible `POST /v1/chat/completions` endpoint
 for its client-side Rust tools. The adapter sends `tools`, `tool_choice: auto`,
 `stream: true`, and `stream_options.include_usage: true`.
 
@@ -11,7 +11,7 @@ for its client-side Rust tools. The adapter sends `tools`, `tool_choice: auto`,
   rejects empty text objects and, in current versions, also rejects `null`.
 - Every assistant tool-call message is followed by its corresponding `tool`
   result before the next model request.
-- Default-tool-format models may emit `[TOOL_REQUEST]` blocks; POK-Ai retains a
+- Default-tool-format models may emit `[TOOL_REQUEST]` blocks; POK-Agent retains a
   recovery parser for this LM Studio fallback.
 
 ## Streaming
@@ -28,15 +28,15 @@ tool execution, completion, and usage events to the dashboard immediately.
 
 LM Studio's newer native `POST /api/v1/chat` endpoint provides additional named
 events such as prompt-processing progress and tool-call boundaries. It is most
-directly suited to LM Studio-managed plugins and MCP integrations. POK-Ai keeps
+directly suited to LM Studio-managed plugins and MCP integrations. POK-Agent keeps
 the OpenAI-compatible endpoint for its in-process Windows and coding tools while
 using `/api/v1/models` for richer model capability discovery.
 
 ## Automatic vision routing
 
-Before a session starts, POK-Ai reads the selected model from `GET /api/v1/models`.
+Before a session starts, POK-Agent reads the selected model from `GET /api/v1/models`.
 When `capabilities.vision` is `true`, capture results include the annotated PNG and
-the compact target list. When it is `false`, POK-Ai strips all image content from
+the compact target list. When it is `false`, POK-Agent strips all image content from
 the conversation while retaining OCR/UIA targets; full screenshots are still saved
 to the diagnostic bundle. Unknown capability metadata preserves image delivery for
 compatibility with non-LM-Studio providers. The chosen mode and discovered tool-use

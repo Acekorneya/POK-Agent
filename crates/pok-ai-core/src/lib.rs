@@ -1,4 +1,4 @@
-//! Provider-neutral agent runtime for POK-Ai.
+//! Provider-neutral agent runtime for POK-Agent.
 
 pub mod agent_window;
 pub mod brain;

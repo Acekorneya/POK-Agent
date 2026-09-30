@@ -1,4 +1,4 @@
-"""Record demo videos of POK-Ai working in the arena VMs.
+"""Record demo videos of POK-Agent working in the arena VMs.
 
 While `run_arena.py run --tag <tag>` is running, this polls the screenshot
 endpoint of every VM whose container belongs to that run and keeps the frames,
@@ -7,7 +7,7 @@ then turns each task's frames into an MP4 and a small GIF for the README.
     python3 scripts/arena/record_demo.py record --tag demo            # until the run ends
     python3 scripts/arena/record_demo.py render --tag demo            # one clip per task
 
-Only frames from while POK-Ai was running a task are kept in the clips: a
+Only frames from while POK-Agent was running a task are kept in the clips: a
 task's window runs from its run folder appearing on the arena share to its
 exit.txt. The VMs hold no personal data.
 """

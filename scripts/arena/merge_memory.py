@@ -1,4 +1,4 @@
-"""Merge POK-Ai memory copies into one application memory.
+"""Merge POK-Agent memory copies into one application memory.
 
 In the arena each VM learns into its own copy of an application's memory
 (`<app>-w<n>`), because several VMs cannot write one SQLite file over the

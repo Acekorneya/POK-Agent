@@ -88,7 +88,7 @@ const INTERACTIVE_QUESTIONS: &str = "When missing information, ambiguity, or a u
 /// unattended run): asking would only end the run with nothing done.
 const UNATTENDED_QUESTIONS: &str = "No one can answer questions during this run. When details are ambiguous, act on the most reasonable reading of the request and the visible state, and state what you assumed in your final answer. Do not stop to ask; stop without acting only when every reasonable reading would be unsafe or impossible.";
 
-const SYSTEM_PROMPT: &str = r#"You are POK-Ai, a Windows computer-use and coding agent.
+const SYSTEM_PROMPT: &str = r#"You are POK-Agent, a Windows computer-use and coding agent.
 Use only the supplied tools. Observe the desktop before input. Desktop tools use the latest observation;
 copy the short observation_id only when needed and never invent or repair an id.
 {QUESTIONS}
@@ -390,7 +390,7 @@ impl Session {
         let user_md_path = context.data_dir.join("USER.md");
         if !user_md_path.exists() {
             let default_profile = "# User Profile\n\n\
-                This file contains durable user preferences, environment details, and identity facts for POK-Ai.\n\n\
+                This file contains durable user preferences, environment details, and identity facts for POK-Agent.\n\n\
                 - **Preferred Shell:** PowerShell (on Windows), bash (on WSL)\n\
                 - **Programming Languages:** Rust, TypeScript, React\n\
                 - **Local Servers:** LM Studio on 127.0.0.1:1234\n";

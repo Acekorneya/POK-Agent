@@ -258,7 +258,7 @@ choice("branch_book_chapter_vs_section", "open chapter 4", [["c0", "a chapter ov
 
 OUT.write_text(json.dumps({
     "version": "1.0",
-    "description": "POK-Ai router question suite: completion checks, target picks and condition choices from real captures",
+    "description": "POK-Agent router question suite: completion checks, target picks and condition choices from real captures",
     "cases": cases,
 }, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
 print(f"wrote {len(cases)} cases to {OUT}")

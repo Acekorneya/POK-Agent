@@ -1,10 +1,10 @@
-"""Set up Windows Agent Arena (WAA) for POK-Ai (run from WSL or Linux).
+"""Set up Windows Agent Arena (WAA) for POK-Agent (run from WSL or Linux).
 
-WAA runs a Windows 11 VM in a Docker container (QEMU/KVM). POK-Ai runs
+WAA runs a Windows 11 VM in a Docker container (QEMU/KVM). POK-Agent runs
 inside that VM as a WAA agent; see scripts/arena/README.md for the design.
 
     python3 scripts/arena/setup_waa.py status     # what is ready, what is missing
-    python3 scripts/arena/setup_waa.py install    # clone WAA, install the POK-Ai agent
+    python3 scripts/arena/setup_waa.py install    # clone WAA, install the POK-Agent agent
     python3 scripts/arena/setup_waa.py images     # pull the WAA container image
     python3 scripts/arena/setup_waa.py prepare    # build the golden Windows image (~20 min)
     python3 scripts/arena/setup_waa.py update-libreoffice --libreoffice 26.8.0
@@ -41,7 +41,7 @@ PATCH_MARKER = "# POK-Ai arena agent"
 AGENT_BRANCH = f"""    elif cfg_args["agent_name"] == "pokai":  {PATCH_MARKER}
         from mm_agents.pokai.agent import PokAiAgent
         agent = PokAiAgent(emulator_ip=args.emulator_ip)
-        # POK-Ai observes the screen itself; skip WAA's accessibility-tree
+        # POK-Agent observes the screen itself; skip WAA's accessibility-tree
         # capture, which takes minutes per task.
         args.observation_type = "screenshot"
 """
@@ -572,7 +572,7 @@ def status(_: argparse.Namespace) -> None:
     check("docker", docker, "install Docker")
     check("/dev/kvm", os.path.exists("/dev/kvm"), "enable nested virtualization for WSL")
     check("WAA checkout", (container_dir() / "client" / "run.py").exists(), "setup_waa.py install")
-    check("POK-Ai agent installed", (container_dir() / "client" / "mm_agents" / "pokai" / "agent.py").exists(), "setup_waa.py install")
+    check("POK-Agent agent installed", (container_dir() / "client" / "mm_agents" / "pokai" / "agent.py").exists(), "setup_waa.py install")
     if docker:
         have = subprocess.run(["docker", "image", "inspect", WAA_IMAGE], capture_output=True).returncode == 0
         check("WAA image", have, "setup_waa.py images")

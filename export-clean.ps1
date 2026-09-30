@@ -1,11 +1,10 @@
 <#
 .SYNOPSIS
-Exports a clean copy of POK-Ai source files and git repository to a destination folder,
+Exports a clean copy of POK-Agent source files and git repository to a destination folder,
 excluding temporary build artifacts, compiler caches, and node_modules.
 
 .PARAMETER Destination
-The destination directory where the clean POK-Ai project should be copied.
-Defaults to 'J:\Coding_980\POK_Ai'.
+The destination directory where the clean POK-Agent project should be copied.
 
 .PARAMETER IncludeGit
 Copies the .git directory preserving all git commit history, branches, and tags.
@@ -15,16 +14,16 @@ Defaults to $true. Use -IncludeGit:$false to exclude.
 If specified, also copies all diagnostic sessions and traces. Defaults to $false.
 
 .EXAMPLE
-.\export-clean.ps1
-Exports to J:\Coding_980\POK_Ai including git history.
+.\export-clean.ps1 -Destination "D:\Projects\POK-Agent"
+Exports to D:\Projects\POK-Agent including git history.
 
 .EXAMPLE
-.\export-clean.ps1 -Destination "J:\Coding_980\POK_Ai" -IncludeGit
+.\export-clean.ps1 -Destination "D:\Projects\POK-Agent" -IncludeGit:$false
 #>
 [CmdletBinding()]
 param(
-    [Parameter(Position = 0)]
-    [string]$Destination = "J:\Coding_980\POK_Ai",
+    [Parameter(Mandatory = $true, Position = 0)]
+    [string]$Destination,
 
     [switch]$IncludeGit = $true,
 
@@ -46,7 +45,7 @@ if ($DestPath.StartsWith($ProjectDir, [System.StringComparison]::OrdinalIgnoreCa
 }
 
 Write-Host "==================================================" -ForegroundColor Cyan
-Write-Host " POK-Ai Clean Exporter" -ForegroundColor Cyan
+Write-Host " POK-Agent Clean Exporter" -ForegroundColor Cyan
 Write-Host "==================================================" -ForegroundColor Cyan
 Write-Host "Source:                       $ProjectDir" -ForegroundColor Gray
 Write-Host "Destination:                  $DestPath" -ForegroundColor Gray

@@ -1,14 +1,14 @@
 """Replay Windows Agent Arena tasks on this Windows PC (run with Windows Python).
 
-Useful for watching POK-Ai work on a benchmark task in real applications
+Useful for watching POK-Agent work on a benchmark task in real applications
 (LibreOffice, VLC, ...) and telling harness problems from planner mistakes.
 It does what WAA's setup does for "download" and "open" steps: the task's own
 sample files are downloaded into a dedicated test folder and opened. It then
 runs pok-ai.exe on the unmodified instruction.
 
-Everything stays in the test folder (default %USERPROFILE%\\POK-Ai-Arena-Tests):
-the task files, POK-Ai's memory for these runs, and the logs. Your normal
-POK-Ai memory and documents are not used. Tasks whose setup needs more than
+Everything stays in the test folder (default %USERPROFILE%\\POK-Agent-Arena-Tests):
+the task files, POK-Agent's memory for these runs, and the logs. Your normal
+POK-Agent memory and documents are not used. Tasks whose setup needs more than
 downloading and opening files are reported and skipped; replay those in the
 arena instead.
 
@@ -104,7 +104,7 @@ def main() -> int:
     parser.add_argument("--arm", default="jev")
     parser.add_argument("--step-budget", type=int, default=0, help="0 = unlimited")
     parser.add_argument("--timeout", type=int, default=900)
-    parser.add_argument("--test-dir", default=str(Path.home() / "POK-Ai-Arena-Tests"))
+    parser.add_argument("--test-dir", default=str(Path.home() / "POK-Agent-Arena-Tests"))
     args = parser.parse_args()
 
     import run_arena

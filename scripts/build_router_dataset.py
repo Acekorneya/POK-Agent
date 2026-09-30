@@ -1,4 +1,4 @@
-"""Build a Laya typed-decisions training set from POK-Ai router training logs.
+"""Build a Laya typed-decisions training set from POK-Agent router training logs.
 
 The desktop app (Settings > Decision router > Training data) and the CLI
 write one `router-training/<session>.jsonl` per conversation when

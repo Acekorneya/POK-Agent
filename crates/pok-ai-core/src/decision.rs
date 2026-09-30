@@ -3371,7 +3371,7 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(workspace.path().join("diagnostics")).unwrap();
         let candidates = coding_candidates(
-            "write the text 'POK-Ai benchmark run' and save it as diagnostics\\bench-note.txt",
+            "write the text 'POK-Agent benchmark run' and save it as diagnostics\\bench-note.txt",
             workspace.path(),
             8,
         );
@@ -3379,7 +3379,7 @@ mod tests {
             .iter()
             .find(|candidate| candidate.tool == "write_file")
             .expect("an explicit write task must offer a write_file candidate");
-        assert_eq!(write.arguments["content"], json!("POK-Ai benchmark run"));
+        assert_eq!(write.arguments["content"], json!("POK-Agent benchmark run"));
         assert_eq!(
             write.arguments["filepath"],
             json!(
@@ -3412,7 +3412,7 @@ mod tests {
     fn coding_candidates_accept_explicit_workspace_filenames() {
         let workspace = tempfile::tempdir().unwrap();
         let file = workspace.path().join("README.md");
-        std::fs::write(&file, "# POK-Ai\n").unwrap();
+        std::fs::write(&file, "# POK-Agent\n").unwrap();
         let expected = dunce::canonicalize(file).unwrap();
         let candidates = coding_candidates("Read README.md and summarize it.", workspace.path(), 8);
         assert!(candidates.iter().any(|candidate| {

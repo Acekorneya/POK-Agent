@@ -1,11 +1,11 @@
-"""Run POK-Ai on Windows Agent Arena and measure it (run from WSL or Linux).
+"""Run POK-Agent on Windows Agent Arena and measure it (run from WSL or Linux).
 
     python3 scripts/arena/run_arena.py run --llm bunny --arms none,jev \\
         --tasks settings,notepad,windows_calc,clock --passes 2 --tag waa1
     python3 scripts/arena/run_arena.py summary --tag waa1
     python3 scripts/arena/run_arena.py dataset --tag waa1 --output dataset/
 
-Each (planner, arm) gets its own arena share, holding POK-Ai's memory, and
+Each (planner, arm) gets its own arena share, holding POK-Agent's memory, and
 runs the task list `--passes` times. Every pass starts from a fresh copy of
 the golden VM, so tasks cannot see each other's leftovers across passes, but
 with `--memory persist` (default) the agent keeps the skills and facts it
@@ -45,7 +45,7 @@ RUNS = Path(os.environ.get("POKAI_ARENA_RUNS", Path.home() / "arena" / "runs"))
 TASKS_DIR = setup_waa.container_dir() / "client" / "evaluation_examples_windows"
 WAA_ACTION_SPACE = "pyautogui"  # WAA's run.py default, part of its result paths
 
-# WAA's reference agent can answer FAIL for an impossible task. POK-Ai gets
+# WAA's reference agent can answer FAIL for an impossible task. POK-Agent gets
 # the same option as a standing instruction, so task text stays unmodified;
 # the arena agent maps the INFEASIBLE: answer to WAA's FAIL action.
 INFEASIBLE_CONVENTION = (

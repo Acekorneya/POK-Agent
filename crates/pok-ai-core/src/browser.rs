@@ -952,7 +952,7 @@ impl Tool for BrowserOpenTool {
         "managed_browser_open"
     }
     fn description(&self) -> &'static str {
-        "Open an absolute http(s) URL in the isolated POK-Ai managed browser and return a structured snapshot. Use the existing desktop browser tools only when the user asks for their personal browser."
+        "Open an absolute http(s) URL in the isolated POK-Agent managed browser and return a structured snapshot. Use the existing desktop browser tools only when the user asks for their personal browser."
     }
     fn input_schema(&self) -> Value {
         schema::<BrowserOpenArgs>()

@@ -312,7 +312,7 @@ mod tests {
         let policy = Policy {
             mode: PolicyMode::Exam {
                 sandbox: PathBuf::from("fixture"),
-                allowed_window_title: "POK-Ai Brain Exam".into(),
+                allowed_window_title: "POK-Agent Brain Exam".into(),
                 allowed_process: "msedge.exe".into(),
             },
         };

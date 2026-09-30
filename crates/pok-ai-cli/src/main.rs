@@ -485,7 +485,7 @@ async fn run_cli() -> anyhow::Result<()> {
             });
             if config.prompt_token_target.is_some() {
                 eprintln!(
-                    "Warning: prompt_token_target is deprecated and ignored; POK-Ai now sizes the model working set automatically."
+                    "Warning: prompt_token_target is deprecated and ignored; POK-Agent now sizes the model working set automatically."
                 );
             }
             let context_budget = pok_ai_core::context::resolve_context_budget(
@@ -790,7 +790,7 @@ fn standard_tools(brain: Arc<dyn Brain>, model: &str) -> ToolRegistry {
 }
 
 async fn doctor(config: &Config) -> Result<()> {
-    println!("POK-Ai data: {}", config.data_dir.display());
+    println!("POK-Agent data: {}", config.data_dir.display());
     println!("Host: {}", std::env::consts::OS);
     if !cfg!(windows) {
         println!("Desktop: unavailable in this WSL/Linux build; use the native Windows binary");

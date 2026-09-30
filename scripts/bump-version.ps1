@@ -61,7 +61,7 @@ try {
     Assert-NativeSuccess "git add"
     git commit -m "Release v$Version"
     Assert-NativeSuccess "git commit"
-    git tag -a "v$Version" -m "POK-Ai v$Version"
+    git tag -a "v$Version" -m "POK-Agent v$Version"
     Assert-NativeSuccess "git tag"
 
     Write-Host "Tagged v$Version. Publish it with:" -ForegroundColor Green

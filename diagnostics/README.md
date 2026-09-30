@@ -1,4 +1,4 @@
-# POK-Ai internal diagnostics
+# POK-Agent internal diagnostics
 
 Interactive development runs create one directory per session:
 

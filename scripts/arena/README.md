@@ -1,12 +1,12 @@
-# POK-Ai on Windows Agent Arena
+# POK-Agent on Windows Agent Arena
 
-This folder runs POK-Ai on [Windows Agent Arena](https://github.com/microsoft/WindowsAgentArena)
+This folder runs POK-Agent on [Windows Agent Arena](https://github.com/microsoft/WindowsAgentArena)
 (WAA): 154 tasks across 12 Windows applications, each scored automatically,
 in a clean Windows 11 VM. It serves three purposes:
 
 1. **Comparable numbers.** Success rate, primary-LLM calls, and time per task, with and
    without a System 1 decision model, on a public benchmark.
-2. **Self-improvement.** The same tasks run in several passes while POK-Ai keeps its
+2. **Self-improvement.** The same tasks run in several passes while POK-Agent keeps its
    memory, so later passes show whether learned skills make it faster and more reliable.
 3. **Training data.** Router questions and their answers from every task, joined with
    the task's result, become a System 1 training set. The VM holds no personal data, so
@@ -26,15 +26,15 @@ run_arena.py ── docker run ──▶  WAA client run.py
                                   env.evaluate()   ─────────▶  WAA evaluator checks the result
 ```
 
-- POK-Ai runs **inside** the VM and observes and acts through UI Automation there.
+- POK-Agent runs **inside** the VM and observes and acts through UI Automation there.
   WAA still prepares and scores every task the way it does for any agent.
 - The agent (`waa_agent/agent.py`) is installed into WAA as `mm_agents/pokai`.
   `setup_waa.py` patches WAA's `run.py` to register the agent, tell it which task it
   is running, and re-read the task list before each task.
-- Each task's instruction gets one sentence telling POK-Ai how to report an impossible
+- Each task's instruction gets one sentence telling POK-Agent how to report an impossible
   task (`INFEASIBLE:`). The agent turns that into WAA's `FAIL` action, which is the
   expected answer for WAA's 13 infeasible tasks. WAA's own agent has the same option.
-- Every pass starts from a fresh copy of the golden VM disk. POK-Ai's memory lives on
+- Every pass starts from a fresh copy of the golden VM disk. POK-Agent's memory lives on
   the arena share, not in the VM, so it carries across passes with `--memory persist`.
 - WAA's local runs do not revert the VM between tasks, so before each task the agent
   closes what the previous task left open (browsers, LibreOffice, VLC, Explorer
@@ -148,5 +148,5 @@ is only for use with TypeSafe's written permission.
 `record_demo.py record --tag <tag>` runs next to `run_arena.py run --tag <tag>` and saves
 two screenshots a second from every VM of that run. `record_demo.py render --tag <tag>`
 then cuts one MP4 and GIF per task into `~/arena/runs/<tag>/demo-clips/`, keeping only the
-time POK-Ai was running and dropping frames where nothing changed. The README's clips in
+time POK-Agent was running and dropping frames where nothing changed. The README's clips in
 `docs/media/` come from these.

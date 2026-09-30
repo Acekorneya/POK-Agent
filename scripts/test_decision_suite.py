@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-POK-Ai Decision Router Diagnostic Test Suite (LAYA vs JEV)
+POK-Agent Decision Router Diagnostic Test Suite (LAYA vs JEV)
 Evaluates and benchmarks LAYA and JEV across real diagnostic scenarios.
 """
 
@@ -14,6 +14,9 @@ import time
 import urllib.request
 import urllib.error
 from typing import Any, Dict, List, Optional, Tuple
+from pathlib import Path
+
+REPO_DIAGNOSTICS = Path(__file__).resolve().parent.parent / "diagnostics"
 
 
 def get_typesafe_key() -> str:
@@ -52,7 +55,7 @@ def get_typesafe_key() -> str:
 
 
 def candidate_operation(tool: str, cid: str) -> str:
-    """Maps candidate tool and id to operation name matching POK-Ai decision.rs."""
+    """Maps candidate tool and id to operation name matching POK-Agent decision.rs."""
     if cid == "search_web_for_request":
         return "SEARCH_WEB"
     if tool == "__done__":
@@ -77,7 +80,7 @@ def candidate_operation(tool: str, cid: str) -> str:
 
 
 def build_questions_payload(case: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Builds state and questions payloads conforming to POK-Ai's DecisionRequest."""
+    """Builds state and questions payloads conforming to POK-Agent's DecisionRequest."""
     task = case["task"]
     current_step = case["current_step"]
     candidates = case["candidates"]
@@ -387,7 +390,7 @@ def run_suite(
     if report_path:
         os.makedirs(os.path.dirname(os.path.abspath(report_path)), exist_ok=True)
         md = []
-        md.append("# POK-Ai Decision Router Benchmark: LAYA vs JEV\n")
+        md.append("# POK-Agent Decision Router Benchmark: LAYA vs JEV\n")
         md.append(f"**Date**: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}  ")
         md.append(f"**Dataset**: 8 Core Operational Scenarios extracted from 51 Diagnostic Sessions  ")
         md.append(f"**LAYA Model**: `convaiinnovations/laya-typed-decisions` (Local CUDA GPU)  ")
@@ -421,7 +424,7 @@ def run_suite(
         md.append("3. **System Tool & Terminal States**:")
         md.append("   - Clock queries (`case_01`), completion states (`case_07`), and blocked deadlocks (`case_08`) exhibit 100% mutual agreement.")
         md.append("4. **Reproducibility Guarantee**:")
-        md.append("   - Because POK-Ai uses fixed candidate ordering, deterministic temperature, and bounded criteria, running this suite produces identical results across test runs.")
+        md.append("   - Because POK-Agent uses fixed candidate ordering, deterministic temperature, and bounded criteria, running this suite produces identical results across test runs.")
 
         with open(report_path, "w", encoding="utf-8") as f:
             f.write("\n".join(md))
@@ -429,10 +432,10 @@ def run_suite(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="POK-Ai Decision Router Benchmark Suite")
+    parser = argparse.ArgumentParser(description="POK-Agent Decision Router Benchmark Suite")
     parser.add_argument(
         "--cases",
-        default=r"J:\Coding_980\POK_Ai\diagnostics\decision_suite_cases.json",
+        default=str(REPO_DIAGNOSTICS / "decision_suite_cases.json"),
         help="Path to decision test cases JSON file",
     )
     parser.add_argument(
@@ -453,12 +456,12 @@ def main():
     )
     parser.add_argument(
         "--report",
-        default=r"J:\Coding_980\POK_Ai\diagnostics\decision_suite_report.md",
+        default=str(REPO_DIAGNOSTICS / "decision_suite_report.md"),
         help="Path to output markdown report",
     )
     parser.add_argument(
         "--output-json",
-        default=r"J:\Coding_980\POK_Ai\diagnostics\decision_suite_results.json",
+        default=str(REPO_DIAGNOSTICS / "decision_suite_results.json"),
         help="Path to output results JSON file",
     )
 

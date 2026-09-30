@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Load POK-Ai credentials into the current shell without printing them.
+# Load POK-Agent credentials into the current shell without printing them.
 # Reads provider keys from the Windows Credential Manager via WSL interop
 # (scripts/read-credential.ps1) and sets the local decision-router tokens.
 # Usage: source scripts/load-keys.sh

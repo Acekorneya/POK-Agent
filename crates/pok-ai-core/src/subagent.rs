@@ -174,12 +174,12 @@ impl Tool for SpawnSubagentTool {
             git_status(
                 Command::new("git").current_dir(&worktree).args([
                     "-c",
-                    "user.name=POK-Ai Subagent",
+                    "user.name=POK-Agent Subagent",
                     "-c",
                     "user.email=pok-ai@local",
                     "commit",
                     "-m",
-                    &format!("POK-Ai subagent: {}", args.subtask_title),
+                    &format!("POK-Agent subagent: {}", args.subtask_title),
                 ]),
                 "commit subagent work",
             )?;

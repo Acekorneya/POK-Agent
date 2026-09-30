@@ -1,6 +1,6 @@
 {
  "version": "1.0",
- "description": "POK-Ai router question suite: completion checks, target picks and condition choices from real captures",
+ "description": "POK-Agent router question suite: completion checks, target picks and condition choices from real captures",
  "cases": [
   {
    "kind": "completion",

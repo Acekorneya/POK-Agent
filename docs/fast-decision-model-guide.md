@@ -2,7 +2,7 @@
 
 A self-contained guide for building systems where a large LLM plans and a small,
 fast "decision model" makes the step-by-step choices. It is written from a
-working Windows computer-use agent (POK-Ai) and its measured results, and
+working Windows computer-use agent (POK-Agent) and its measured results, and
 generalizes to games, bots, triage, routing and any loop that repeats small
 decisions.
 
@@ -278,7 +278,7 @@ and unload it before loading the next.
 
 ---
 
-## 7. Measured results (POK-Ai, September 2026)
+## 7. Measured results (POK-Agent, September 2026)
 
 **Offline question bench:** 57 questions captured from real agent runs (19
 target picks, 27 completion checks, 11 condition choices). Results are the

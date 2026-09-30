@@ -2,7 +2,7 @@
 
 ## Runtime boundaries
 
-POK-Agent (internally POK-Ai) has one provider-neutral Rust core. The CLI and Tauri app construct the
+POK-Agent (crates and files named `pok-ai`) has one provider-neutral Rust core. The CLI and Tauri app construct the
 same `Session`, `ToolRegistry`, `Policy`, `MemoryStore`, and `DesktopPlatform`.
 No agent decisions are implemented in React.
 
@@ -99,7 +99,7 @@ and the complete unabridged execution remains available in `trace.jsonl`.
 
 ## Desktop safety
 
-Desktop input requires a fresh observation UUID. POK-Ai rejects stale actions,
+Desktop input requires a fresh observation UUID. POK-Agent rejects stale actions,
 coordinates outside the selected window/monitor, elevated windows, and typing while a
 password element is exposed. Exam mode additionally checks the process and
 window title. The Windows adapter uses `screenshots`, Windows OCR, UI Automation,
@@ -257,7 +257,7 @@ live browsing is not learned as a reusable procedure from UI changes alone.
 
 Coding children require a clean Git repository. Each child receives only coding
 tools, cannot spawn grandchildren, and works on a temporary branch/worktree.
-POK-Ai returns its commit and diff but never merges it automatically.
+POK-Agent returns its commit and diff but never merges it automatically.
 
 ## Optional JEV decisions
 

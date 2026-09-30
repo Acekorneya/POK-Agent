@@ -1,4 +1,4 @@
-"""Loopback adapter from POK-Ai's /v1/systemone contract to an AgentJev server.
+"""Loopback adapter from POK-Agent's /v1/systemone contract to an AgentJev server.
 
 AgentJev-0.6B (https://github.com/malevrigns/agent-jev, Apache-2.0; weights at
 https://huggingface.co/aimeigaoshou/agent-jev) is a typed decision model with
@@ -52,7 +52,7 @@ def distinct(criteria: dict[str, str]) -> dict[str, str]:
 
 
 def create_app(upstream: str, token: str, timeout: float) -> FastAPI:
-    app = FastAPI(title="POK-Ai AgentJev adapter", docs_url=None, redoc_url=None)
+    app = FastAPI(title="POK-Agent AgentJev adapter", docs_url=None, redoc_url=None)
 
     def authenticate(authorization: str | None = Header(default=None)) -> None:
         expected = f"Bearer {token}"

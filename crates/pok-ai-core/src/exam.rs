@@ -481,7 +481,7 @@ fn total_actions(results: &[ScenarioResult]) -> u32 {
 
 fn render_markdown(report: &ExamReport) -> String {
     let mut output = format!(
-        "# POK-Ai Brain Exam {}\n\n| Rank | Model | Score |\n|---:|---|---:|\n",
+        "# POK-Agent Brain Exam {}\n\n| Rank | Model | Score |\n|---:|---|---:|\n",
         report.run_id
     );
     for (index, score) in report.scores.iter().enumerate() {

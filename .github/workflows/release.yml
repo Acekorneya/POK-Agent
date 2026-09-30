@@ -76,11 +76,11 @@ jobs:
         run: |
           $dir = "${{ steps.package.outputs.dir }}"
           gh release create $env:TAG `
-            "$dir/POK-Ai-windows-x64.exe" `
-            "$dir/POK-Ai-windows-x64-setup.exe" `
-            "$dir/POK-Ai-windows-x64.zip" `
+            "$dir/POK-Agent-windows-x64.exe" `
+            "$dir/POK-Agent-windows-x64-setup.exe" `
+            "$dir/POK-Agent-windows-x64.zip" `
             "$dir/SHA256SUMS.txt" `
             --repo "${{ github.repository }}" `
-            --title "POK-Ai $env:TAG" `
+            --title "POK-Agent $env:TAG" `
             --generate-notes `
             --latest

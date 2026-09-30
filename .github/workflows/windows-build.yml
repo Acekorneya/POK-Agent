@@ -54,7 +54,7 @@ jobs:
         shell: pwsh
         run: |
           $short = "${{ github.sha }}".Substring(0, 7)
-          "label=POK-Ai-windows-x64-$short" >> $env:GITHUB_OUTPUT
+          "label=POK-Agent-windows-x64-$short" >> $env:GITHUB_OUTPUT
 
       - uses: actions/upload-artifact@v7
         with:

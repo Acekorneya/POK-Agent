@@ -5,7 +5,7 @@ authors.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
-description = "Offline voice input for POK-Ai: live streaming captions refined by an accurate model"
+description = "Offline voice input for POK-Agent: live streaming captions refined by an accurate model"
 
 [dependencies]
 parking_lot.workspace = true

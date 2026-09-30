@@ -250,7 +250,7 @@ it doesn't beat the current default today.
 `laya-grounded` beat the typed-decisions specialist checkpoint on this
 harness's own benchmark, including the hardest case (a 26-candidate click
 list) that the prior default got wrong, which is why it's the default now.
-POK-Ai is open source and this checkpoint's non-commercial license is
+POK-Agent is open source and this checkpoint's non-commercial license is
 accepted for that use; anyone building a commercial product on top of this
 harness needs to swap it for `convaiinnovations/laya-typed-decisions` or
 another permissively-licensed checkpoint first. 8 cases is directionally

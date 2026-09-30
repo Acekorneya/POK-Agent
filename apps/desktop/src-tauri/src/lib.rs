@@ -1682,7 +1682,7 @@ async fn run_prompt(
         let config = runtime.config.lock();
         if config.prompt_token_target.is_some() {
             eprintln!(
-                "Warning: prompt_token_target is deprecated and ignored; POK-Ai now sizes the model working set automatically."
+                "Warning: prompt_token_target is deprecated and ignored; POK-Agent now sizes the model working set automatically."
             );
         }
         (
@@ -1799,7 +1799,7 @@ async fn run_prompt(
                             "document contents"
                         ],
                     }),
-                    "This provider is an external service. Full task, desktop, workspace, and document context may leave this device. Confirm before POK-Ai sends an inference request.",
+                    "This provider is an external service. Full task, desktop, workspace, and document context may leave this device. Confirm before POK-Agent sends an inference request.",
                 )
                 .await
                 .map_err(|error| error.to_string())?;
@@ -3111,7 +3111,8 @@ pub fn run() {
             .map(|ancestor| ancestor.join("pok-ai.toml"))
             .find(|candidate| candidate.is_file())
     });
-    let mut config = Config::load(project_config.as_deref()).expect("valid POK-Ai configuration");
+    let mut config =
+        Config::load(project_config.as_deref()).expect("valid POK-Agent configuration");
     if let Err(error) = apply_provider_endpoint_overrides(&mut config) {
         eprintln!("Ignoring saved provider endpoint overrides: {error}");
     }
@@ -3265,7 +3266,7 @@ pub fn run() {
             send_guidance
         ])
         .build(tauri::generate_context!())
-        .expect("error while building POK-Ai");
+        .expect("error while building POK-Agent");
     app.run(|app_handle, event| {
         if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
             let runtime = app_handle.state::<AppRuntime>();

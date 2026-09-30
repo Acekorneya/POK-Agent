@@ -1,5 +1,5 @@
-# Runs one Windows Agent Arena task with POK-Ai inside the arena VM.
-# Started (detached) by the POK-Ai WAA agent; see scripts/arena/waa_agent/agent.py.
+# Runs one Windows Agent Arena task with POK-Agent inside the arena VM.
+# Started (detached) by the POK-Agent WAA agent; see scripts/arena/waa_agent/agent.py.
 #
 # Inputs, uploaded by the agent to C:\pokai\runs\<RunId>\:
 #   task.txt          the task instruction

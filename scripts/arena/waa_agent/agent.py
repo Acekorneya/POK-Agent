@@ -1,11 +1,11 @@
-"""POK-Ai as a Windows Agent Arena (WAA) agent.
+"""POK-Agent as a Windows Agent Arena (WAA) agent.
 
 `scripts/arena/setup_waa.py` installs this folder into the WAA client as
 `mm_agents/pokai`. WAA keeps doing what it does for every agent: it prepares
 each task (`env.reset`) and scores it (`env.evaluate`). In between, this agent
-does not stream pyautogui actions; it runs the whole POK-Ai harness inside the
-Windows VM, where POK-Ai observes and acts through UI Automation itself, and
-then hands control back with `DONE` (or `FAIL` when POK-Ai reports the task
+does not stream pyautogui actions; it runs the whole POK-Agent harness inside the
+Windows VM, where POK-Agent observes and acts through UI Automation itself, and
+then hands control back with `DONE` (or `FAIL` when POK-Agent reports the task
 cannot be done, which is the expected answer for WAA's infeasible tasks).
 
 Files cross between the client container and the VM through the arena share,
@@ -13,7 +13,7 @@ mounted at `/shared/pokai` here and `\\\\host.lan\\Data\\pokai` in the VM:
 
 - `bin/`            pok-ai.exe and arena.toml (written by run_arena.py)
 - `run-task.ps1`    the in-VM wrapper that runs one task
-- `memory/<scope>/` POK-Ai memory (skills and facts) kept between tasks/passes
+- `memory/<scope>/` POK-Agent memory (skills and facts) kept between tasks/passes
 - `out/<run id>/`   per-task log, trace, and router training records
 
 API keys are uploaded per task with `/setup/upload` (the VM server does not
@@ -40,7 +40,7 @@ VM_ROOT = "C:\\pokai"
 
 
 class PokAiAgent:
-    # WAA only needs this to configure its environment; POK-Ai acts itself.
+    # WAA only needs this to configure its environment; POK-Agent acts itself.
     action_space = "code_block"
 
     def __init__(self, emulator_ip: str = "20.20.20.21", port: int = 5000):
@@ -59,7 +59,7 @@ class PokAiAgent:
         self.task = (domain, example_id, result_dir)
 
     def reset(self) -> None:
-        """Called before WAA prepares each task. Close browsers and any POK-Ai
+        """Called before WAA prepares each task. Close browsers and any POK-Agent
         left running by the previous task (for example one stopped at the time
         limit): WAA's local runs cannot revert a VM snapshot, and a leftover
         browser without a debugging port makes the next browser task's setup
@@ -86,7 +86,7 @@ class PokAiAgent:
         except (requests.RequestException, ValueError):
             survivors = "0"
         if survivors.isdigit() and int(survivors) > 0:
-            print(f"POK-Ai: {survivors} LibreOffice process(es) survived a forced kill; "
+            print(f"POK-Agent: {survivors} LibreOffice process(es) survived a forced kill; "
                   "ending this client so the task runs on a fresh VM", flush=True)
             os._exit(3)
         # Keep LibreOffice at its installed version: its online updater
@@ -253,7 +253,7 @@ class PokAiAgent:
         while not os.path.exists(exit_file):
             if time.monotonic() > deadline and not timed_out:
                 timed_out = True
-                logger.warning("POK-Ai exceeded %s s; stopping it", self.timeout)
+                logger.warning("POK-Agent exceeded %s s; stopping it", self.timeout)
                 try:
                     self._post_json("/setup/execute", {"command": ["taskkill", "/IM", "pok-ai.exe", "/F"]})
                 except requests.RequestException:
@@ -308,7 +308,7 @@ def _read(path: str) -> str:
 
 
 def _trace_summary(path: str) -> dict:
-    """The answer, run metrics, and skill activity from a POK-Ai trace."""
+    """The answer, run metrics, and skill activity from a POK-Agent trace."""
     summary: dict = {"skills_loaded": [], "skill_outcomes": [], "fast_statuses": []}
     for line in _read(path).splitlines():
         try:

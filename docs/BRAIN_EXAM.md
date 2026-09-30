@@ -13,7 +13,7 @@ cargo run -p pok-ai-cli -- --config pok-ai.toml exam \
 ```
 
 Every run receives a private copy of the fixture. Assertions examine that copy,
-not the model's prose. Reports are written as JSON and Markdown below the POK-Ai
+not the model's prose. Reports are written as JSON and Markdown below the POK-Agent
 data directory.
 
 ## Desktop exam
@@ -25,7 +25,7 @@ cargo run -p pok-ai-cli -- --config pok-ai.toml exam `
   exams/desktop-form.json --models google/gemma-4-26b-a4b-qat
 ```
 
-POK-Ai starts a loopback-only fixture server, opens the page in a dedicated Edge
+POK-Agent starts a loopback-only fixture server, opens the page in a dedicated Edge
 app window, and allows unattended input only while that window and process are
 foreground. The page writes submitted values to `state.json`; assertions grade
 those values directly.

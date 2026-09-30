@@ -1,6 +1,6 @@
 {
   "version": "1.0",
-  "description": "POK-Ai Decision Router Diagnostic Benchmark Suite",
+  "description": "POK-Agent Decision Router Diagnostic Benchmark Suite",
   "cases": [
     {
       "id": "case_01_time_query_clock",

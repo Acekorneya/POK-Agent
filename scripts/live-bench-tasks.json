@@ -34,11 +34,11 @@
   },
   {
    "id": "word-save",
-   "prompt": "Using Microsoft Word, create a new blank document and type these two lines exactly: first line 'POK-Ai typing test line one', second line 'Second line of the test'. Then save the document as pok-ai-word-test.docx in my Documents folder and tell me the full path it was saved to.",
+   "prompt": "Using Microsoft Word, create a new blank document and type these two lines exactly: first line 'POK-Agent typing test line one', second line 'Second line of the test'. Then save the document as pok-ai-word-test.docx in my Documents folder and tell me the full path it was saved to.",
    "answer_regex": "(?i)pok-ai-word-test\\.docx",
    "verify_file": "%USERPROFILE%\\Documents\\pok-ai-word-test.docx",
    "verify_contains": [
-    "POK-Ai typing test line one",
+    "POK-Agent typing test line one",
     "Second line of the test"
    ],
    "cleanup_processes": [

@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-Builds and runs POK-Ai in either development or shipped-user mode.
+Builds and runs POK-Agent in either development or shipped-user mode.
 
 .EXAMPLE
 .\scripts\run-windows.ps1 -Mode Dev
@@ -176,16 +176,16 @@ function Assert-GitHubReleaseReady {
 
 function Publish-GitHubRelease($Metadata) {
     $PublishDir = (& (Join-Path $PSScriptRoot "package-release.ps1") -Version $Metadata.Version | Select-Object -Last 1).Trim()
-    $ExecutableAsset = Join-Path $PublishDir "POK-Ai-windows-x64.exe"
-    $InstallerAsset = Join-Path $PublishDir "POK-Ai-windows-x64-setup.exe"
-    $ZipAsset = Join-Path $PublishDir "POK-Ai-windows-x64.zip"
+    $ExecutableAsset = Join-Path $PublishDir "POK-Agent-windows-x64.exe"
+    $InstallerAsset = Join-Path $PublishDir "POK-Agent-windows-x64-setup.exe"
+    $ZipAsset = Join-Path $PublishDir "POK-Agent-windows-x64.zip"
     $ChecksumAsset = Join-Path $PublishDir "SHA256SUMS.txt"
 
     Write-Host "Publishing $($Metadata.Tag) to $($Metadata.Repository)..." -ForegroundColor Cyan
     & gh release create $Metadata.Tag $ExecutableAsset $InstallerAsset $ZipAsset $ChecksumAsset `
         --repo $Metadata.Repository `
         --target $Metadata.HeadCommit `
-        --title "POK-Ai $($Metadata.Tag)" `
+        --title "POK-Agent $($Metadata.Tag)" `
         --generate-notes `
         --latest `
         --fail-on-no-commits
@@ -279,7 +279,7 @@ function Stop-RunningReleaseExecutable {
         }
     }
 
-    throw "Cannot rebuild $ReleaseExe because another process still has it open. Close POK-Ai and any program inspecting the executable, then retry."
+    throw "Cannot rebuild $ReleaseExe because another process still has it open. Close POK-Agent and any program inspecting the executable, then retry."
 }
 
 Enter-PokBuildEnvironment

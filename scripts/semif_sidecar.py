@@ -1,4 +1,4 @@
-"""Loopback SemIf decision sidecar speaking POK-Ai's /v1/systemone contract.
+"""Loopback SemIf decision sidecar speaking POK-Agent's /v1/systemone contract.
 
 SemIf (https://github.com/TheoLeeCJ/SemIf-OpenJev, MIT) turns a frozen
 general LLM into a typed decision model with one forward pass: it renders the
@@ -44,7 +44,7 @@ class DecisionRequest(BaseModel):
 def create_app(model_dir: str, revision: str, token: str, device: str) -> FastAPI:
     loaded_at = time.monotonic()
     model, tokenizer, metadata = load_causal_model(model_dir, revision, device)
-    app = FastAPI(title="POK-Ai SemIf sidecar", docs_url=None, redoc_url=None)
+    app = FastAPI(title="POK-Agent SemIf sidecar", docs_url=None, redoc_url=None)
 
     def authenticate(authorization: str | None = Header(default=None)) -> None:
         expected = f"Bearer {token}"

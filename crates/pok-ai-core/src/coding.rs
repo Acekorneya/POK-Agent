@@ -1293,7 +1293,7 @@ impl Tool for UndoEditTool {
         let record_path = dunce::canonicalize(args.undo_record)?;
         if !record_path.starts_with(&undo_root) {
             return Err(PokError::Tool(
-                "undo record is outside POK-Ai undo storage".into(),
+                "undo record is outside POK-Agent undo storage".into(),
             ));
         }
         let record: UndoRecord = serde_json::from_slice(&std::fs::read(record_path)?)?;

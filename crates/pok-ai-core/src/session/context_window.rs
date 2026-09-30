@@ -517,7 +517,7 @@ pub(super) fn request_with_alternating_conversation_roles(
     mut request: BrainRequest,
 ) -> BrainRequest {
     // Strict Mistral templates treat a user message after a tool result as the start
-    // of a new turn and require an assistant response first. POK-Ai's active-task
+    // of a new turn and require an assistant response first. POK-Agent's active-task
     // reminder is internal context, not a user turn, so fold it into the leading
     // system context instead of leaving its transport role as `user`.
     let mut internal_reminders = Vec::new();

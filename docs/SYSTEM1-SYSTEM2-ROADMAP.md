@@ -1,6 +1,6 @@
 # System 1 + System 2 for General Computer Use: Thesis, Evidence, Roadmap
 
-This is the working record of POK-Ai's central research question: what has been
+This is the working record of POK-Agent's central research question: what has been
 built, what the measurements say, and what remains. Update it after every arena
 run or architectural change.
 
@@ -26,7 +26,7 @@ $$C(N) = C_{\min} + (C_1 - C_{\min}) \cdot N^{-\beta}$$
 Here $C(N)$ is the planner calls on the $N$-th encounter with a task (or task
 family), $C_1$ is the first-time cost, $C_{\min}$ is the floor (ideally 1–2
 calls: send a plan, confirm the result), and $\beta$ is the learning rate.
-Newell and Rosenbloom explained this law by *chunking*; a POK-Ai skill is a
+Newell and Rosenbloom explained this law by *chunking*; a POK-Agent skill is a
 chunk, a verified multi-step plan that later runs as one unit through
 System 1.
 
@@ -62,7 +62,7 @@ publication.
 ## System 1 as the default mode, not a tool
 
 In the brain, System 1 runs continuously and handles almost everything; System
-2 is recruited on surprise. POK-Ai so far used System 1 as a tool the planner
+2 is recruited on surprise. POK-Agent so far used System 1 as a tool the planner
 calls now and then. The design below maps established models of human skill
 onto concrete harness mechanisms.
 
