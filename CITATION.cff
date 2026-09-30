@@ -10,7 +10,7 @@ abstract: >-
 type: software
 authors:
   - name: "KNY Industries"
-repository-code: "https://github.com/Acekorneya/POK_Ai"
+repository-code: "https://github.com/Acekorneya/POK-Agent"
 license: Apache-2.0
 keywords:
   - computer use

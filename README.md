@@ -11,9 +11,9 @@ and repeated tasks become muscle memory.
 
 <p align="center">
 
-[![CI](https://github.com/Acekorneya/POK_Ai/actions/workflows/ci.yml/badge.svg)](https://github.com/Acekorneya/POK_Ai/actions/workflows/ci.yml)
-[![Windows build](https://github.com/Acekorneya/POK_Ai/actions/workflows/windows-build.yml/badge.svg)](https://github.com/Acekorneya/POK_Ai/actions/workflows/windows-build.yml)
-[![Latest release](https://img.shields.io/github/v/release/Acekorneya/POK_Ai?label=download)](https://github.com/Acekorneya/POK_Ai/releases/latest)
+[![CI](https://github.com/Acekorneya/POK-Agent/actions/workflows/ci.yml/badge.svg)](https://github.com/Acekorneya/POK-Agent/actions/workflows/ci.yml)
+[![Windows build](https://github.com/Acekorneya/POK-Agent/actions/workflows/windows-build.yml/badge.svg)](https://github.com/Acekorneya/POK-Agent/actions/workflows/windows-build.yml)
+[![Latest release](https://img.shields.io/github/v/release/Acekorneya/POK-Agent?label=download)](https://github.com/Acekorneya/POK-Agent/releases/latest)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
 ![Platform: Windows 10/11](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D6)
 
@@ -26,10 +26,6 @@ for local models, with cloud bring-your-own-model (BYOM) support. The Rust-first
 Windows runtime has a shared CLI and Tauri dashboard, typed tools, risk-based
 approval, SQLite FTS5 memory, restricted coding subagents, and a deterministic
 model exam. The internal code and package name remains POK-Ai.
-
-See [TODO.md](TODO.md) for the implementation roadmap toward a local Windows
-“Jarvis,” including deeper coding workflows, terminal-only model benchmarks,
-durable automation, Discord, voice, and safe self-improvement.
 
 ## Research: System 1 and System 2 for computer use
 

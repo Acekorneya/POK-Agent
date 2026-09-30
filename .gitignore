@@ -62,6 +62,8 @@ Thumbs.db
 # AI coding-assistant configuration, memory, and instruction files. These
 # tools are used to develop the project but are not part of it.
 AGENTS.md
+# The roadmap is kept locally for agents and not published.
+TODO.md
 CLAUDE.md
 CLAUDE.local.md
 GEMINI.md

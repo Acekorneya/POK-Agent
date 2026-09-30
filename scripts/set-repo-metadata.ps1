@@ -13,7 +13,7 @@ preview.
 .\scripts\set-repo-metadata.ps1
 #>
 param(
-    [string]$Repository = "Acekorneya/POK_Ai"
+    [string]$Repository = "Acekorneya/POK-Agent"
 )
 
 $ErrorActionPreference = "Stop"
