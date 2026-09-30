@@ -83,7 +83,12 @@ function JudgeCard({ msg }: { msg: ChatMessage }) {
 export function ConversationMessage({ message: msg }: { message: ChatMessage }) {
   switch (msg.type) {
     case "prompt":
-      return <div className="console-line line-prompt">{msg.text}</div>;
+      return <div className="console-line line-prompt">
+        {msg.images && msg.images.length > 0 && <div className="prompt-images">
+          {msg.images.map((image, index) => <img key={index} src={image} alt={`Attached image ${index + 1}`} />)}
+        </div>}
+        {msg.text}
+      </div>;
     case "guidance":
       return <div className="console-line line-guidance"><small>Guidance</small>{msg.text}</div>;
     case "reasoning":

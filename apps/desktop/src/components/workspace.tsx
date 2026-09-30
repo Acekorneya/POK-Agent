@@ -74,13 +74,16 @@ export function ActivityRow({ label, detail, status, durationMs, children }: {
   </summary><div className="tool-body">{children}</div></details>;
 }
 
-export function Composer({ children, prompt, onChange, onKeyDown, placeholder }: {
+export function Composer({ children, prompt, onChange, onKeyDown, onPaste, placeholder, above }: {
   children: React.ReactNode; prompt: string; onChange: (value: string) => void;
   onKeyDown: (event: React.KeyboardEvent<HTMLTextAreaElement>) => void; placeholder: string;
+  onPaste?: (event: React.ClipboardEvent<HTMLTextAreaElement>) => void;
+  /** Shown above the message box (attached images). */
+  above?: React.ReactNode;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null);
   useEffect(() => { if (ref.current) { ref.current.style.height = "0px"; ref.current.style.height = `${Math.min(180, Math.max(56, ref.current.scrollHeight))}px`; } }, [prompt]);
-  return <div className="composer"><textarea ref={ref} aria-label="Message the agent" value={prompt} onChange={e => onChange(e.target.value)} onKeyDown={onKeyDown} placeholder={placeholder} rows={2} />{children}</div>;
+  return <div className="composer">{above}<textarea ref={ref} aria-label="Message the agent" value={prompt} onChange={e => onChange(e.target.value)} onKeyDown={onKeyDown} onPaste={onPaste} placeholder={placeholder} rows={2} />{children}</div>;
 }
 
 /** Focus the topmost dialog, contain Tab, and restore the triggering control. */

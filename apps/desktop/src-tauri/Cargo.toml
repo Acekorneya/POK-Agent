@@ -20,6 +20,7 @@ dunce.workspace = true
 parking_lot.workspace = true
 pok-ai-core = { path = "../../../crates/pok-ai-core" }
 pok-ai-windows = { path = "../../../crates/pok-ai-windows" }
+pok-ai-voice = { path = "../../../crates/pok-ai-voice" }
 process-wrap = { version = "10", features = ["tokio1"] }
 reqwest.workspace = true
 serde.workspace = true

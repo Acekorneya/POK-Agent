@@ -71,6 +71,16 @@ Other core modules keep one file each: `brain.rs` (provider adapters),
 log), `policy.rs`, `coding.rs`, `memory.rs`, `grounding.rs`, `platform.rs`,
 `agent_window.rs`, `browser.rs`, `config.rs`, `context.rs`, and `tool.rs`.
 
+Voice input lives outside the core in `crates/pok-ai-voice`, since it is a
+dashboard feature, not an agent tool. Three threads keep captions live while
+accurate text is computed: the audio thread (cpal/WASAPI) only copies samples;
+the listener runs a streaming Zipformer and cuts a phrase at each endpoint
+(about 0.6 s of silence, or 20 s of speech), or Silero VAD in multilingual
+mode; the finisher runs Parakeet TDT v3 on each phrase in order and emits its
+text. The desktop app (`src-tauri/src/voice.rs`) installs the models, keeps the
+loaded engine between sessions, and forwards `voice_event`s. The CPU is enough
+(about 0.2 s per phrase), which leaves GPU memory to Laya and local LLMs.
+
 ## Local-model recovery
 
 The OpenAI-compatible adapter assembles streamed tool-call fragments. Invalid

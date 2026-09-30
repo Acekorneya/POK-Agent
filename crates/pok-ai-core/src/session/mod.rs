@@ -272,6 +272,8 @@ pub struct Session {
     /// The motor steps (clicks by label, keys, text) this run performed, in
     /// order; a verified run saves them on its skill as a program.
     motor_tape: Vec<Value>,
+    /// Images the user attached to the next request (PNG, base64).
+    pending_user_images: Vec<String>,
     /// The last observation shown in the dashboard's agent view.
     shown_observation: Option<Uuid>,
     /// A skill whose stored program was replayed this run and stopped before
@@ -493,6 +495,7 @@ impl Session {
             pending_handback: None,
             skill_replay_active: false,
             motor_tape: Vec::new(),
+            pending_user_images: Vec::new(),
             shown_observation: None,
             stale_program: None,
             clean_completion: false,
@@ -729,6 +732,18 @@ impl Session {
         self.manual_compaction_requested = true;
     }
 
+    /// Run a request with images the user attached (PNG, base64), for a
+    /// vision model to look at. At most [`MAX_USER_IMAGES`] are accepted and
+    /// each must be a PNG no larger than [`MAX_USER_IMAGE_BYTES`].
+    pub async fn run_with_images(
+        &mut self,
+        prompt: impl Into<String>,
+        images: Vec<String>,
+    ) -> Result<RunSummary> {
+        self.pending_user_images = validated_user_images(images)?;
+        self.run(prompt).await
+    }
+
     pub async fn run(&mut self, prompt: impl Into<String>) -> Result<RunSummary> {
         self.terminal_logged = false;
         let result = self.run_inner(prompt.into()).await;
@@ -871,3 +886,39 @@ fn increment_metric(metrics: &mut RunMetrics, name: &str, amount: u64) {
 
 #[cfg(test)]
 mod tests;
+
+/// Images one request may carry.
+pub const MAX_USER_IMAGES: usize = 8;
+/// Largest attached image, decoded.
+pub const MAX_USER_IMAGE_BYTES: usize = 10 * 1024 * 1024;
+
+fn validated_user_images(images: Vec<String>) -> Result<Vec<String>> {
+    use base64::Engine as _;
+    if images.len() > MAX_USER_IMAGES {
+        return Err(PokError::Tool(format!(
+            "attach at most {MAX_USER_IMAGES} images to one message"
+        )));
+    }
+    images
+        .into_iter()
+        .map(|image| {
+            let encoded = image
+                .strip_prefix("data:image/png;base64,")
+                .unwrap_or(&image)
+                .trim()
+                .to_owned();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(&encoded)
+                .map_err(|_| PokError::Tool("an attached image is not valid base64".into()))?;
+            if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+                return Err(PokError::Tool("attached images must be PNG".into()));
+            }
+            if bytes.len() > MAX_USER_IMAGE_BYTES {
+                return Err(PokError::Tool(
+                    "an attached image is larger than 10 MB".into(),
+                ));
+            }
+            Ok(encoded)
+        })
+        .collect()
+}

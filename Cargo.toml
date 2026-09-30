@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/pok-ai-core",
     "crates/pok-ai-windows",
+    "crates/pok-ai-voice",
     "crates/pok-ai-cli",
     "apps/desktop/src-tauri",
 ]

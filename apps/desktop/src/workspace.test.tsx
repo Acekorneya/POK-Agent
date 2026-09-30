@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { Appearance, MarkdownMessage } from "./components/workspace";
 import { appendStreamDelta } from "./session-display";
+import { appendDictation } from "./components/voice";
 import { App } from "./main";
 
 const mock = vi.hoisted(() => ({ invoke: vi.fn(), listeners: new Map<string, (event: { payload: any }) => void>() }));
@@ -69,6 +70,10 @@ describe("workspace presentation", () => {
     mock.invoke.mockImplementation((name, args) => name === "read_observation_frame"
       ? Promise.resolve("data:image/png;base64,AAAA") : previous(name, args));
     await renderApp();
+    // A run with no screenshot (a clock or command question) shows no viewer.
+    emit({ type: "run_started", session_id: "s1", model: "test-model" });
+    emit({ type: "tool_started", call_id: "c1", name: "get_current_time", arguments: {} });
+    expect(screen.queryByRole("complementary", { name: "Agent view" })).toBeNull();
     emit({ type: "observation_captured", observation_id: "o1", image_path: "C:/diag/observation-o1-monitor-m.png", window_title: "Settings",
       targets: [{ id: "7", label: "Personalization", source: "uia", x: 0.1, y: 0.2, width: 0.3, height: 0.05 }] });
     const view = await screen.findByRole("complementary", { name: "Agent view" });
@@ -80,6 +85,76 @@ describe("workspace presentation", () => {
     expect(localStorage.getItem("pok_agent_view")).toBe("hidden");
     await userEvent.click(screen.getByRole("button", { name: /Agent view/ }));
     expect(await screen.findByRole("complementary", { name: "Agent view" })).not.toBeNull();
+  });
+  it("attaches dropped images and sends them with the message", async () => {
+    await renderApp();
+    const png = new File([Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0))], "chart.png", { type: "image/png" });
+    const panel = document.querySelector(".panel.agent")!;
+    fireEvent.dragEnter(panel, { dataTransfer: { types: ["Files"], files: [png] } });
+    expect(screen.getByText("Drop images to attach them")).not.toBeNull();
+    fireEvent.drop(panel, { dataTransfer: { types: ["Files"], files: [png] } });
+    expect(await screen.findByRole("img", { name: "chart.png" })).not.toBeNull();
+    // Images alone can be sent; the question defaults to describing them.
+    await userEvent.click(screen.getByRole("button", { name: "Run task" }));
+    await waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("run_prompt", expect.objectContaining({
+      prompt: "What is in this image?", images: [expect.stringMatching(/^data:image\/png;base64,/)],
+    })));
+    expect(screen.getByRole("img", { name: "Attached image 1" })).not.toBeNull();
+    expect(screen.queryByRole("img", { name: "chart.png" })).toBeNull();
+  });
+  it("refuses to send images to a model that reports no vision", async () => {
+    const previous = mock.invoke.getMockImplementation()!;
+    mock.invoke.mockImplementation((name, args) => name === "get_model_capabilities"
+      ? Promise.resolve({ id: "test-model", supported_parameters: [], reasoning_efforts: [], vision: false })
+      : previous(name, args));
+    await renderApp();
+    await waitFor(() => expect(mock.invoke.mock.calls.some((call) => call[0] === "get_model_capabilities")).toBe(true));
+    const png = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])], "photo.png", { type: "image/png" });
+    fireEvent.drop(document.querySelector(".panel.agent")!, { dataTransfer: { types: ["Files"], files: [png] } });
+    expect(await screen.findByRole("img", { name: "photo.png" })).not.toBeNull();
+    fireEvent.change(screen.getByRole("textbox", { name: "Message the agent" }), { target: { value: "what is this?" } });
+    await userEvent.click(screen.getByRole("button", { name: "Run task" }));
+    expect(await screen.findByRole("alert")).not.toBeNull();
+    expect(screen.getByRole("alert").textContent).toContain("can't see images");
+    expect(mock.invoke).not.toHaveBeenCalledWith("run_prompt", expect.anything());
+  });
+  it("adds dictated phrases to what is already typed", () => {
+    expect(appendDictation("", " Open Settings. ")).toBe("Open Settings.");
+    expect(appendDictation("Please", "open Settings.")).toBe("Please open Settings.");
+    expect(appendDictation("Line one\n", "Line two")).toBe("Line one\nLine two");
+    expect(appendDictation("Keep", "   ")).toBe("Keep");
+  });
+  it("dictates into the message box: live caption first, accurate text at each pause", async () => {
+    const previous = mock.invoke.getMockImplementation()!;
+    mock.invoke.mockImplementation((name, args) => name === "voice_status"
+      ? Promise.resolve({ supported: true, mode: "english", device: null, devices: ["Test Mic"], english_ready: true, multilingual_ready: false,
+        listening: false, installing: false, english_download_mb: 0, multilingual_download_mb: 465 })
+      : name === "start_voice" || name === "stop_voice" ? Promise.resolve(null) : previous(name, args));
+    await renderApp();
+    const mic = await screen.findByRole("button", { name: "Start voice input (Ctrl+M)" });
+    await userEvent.click(mic);
+    expect(mock.invoke).toHaveBeenCalledWith("start_voice");
+    emit({ kind: "listening" }, "voice_event");
+    emit({ kind: "partial", segment: 0, text: "Open the settings" }, "voice_event");
+    expect(screen.getByText("Open the settings")).not.toBeNull();
+    const box = screen.getByRole("textbox", { name: "Message the agent" }) as HTMLTextAreaElement;
+    expect(box.value).toBe("");
+    emit({ kind: "final", segment: 0, text: "Open the Settings app." }, "voice_event");
+    expect(box.value).toBe("Open the Settings app.");
+    expect(screen.queryByText("Open the settings")).toBeNull();
+    await userEvent.click(screen.getByRole("button", { name: "Stop voice input (Ctrl+M)" }));
+    expect(mock.invoke).toHaveBeenCalledWith("stop_voice");
+  });
+  it("sends the user to voice setup when the models are not installed", async () => {
+    const previous = mock.invoke.getMockImplementation()!;
+    mock.invoke.mockImplementation((name, args) => name === "voice_status"
+      ? Promise.resolve({ supported: true, mode: "english", device: null, devices: [], english_ready: false, multilingual_ready: false,
+        listening: false, installing: false, english_download_mb: 760, multilingual_download_mb: 465 })
+      : previous(name, args));
+    await renderApp();
+    await userEvent.click(await screen.findByRole("button", { name: "Set up voice input" }));
+    expect(await screen.findByRole("button", { name: "Download and install" })).not.toBeNull();
+    expect(mock.invoke).not.toHaveBeenCalledWith("start_voice");
   });
   it("keeps streaming blocks ordered across reasoning and answers", () => {
     let messages = appendStreamDelta([], "reasoning", "Check ");

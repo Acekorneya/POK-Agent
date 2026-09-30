@@ -59,6 +59,8 @@ use uuid::Uuid;
 #[cfg(windows)]
 use windows::Win32::System::Threading::PROCESS_CREATION_FLAGS;
 
+mod voice;
+
 #[derive(Clone)]
 struct AppRuntime {
     config: Arc<SyncMutex<Config>>,
@@ -1600,6 +1602,7 @@ async fn run_prompt(
     full_context: Option<bool>,
     decision_router_enabled: Option<bool>,
     decision_router_backend: Option<DecisionRouterBackend>,
+    images: Option<Vec<String>>,
     app: tauri::AppHandle,
     runtime: State<'_, AppRuntime>,
     broker: State<'_, Arc<ApprovalBroker>>,
@@ -1952,18 +1955,20 @@ async fn run_prompt(
                 .map_err(|error| error.to_string())?;
             *runtime.pending_resume.lock().await = None;
         }
+        // One lock, released before building: two `config.lock()` guards in
+        // one statement deadlock (the first lives until the statement ends).
+        let (action_step_budget, standing_instructions) = {
+            let config = runtime.config.lock();
+            (
+                config.action_step_budget,
+                config.standing_instructions.clone(),
+            )
+        };
         *conversation = Some(
             session
                 .with_temperature(agent_temperature.value())
-                .with_action_step_budget(runtime.config.lock().action_step_budget)
-                .with_standing_instructions(
-                    runtime
-                        .config
-                        .lock()
-                        .standing_instructions
-                        .clone()
-                        .as_deref(),
-                )
+                .with_action_step_budget(action_step_budget)
+                .with_standing_instructions(standing_instructions.as_deref())
                 .with_observer(Arc::new(TauriSessionObserver::new(app))),
         );
         *conversation_provider = Some(provider);
@@ -1988,7 +1993,7 @@ async fn run_prompt(
     });
     session.prepare_follow_up(cancellation);
     session
-        .run(prompt)
+        .run_with_images(prompt, images.unwrap_or_default())
         .await
         .map(|summary| summary.answer)
         .map_err(|error| error.to_string())
@@ -3135,6 +3140,7 @@ pub fn run() {
                 })
                 .build(),
         )
+        .manage(voice::VoiceState::default())
         .manage(runtime)
         .manage(broker)
         .manage(question_broker)
@@ -3147,6 +3153,11 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_status,
             read_observation_frame,
+            voice::voice_status,
+            voice::set_voice_settings,
+            voice::install_voice_models,
+            voice::start_voice,
+            voice::stop_voice,
             update_provider_endpoint,
             get_local_model_status,
             load_model,

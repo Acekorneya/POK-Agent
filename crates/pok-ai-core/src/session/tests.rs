@@ -7104,3 +7104,74 @@ fn the_agent_view_gets_the_saved_frame_and_its_targets_as_fractions() {
     assert!((targets[0].x - 0.5).abs() < 1e-6 && (targets[0].y - 0.25).abs() < 1e-6);
     assert!((targets[0].width - 0.1).abs() < 1e-6 && (targets[0].height - 0.1).abs() < 1e-6);
 }
+
+struct ImageCheckingBrain {
+    user_images: parking_lot::Mutex<Vec<usize>>,
+}
+
+#[async_trait]
+impl Brain for ImageCheckingBrain {
+    async fn list_models(&self) -> Result<Vec<String>> {
+        Ok(vec!["mock".into()])
+    }
+    fn stream(&self, request: BrainRequest) -> crate::brain::BrainStream {
+        let images = request
+            .messages
+            .iter()
+            .filter(|message| message.origin == MessageOrigin::UserInput)
+            .flat_map(|message| &message.content)
+            .filter(|part| matches!(part, MessageContent::ImagePng { .. }))
+            .count();
+        self.user_images.lock().push(images);
+        Box::pin(futures::stream::iter(vec![
+            Ok(BrainEvent::TextDelta {
+                text: "A red square.".into(),
+            }),
+            Ok(BrainEvent::Finished {
+                reason: Some("stop".into()),
+            }),
+        ]))
+    }
+}
+
+/// A 1x1 PNG.
+const TINY_PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
+
+#[tokio::test]
+async fn images_the_user_attaches_reach_the_model_in_their_message() {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        Vec::new(),
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let brain = Arc::new(ImageCheckingBrain {
+        user_images: Default::default(),
+    });
+    harness.session.brain = brain.clone();
+    let result = harness
+        .session
+        .run_with_images(
+            "what is in this picture?",
+            vec![format!("data:image/png;base64,{TINY_PNG}")],
+        )
+        .await
+        .unwrap();
+    assert_eq!(result.answer, "A red square.");
+    assert_eq!(brain.user_images.lock().first(), Some(&1));
+    // The next request carries none unless the user attaches again.
+    assert!(harness.session.pending_user_images.is_empty());
+}
+
+#[test]
+fn attached_images_must_be_a_few_real_pngs() {
+    assert_eq!(
+        validated_user_images(vec![TINY_PNG.into()]).unwrap(),
+        [TINY_PNG]
+    );
+    assert!(validated_user_images(vec!["not base64!".into()]).is_err());
+    // A JPEG header is refused; the dashboard converts pictures to PNG.
+    use base64::Engine as _;
+    let jpeg = base64::engine::general_purpose::STANDARD.encode([0xFF, 0xD8, 0xFF, 0xE0]);
+    assert!(validated_user_images(vec![jpeg]).is_err());
+    assert!(validated_user_images(vec![TINY_PNG.into(); MAX_USER_IMAGES + 1]).is_err());
+}

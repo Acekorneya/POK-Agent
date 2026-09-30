@@ -303,9 +303,21 @@ pub(crate) fn observation_frame(
         observation_id: observation.version.to_string(),
         image_path: path.display().to_string(),
         window_title: observation
-            .foreground_window
+            .target
             .as_ref()
-            .map(|window| window.title.clone()),
+            .filter(|target| {
+                matches!(
+                    target.scope,
+                    crate::types::CaptureScope::Window | crate::types::CaptureScope::ActiveWindow
+                )
+            })
+            .map(|target| target.title.clone())
+            .or_else(|| {
+                observation
+                    .foreground_window
+                    .as_ref()
+                    .map(|window| window.title.clone())
+            }),
         targets,
     })
 }

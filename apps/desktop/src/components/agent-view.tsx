@@ -4,43 +4,55 @@ import { invoke } from "@tauri-apps/api/core";
 export type FrameTarget = { id: string; label: string; source: string; x: number; y: number; width: number; height: number };
 export type ObservationFrame = { id: string; imagePath: string; windowTitle?: string; targets: FrameTarget[]; capturedAt: number };
 
-/** Frames kept for stepping back; images load from disk only when shown. */
-export const AGENT_VIEW_FRAMES = 40;
-
-/** A floating panel with the still frames the agent saw and the numbered
-    targets it could act on. */
-export function AgentView({ frames, onClose }: { frames: ObservationFrame[]; onClose: () => void }) {
-  const [index, setIndex] = useState<number | null>(null); // null follows the newest frame
+/** A floating panel showing the agent's newest saved screenshot and targets. */
+export function AgentView({ frame, onClose }: { frame: ObservationFrame | null; onClose: () => void }) {
   const [showTargets, setShowTargets] = useState(true);
   const [large, setLarge] = useState(false);
-  const [image, setImage] = useState<string | null>(null);
+  const [image, setImage] = useState<{ path: string; url: string } | null>(null);
   const [hovered, setHovered] = useState<string | null>(null);
-  const cache = useRef(new Map<string, string>());
-  const position = index === null ? frames.length - 1 : Math.min(index, frames.length - 1);
-  const frame = frames[position];
-
+  const panel = useRef<HTMLElement>(null);
+  // Where the user dragged the panel (top-left corner, in window pixels).
+  const [position, setPosition] = useState<{ x: number; y: number } | null>(() => {
+    try { return JSON.parse(localStorage.getItem("pok_agent_view_position") ?? "null"); } catch { return null; }
+  });
+  const drag = useRef<{ dx: number; dy: number } | null>(null);
+  const clamp = (x: number, y: number) => {
+    const box = panel.current?.getBoundingClientRect();
+    const width = box?.width ?? 380, height = box?.height ?? 240;
+    return { x: Math.max(8, Math.min(window.innerWidth - width - 8, x)), y: Math.max(8, Math.min(window.innerHeight - Math.min(height, 120), y)) };
+  };
+  const startDrag = (event: React.PointerEvent<HTMLElement>) => {
+    if ((event.target as HTMLElement).closest("button") || !panel.current) return;
+    const box = panel.current.getBoundingClientRect();
+    drag.current = { dx: event.clientX - box.left, dy: event.clientY - box.top };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const moveDrag = (event: React.PointerEvent<HTMLElement>) => {
+    if (drag.current) setPosition(clamp(event.clientX - drag.current.dx, event.clientY - drag.current.dy));
+  };
+  const endDrag = () => {
+    if (!drag.current) return;
+    drag.current = null;
+    try { localStorage.setItem("pok_agent_view_position", JSON.stringify(position)); } catch { /* Storage can be disabled. */ }
+  };
+  // Keep a remembered position on screen when the window gets smaller.
+  useEffect(() => {
+    const keep = () => setPosition((current) => current && clamp(current.x, current.y));
+    window.addEventListener("resize", keep);
+    return () => window.removeEventListener("resize", keep);
+  }, []);
   useEffect(() => {
     if (!frame) { setImage(null); return; }
-    const cached = cache.current.get(frame.imagePath);
-    if (cached) { setImage(cached); return; }
     let live = true;
     invoke<string>("read_observation_frame", { path: frame.imagePath })
-      .then((url) => {
-        cache.current.set(frame.imagePath, url);
-        if (cache.current.size > 12) cache.current.delete(cache.current.keys().next().value!);
-        if (live) setImage(url);
-      })
+      .then((url) => { if (live) setImage({ path: frame.imagePath, url }); })
       .catch(() => { if (live) setImage(null); });
     return () => { live = false; };
   }, [frame?.imagePath]);
 
-  const step = (delta: number) => {
-    const next = Math.max(0, Math.min(frames.length - 1, position + delta));
-    setIndex(next === frames.length - 1 ? null : next);
-  };
-
-  return <aside className={`agent-view ${large ? "large" : ""}`} aria-label="Agent view">
-    <header>
+  return <aside ref={panel} className={`agent-view ${large ? "large" : ""} ${position ? "placed" : ""}`} aria-label="Agent view"
+    style={position ? { left: position.x, top: position.y } : undefined}>
+    <header className="agent-view-handle" title="Drag to move" onPointerDown={startDrag} onPointerMove={moveDrag} onPointerUp={endDrag} onPointerCancel={endDrag}>
       <div className="agent-view-title">
         <strong>What the agent sees</strong>
         <small title={frame?.windowTitle}>{frame ? frame.windowTitle || "Screen" : "Waiting for the first look"}</small>
@@ -52,20 +64,18 @@ export function AgentView({ frames, onClose }: { frames: ObservationFrame[]; onC
       </div>
     </header>
     <div className="agent-view-frame">
-      {image && frame ? <div className="agent-view-canvas">
-        <img src={image} alt={`Frame of ${frame.windowTitle || "the screen"}`} />
+      {image && frame && image.path === frame.imagePath ? <div className="agent-view-canvas">
+        <img src={image.url} alt={`Frame of ${frame.windowTitle || "the screen"}`} />
         {showTargets && frame.targets.map((target) => <div key={target.id}
           className={`agent-view-target source-${target.source} ${hovered === target.id ? "hovered" : ""}`}
           style={{ left: `${target.x * 100}%`, top: `${target.y * 100}%`, width: `${target.width * 100}%`, height: `${target.height * 100}%` }}
           onMouseEnter={() => setHovered(target.id)} onMouseLeave={() => setHovered(null)} title={`${target.id} · ${target.label}`}>
           <span>{target.id}</span>
         </div>)}
-      </div> : <p className="agent-view-empty">{frame ? "Loading frame…" : "Frames appear here each time the agent looks at the screen."}</p>}
+      </div> : <p className="agent-view-empty">{frame ? "Loading frame…" : "Waiting for the agent's first capture."}</p>}
     </div>
     <footer>
-      <button type="button" aria-label="Previous frame" disabled={position <= 0} onClick={() => step(-1)}>‹</button>
-      <span>{frames.length ? `${position + 1} / ${frames.length}` : "0 / 0"}{index === null && frames.length > 0 ? " · live" : ""}</span>
-      <button type="button" aria-label="Next frame" disabled={position >= frames.length - 1} onClick={() => step(1)}>›</button>
+      <span>{frame ? "Latest capture" : "Waiting for capture"}</span>
       <small>{hovered && frame ? frame.targets.find((target) => target.id === hovered)?.label : frame ? `${frame.targets.length} targets` : ""}</small>
     </footer>
   </aside>;

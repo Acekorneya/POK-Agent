@@ -2921,6 +2921,7 @@ impl Session {
                             () = self.context.cancellation.cancelled() => return Err(PokError::Cancelled),
                             captured = self.tools.call(&look.name, look.arguments.clone(), &self.context) => captured,
                         };
+                        self.show_latest_observation();
                         self.continuity.after_call(
                             &look.name,
                             &look.arguments,
@@ -2988,6 +2989,7 @@ impl Session {
                         &self.context,
                     ) => capture,
                 };
+                self.show_latest_observation();
                 if let Ok(value) = &capture
                     && qualifies_as_fresh_evidence("capture_screen", value, true)
                 {

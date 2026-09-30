@@ -13,6 +13,8 @@ export type ChatMessage = {
   activityResult?: Record<string, unknown>;
   activityAttempts?: number;
   durationMs?: number;
+  /** Images the user attached to a prompt (PNG data URLs). */
+  images?: string[];
 };
 
 export function appendStreamDelta(

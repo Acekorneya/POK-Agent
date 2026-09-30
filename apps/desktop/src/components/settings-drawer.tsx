@@ -1,10 +1,11 @@
 import React from "react";
 
-export type SettingsSection = "general" | "model" | "system1" | "memory" | "tools";
+export type SettingsSection = "general" | "model" | "voice" | "system1" | "memory" | "tools";
 
 export const SETTINGS_SECTIONS: { id: SettingsSection; label: string; hint: string }[] = [
   { id: "general", label: "General", hint: "Appearance, workspace, permissions" },
   { id: "model", label: "Model", hint: "Provider, API key, request tuning" },
+  { id: "voice", label: "Voice", hint: "Microphone and speech to text" },
   { id: "system1", label: "System 1", hint: "Fast decision router" },
   { id: "memory", label: "Memory & skills", hint: "What the agent has learned" },
   { id: "tools", label: "Generated tools", hint: "Helpers the agent built" },

@@ -3,7 +3,9 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./styles.css";
 import { Appearance, Composer, ConversationSidebar, useDialogFocus } from "./components/workspace";
-import { AGENT_VIEW_FRAMES, AgentView, type FrameTarget, type ObservationFrame } from "./components/agent-view";
+import { MicButton, VoiceCaption, VoiceSettingsPage, appendDictation, useVoice } from "./components/voice";
+import { AttachButton, AttachmentStrip, useAttachments, useImageDrop } from "./components/attachments";
+import { AgentView, type FrameTarget, type ObservationFrame } from "./components/agent-view";
 import { SettingsCard, SettingRow, SettingsDrawer, StatusPill, Switch, type SettingsSection } from "./components/settings-drawer";
 import "./workspace.css";
 import "./settings.css";
@@ -753,6 +755,7 @@ export function App() {
   };
   const [workspace, setWorkspace] = useState("");
   const [prompt, setPrompt] = useState("");
+  const voice = useVoice((text) => setPrompt((current) => appendDictation(current, text)));
   const [busy, setBusy] = useState(false);
   const [approval, setApproval] = useState<Approval | null>(null);
   const [approvalChoice, setApprovalChoice] = useState<"once" | "session" | "deny" | null>(null);
@@ -766,6 +769,7 @@ export function App() {
   const [lastMemoryMerge, setLastMemoryMerge] = useState<string | null>(null);
   const [memoryTab, setMemoryTab] = useState<"facts" | "skills">("facts");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const attachments = useAttachments();
   const [historyBeforeSequence, setHistoryBeforeSequence] = useState<number | null>(null);
   const [historyHasMore, setHistoryHasMore] = useState(false);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -797,7 +801,7 @@ export function App() {
   const [modelRuntime, setModelRuntime] = useState<LocalModelRuntimeStatus | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [agentFrames, setAgentFrames] = useState<ObservationFrame[]>([]);
+  const [agentFrame, setAgentFrame] = useState<ObservationFrame | null>(null);
   // Shown by default; hiding it is remembered.
   const [agentViewOpen, setAgentViewOpen] = useState(() => {
     try { return localStorage.getItem("pok_agent_view") !== "hidden"; } catch { return true; }
@@ -814,7 +818,7 @@ export function App() {
   useDialogFocus(`${settingsOpen}:${showCloudModal}:${approval?.id ?? ""}:${questionRequest?.id ?? ""}`);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const openSettings = (section = "settings-heading") => {
-    setSettingsSection(section === "memory-library" ? "memory" : section === "generated-tools" ? "tools" : section === "system1" ? "system1" : "general");
+    setSettingsSection(section === "memory-library" ? "memory" : section === "generated-tools" ? "tools" : section === "system1" ? "system1" : section === "voice" ? "voice" : "general");
     setSettingsOpen(true);
   };
 
@@ -1805,7 +1809,7 @@ export function App() {
               targets: payload.targets ?? [],
               capturedAt: Date.now(),
             };
-            setAgentFrames((frames) => [...frames.filter((item) => item.id !== frame.id), frame].slice(-AGENT_VIEW_FRAMES));
+            setAgentFrame(frame);
           }
           break;
         case "tool_delayed": {
@@ -2198,10 +2202,17 @@ export function App() {
       return;
     }
 
-    if (!prompt.trim() || !model || modelTransitioning) return;
+    const images = attachments.items.map((item) => item.dataUrl);
+    if ((!prompt.trim() && images.length === 0) || !model || modelTransitioning) return;
+    if (images.length > 0 && !modelCanSee) {
+      attachments.setError(`${model} can't see images. Choose a vision model, or turn Vision input on in Settings → Model if it can.`);
+      return;
+    }
     setBusy(true);
+    setAgentFrame(null);
     emergencyStopRequested.current = false;
-    const currentPrompt = prompt;
+    const currentPrompt = prompt.trim() ? prompt : images.length > 1 ? "What is in these images?" : "What is in this image?";
+    attachments.clear();
     setCurrentTurn(0);
     setLiveActivity({ phase: "starting", label: "Starting the task", startedAt: Date.now() });
     setTaskProgress({ rootRequest: currentPrompt, status: "in_progress", currentStep: "Starting task", steps: [] });
@@ -2213,7 +2224,8 @@ export function App() {
         sender: "user",
         type: "prompt",
         text: currentPrompt,
-        timestamp: new Date()
+        timestamp: new Date(),
+        images: images.length > 0 ? images : undefined,
       }
     ]);
     
@@ -2229,6 +2241,7 @@ export function App() {
         fullContext,
         decisionRouterEnabled: jevEnabled,
         decisionRouterBackend,
+        images: images.length > 0 ? images : null,
       });
     }
     catch (error) {
@@ -2433,7 +2446,7 @@ export function App() {
     followOutput.current = true;
     setShowJump(false);
     setMessages([]);
-    setAgentFrames([]);
+    setAgentFrame(null);
     setHistoryBeforeSequence(null);
     setHistoryHasMore(false);
     setTaskProgress(null);
@@ -2526,6 +2539,11 @@ export function App() {
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.ctrlKey && !event.altKey && event.key.toLowerCase() === "m") {
+      event.preventDefault();
+      if (voice.ready) voice.toggle(); else openSettings("voice");
+      return;
+    }
     if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {
       event.preventDefault();
       void run();
@@ -2535,6 +2553,9 @@ export function App() {
   const visibleMessages = messages;
 
   const install = installStatus();
+  // Unknown vision support is allowed; the provider reports a refusal.
+  const modelCanSee = visionMode === "on" || (visionMode !== "off" && modelCapabilities?.vision !== false);
+  const imageDrop = useImageDrop(attachments, !busy);
 
   return <main className={`app-shell ${navigationOpen ? "navigation-open" : "navigation-closed"}`}>
     {navigationOpen && <><button className="navigation-backdrop" aria-label="Close navigation" onClick={() => setNavigationOpen(false)} /><ConversationSidebar conversations={conversations} activeId={activeConversationId} disabled={busy || modelTransitioning}
@@ -2694,6 +2715,8 @@ export function App() {
           </SettingsCard>
         </>}
 
+        {settingsSection === "voice" && <VoiceSettingsPage voice={voice} />}
+
         {settingsSection === "system1" && <>
           <SettingsCard title="Decision router"
             status={decisionRouterBackend === "off" ? <StatusPill tone="off">Off</StatusPill> : <StatusPill tone="ok">{decisionRouterBackend === "jev" ? "JEV" : "Laya"}</StatusPill>}
@@ -2850,8 +2873,9 @@ export function App() {
           </SettingsCard>
         </>}
       </SettingsDrawer>
-      <section className="panel agent">
-        {agentViewOpen && (agentFrames.length > 0 || busy) && <AgentView frames={agentFrames} onClose={() => toggleAgentView(false)} />}
+      <section className={`panel agent ${imageDrop.dragging ? "drop-active" : ""}`} {...imageDrop.handlers}>
+        {imageDrop.dragging && <div className="drop-overlay" aria-hidden="true"><span>Drop images to attach them</span></div>}
+        {agentViewOpen && (agentFrame || busy) && <AgentView frame={agentFrame} onClose={() => toggleAgentView(false)} />}
         <details className="session-details"><summary>Session details <span>{model || "No model selected"} · {usage.totalCompletion.toLocaleString()} output tokens</span></summary>
         {jevEnabled && <div className="jev-scorecard" role="status" aria-label="Decision router performance diagnostics">
           <div><strong>{decisionRouterBackend.toUpperCase()} PERFORMANCE</strong><span>{jevMetrics.actions} actions · {jevMetrics.evidence} evidence · {jevMetrics.progress} verified progress</span></div>
@@ -2925,11 +2949,19 @@ export function App() {
           prompt={prompt}
           onChange={setPrompt}
           onKeyDown={handleKeyDown}
+          onPaste={(event) => {
+            const files = [...event.clipboardData.files].filter((file) => file.type.startsWith("image/"));
+            if (files.length === 0 || busy) return;
+            event.preventDefault();
+            void attachments.add(files);
+          }}
+          above={<AttachmentStrip attachments={attachments} />}
           placeholder={pauseState === "paused"
             ? "Optional: tell the agent what you changed before resuming..."
             : busy ? "Type correction or guidance and press Enter..." : "Describe a desktop or coding task..."}
         >
         
+        <VoiceCaption voice={voice} />
         <div className="actions">
           <div className="composer-options">
           <ModelPicker models={models} value={model} onChange={(next) => void handleModelChange(next)} disabled={busy || modelTransitioning} />
@@ -2963,6 +2995,9 @@ export function App() {
           )}
           </div>
           <div className="composer-send">
+            <AttachButton attachments={attachments} disabled={busy}
+              title={busy ? "Images can be attached to a new message" : modelCanSee ? "Attach images (or drop or paste them)" : `Attach images (${model || "this model"} may not see them)`} />
+            <MicButton voice={voice} onSetup={() => openSettings("voice")} />
             <button
               className={`pause-toggle pause-${pauseState}`}
               disabled={!busy || pauseState === "requested"}
@@ -2973,7 +3008,7 @@ export function App() {
             <button className="stop" aria-label="Emergency stop · Ctrl+Alt+Esc" title="Emergency stop (Ctrl+Alt+Esc)" onClick={() => invoke("emergency_stop")}>
               <span className="stop-icon" aria-hidden="true" /><span className="stop-label">Stop</span>
             </button>
-            <button className="primary" disabled={!prompt.trim() || !model || pauseState !== "running" || (!busy && modelTransitioning)} onClick={run}>
+            <button className="primary" disabled={(!prompt.trim() && (busy || attachments.items.length === 0)) || !model || pauseState !== "running" || (!busy && modelTransitioning)} onClick={run}>
               {busy ? "Send Guidance" : "Run task"}
             </button>
           </div>

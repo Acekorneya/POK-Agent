@@ -36,3 +36,18 @@ adaptations of the weights themselves (not POK-Ai's own source code, which
 this NOTICE does not extend to) be shared under the same license if
 redistributed; downloading and running the checkpoint locally does not
 require anything of POK-Ai's own Apache-2.0 codebase.
+
+Voice input uses sherpa-onnx (https://github.com/k2-fsa/sherpa-onnx,
+Apache-2.0), linked as a library. Its speech models are not bundled with this
+repository; the app downloads them from the sherpa-onnx releases when the user
+installs voice input:
+
+- sherpa-onnx-streaming-zipformer-en-2023-06-26 (k2-fsa, Apache-2.0), used for
+  live captions.
+- NVIDIA Parakeet TDT 0.6B v3 (https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3),
+  licensed CC-BY-4.0, in its sherpa-onnx int8 export, used for the final text.
+  Attribution: "Parakeet TDT 0.6B v3" by NVIDIA, CC BY 4.0
+  (https://creativecommons.org/licenses/by/4.0/); converted to ONNX and
+  quantized by the sherpa-onnx project.
+- Silero VAD (https://github.com/snakers4/silero-vad, MIT), used to find
+  phrases in multilingual mode.

@@ -437,8 +437,17 @@ impl Session {
             ));
             self.log("generated_tools_recalled", diagnostic)?;
         }
-        self.messages
-            .push(BrainMessage::text("user", prompt.clone()));
+        let mut request_message = BrainMessage::text("user", prompt.clone());
+        let attached = std::mem::take(&mut self.pending_user_images);
+        if !attached.is_empty() {
+            self.log("user_images_attached", json!({"count": attached.len()}))?;
+            request_message.content.extend(
+                attached
+                    .into_iter()
+                    .map(|base64| MessageContent::ImagePng { base64 }),
+            );
+        }
+        self.messages.push(request_message);
         if self.conversation_title.trim().is_empty() {
             self.conversation_title = prompt.chars().take(80).collect();
         }
