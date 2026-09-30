@@ -39,6 +39,20 @@ struct RecorderState {
     excluded_window: bool,
 }
 
+/// Exclusion words kept on this machine only: `training-exclude.txt` in the
+/// data folder, one word per line (`#` starts a comment). Windows whose title
+/// or process contains one are never recorded, like the configured list.
+pub fn local_exclusions(data_dir: &Path) -> Vec<String> {
+    std::fs::read_to_string(data_dir.join("training-exclude.txt"))
+        .map(|text| {
+            text.lines()
+                .map(|line| line.split('#').next().unwrap_or_default().trim().to_owned())
+                .filter(|word| !word.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 impl TrainingRecorder {
     pub fn new(directory: &Path, session_id: Uuid, excluded: &[String]) -> Self {
         Self {
@@ -117,6 +131,28 @@ impl TrainingRecorder {
             "source": source,
             "recorded_at": chrono::Utc::now().to_rfc3339(),
         }));
+    }
+
+    /// The id of the latest recorded question with this key, if any.
+    pub fn last_question(&self, question: &str) -> Option<String> {
+        self.inner.lock().last.get(question).cloned()
+    }
+
+    /// Record how the primary model resolved a step System 1 handed back:
+    /// what System 1 was asked to do, what it saw, and the action that then
+    /// made progress. The question it could not answer (when one was asked)
+    /// gets that action as its answer when the dataset is built.
+    pub fn handback(&self, record: &Value) {
+        if contains_private_text(record) || self.inner.lock().excluded_window {
+            return;
+        }
+        let mut entry = record.clone();
+        if let Some(object) = entry.as_object_mut() {
+            object.insert("kind".into(), json!("handback"));
+            object.insert("session_id".into(), json!(self.session_id));
+            object.insert("recorded_at".into(), json!(chrono::Utc::now().to_rfc3339()));
+        }
+        self.append(&entry);
     }
 
     fn append(&self, record: &Value) {
@@ -209,6 +245,21 @@ mod tests {
         }
         let body = json!({"model": "laya", "state": {"labels": ["Refresh rate 165 Hz", "@home"]}, "questions": {"q": {}}});
         assert!(recorder.question("router", &body, None).is_some());
+    }
+
+    #[test]
+    fn this_machines_own_exclusions_come_from_its_data_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(local_exclusions(dir.path()).is_empty());
+        std::fs::write(
+            dir.path().join("training-exclude.txt"),
+            "# store software\nexample_pos\n\n  Example Customers  # the customer list\n",
+        )
+        .unwrap();
+        assert_eq!(
+            local_exclusions(dir.path()),
+            ["example_pos", "Example Customers"]
+        );
     }
 
     #[test]

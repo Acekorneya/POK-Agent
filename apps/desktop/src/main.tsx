@@ -2678,8 +2678,9 @@ export function App() {
             <strong>Training data (opt-in)</strong>
             <small>
               Save each on-screen question the router is asked, with the answer that later proved right, to build a
-              training set for a System 1 model. Files stay on this computer. Password managers, banking, mail, Discord
-              and Example POS are never recorded, nor are emails or long numbers.
+              training set for a System 1 model. Files stay on this computer. Password managers, banking, mail, Discord,
+              and any application listed in training-exclude.txt in the data folder are never recorded, nor are emails or
+              long numbers.
             </small>
             <label style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "8px" }}>
               <input

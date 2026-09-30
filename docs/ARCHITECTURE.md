@@ -44,7 +44,9 @@ touches one focused file. Child modules share their parent's imports
 | `tool_results.rs` | Bounded tool-result projections, tool-call pairing, fresh-evidence and artifact checks |
 | `model_output.rs` | Recovering malformed or XML-style tool calls, classifying each turn's payload |
 | `intent.rs` | Classifying the request: apps, URLs, commits, live-information, desktop, visual or artifact outcomes |
-| `curation.rs` | Post-turn memory curation and learning procedures and helper tools from verified workflows |
+| `curation.rs` | Post-turn memory curation and learning procedures and helper tools from verified workflows; one general lesson from a run that did not succeed |
+| `skill_replay.rs` | Direct skill execution: System 1 replays a trusted, relevant skill's opening steps (or, for the same task, its whole program) before the planner's first call |
+| `motor_program.rs` | Motor programs: a verified run's exact actions recorded as they happen, stored on its skill, and replayed end to end by System 1; the leaner program wins, a stale one is replaced |
 | `tests.rs` | Session tests |
 
 `crates/pok-ai-core/src/builtins/` — the built-in tools:
@@ -395,12 +397,49 @@ Workflow procedures are the agent's skills, and they improve with use:
    never drops its plan steps.
 4. **Use.** For each request, the closest skills (scored by relevance and track
    record) are offered to the router, a strong local match is always eligible,
-   and up to two are loaded in full as `<loaded_skill>` context. The planner can
-   send a skill's plan steps as one `fast_actions` call.
-5. **Feedback.** A verified run reinforces its skill. A run that used a skill and
+   and up to two are loaded in full as `<loaded_skill>` context. When the top
+   skill has a motor program, System 1 replays it first (see "Muscle memory").
+5. **Learn from failures.** A run that did not succeed leaves one general
+   lesson in memory, written by the planner without task values (approved when
+   unattended, a review draft otherwise).
+6. **Feedback.** A verified run reinforces its skill. A run that used a skill and
    did not end verified records a failure: failures lower the skill's ranking,
    and a skill with at least three failures and more failures than successes is
    disabled (not deleted).
+
+### Muscle memory
+
+A skill says what to do in words; its **motor program** says exactly what was
+done. `session/motor_program.rs` records every successful action of a run, from
+the planner and from System 1 alike: clicks by the label actually clicked, key
+chords, and typed text. Looking steps leave nothing; an action a program cannot
+repeat exactly (a vision click, a command, a drag, a scroll) ends the program
+there.
+
+- **Saved** on the skill the run taught or reinforced, only when the run was
+  verified and its result check passed without recovery or accepted warnings.
+  Text the user's request supplied is stored as a fingerprint (length and hash)
+  plus the words around it, never as text; private-looking text ends the
+  program. A leaner program replaces a longer one; a program that stopped
+  part-way when replayed is replaced by the path that finished the job.
+- **Replayed** (`session/skill_replay.rs`) before the planner's first call when
+  a request shares at least 40% of its words with the skill's, the skill has
+  been verified, and its trust `(successes + 1) / (uses + 2)` is at least 0.6.
+  System 1 opens or brings forward the application, waits for it to draw, and
+  runs the program as one `fast_actions` plan (up to 64 steps) in strict mode:
+  only the recorded labels are clicked, anything else hands back. Request
+  values are found again in the new request, or filled into the recorded slot
+  from the words around it ("Add Paris to..." for "Add Kyoto to..."); a label
+  that was a value of the original task stops the replay unless the new request
+  asks for it. Save, send, and print shortcuts are left to the planner.
+- **Handed over.** The planner receives what was replayed, why it stopped, and
+  the screen after the replay, and continues from there. A skill without a
+  program is not replayed at all: replaying only a skill's opening steps cost
+  more planner calls than it saved.
+
+The harness also takes the planner's first look itself: when an application
+window is in front at the start of a desktop task, it is captured and given to
+the planner as the result of that look, and counts as the run's fresh evidence.
 
 Learning and curation run after the answer; the CLI waits for them (bounded)
 before exiting, and the live bench gives every arm its own data folder so

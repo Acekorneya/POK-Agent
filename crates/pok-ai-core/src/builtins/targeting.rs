@@ -123,9 +123,71 @@ pub(super) struct DragTargetArgs {
     pub(super) button: Option<MouseButton>,
     #[serde(default = "default_drag_duration_ms")]
     pub(super) duration_ms: u64,
+    /// Drop onto this numbered target instead of moving by a displacement.
+    #[serde(default)]
+    pub(super) destination_target_id: Option<TargetId>,
+    /// Visible or accessibility label for the destination target.
+    #[serde(default)]
+    pub(super) expected_destination_label: Option<String>,
 }
 
 pub(super) struct DragTargetTool;
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(super) struct HoverTargetArgs {
+    #[serde(default, alias = "observation_version")]
+    pub(super) observation_id: Option<String>,
+    #[serde(default)]
+    pub(super) view_id: Option<String>,
+    pub(super) target_id: TargetId,
+    /// Visible or accessibility label for the target.
+    pub(super) expected_label: String,
+}
+
+pub(super) struct HoverTargetTool;
+
+/// The target an input names by id and expected label, or the one target
+/// with that label when the id no longer matches. `Err` carries the recovery
+/// result to return instead of acting.
+pub(super) fn resolve_named_target<'a>(
+    observation: &'a Observation,
+    target_id: &TargetId,
+    expected: &str,
+    context: &ToolContext,
+) -> Result<std::result::Result<(&'a InteractionTarget, &'static str), Value>> {
+    let requested_id = target_id.normalized();
+    let requested = observation
+        .targets
+        .iter()
+        .find(|target| target.id == requested_id)
+        .ok_or_else(|| PokError::Tool(format!("unknown target {requested_id:?}")))?;
+    let expected = expected.trim();
+    if expected.is_empty() {
+        return Err(PokError::Tool("the expected label cannot be empty".into()));
+    }
+    if crate::grounding::grounding_quality(requested) != "low"
+        && label_match_score(expected, &requested.name) >= 2
+    {
+        return Ok(Ok((requested, "id_and_label_match")));
+    }
+    if unique_exact_ocr_text(observation, requested, expected) {
+        return Ok(Ok((requested, "exact_unique_ocr_text")));
+    }
+    let candidates = semantic_target_candidates(observation, expected);
+    if candidates.len() != 1 {
+        return target_resolution_recovery(observation, requested, expected, &candidates, context)
+            .map(Err);
+    }
+    Ok(Ok((candidates[0], "corrected_unique_label")))
+}
+
+/// Where input aimed at a target lands: its clickable point or its center.
+pub(super) fn target_point(target: &InteractionTarget) -> (i32, i32) {
+    target.click_point.unwrap_or((
+        target.bounds.x + i32::try_from(target.bounds.width / 2).unwrap_or(i32::MAX),
+        target.bounds.y + i32::try_from(target.bounds.height / 2).unwrap_or(i32::MAX),
+    ))
+}
 
 #[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -233,6 +295,8 @@ impl Tool for ClickTargetTool {
                 && label_match_score(expected_label, &requested_target.name) >= 2
             {
                 (requested_target, "id_and_label_match")
+            } else if unique_exact_ocr_text(&observation, requested_target, expected_label) {
+                (requested_target, "exact_unique_ocr_text")
             } else {
                 let candidates = semantic_target_candidates(&observation, expected_label);
                 if candidates.len() == 1 {
@@ -347,6 +411,29 @@ pub(super) fn label_match_score(expected: &str, actual: &str) -> u8 {
     } else {
         0
     }
+}
+
+/// Text that only OCR read (menus and labels in applications that expose
+/// little to UI Automation), named exactly by the expected label and shown
+/// nowhere else on screen: clicking its center clicks the named text itself.
+pub(super) fn unique_exact_ocr_text(
+    observation: &Observation,
+    target: &InteractionTarget,
+    expected_label: &str,
+) -> bool {
+    let tokens = label_tokens(&target.name);
+    matches!(target.source, TargetSource::Ocr)
+        && target.enabled
+        && !tokens.is_empty()
+        && label_match_score(expected_label, &target.name) == 3
+        && observation
+            .targets
+            .iter()
+            .filter(|other| {
+                matches!(other.source, TargetSource::Ocr) && label_tokens(&other.name) == tokens
+            })
+            .count()
+            == 1
 }
 
 pub(super) fn semantic_target_candidates<'a>(
@@ -1011,9 +1098,13 @@ impl Tool for DragTargetTool {
 
     async fn execute(&self, args: Value, context: &ToolContext) -> Result<Value> {
         let args: DragTargetArgs = serde_json::from_value(args)?;
-        if args.delta_x == 0 && args.delta_y == 0 {
+        let destination = args
+            .destination_target_id
+            .as_ref()
+            .zip(args.expected_destination_label.as_deref());
+        if destination.is_none() && args.delta_x == 0 && args.delta_y == 0 {
             return Err(PokError::Tool(
-                "drag_target requires non-zero delta_x or delta_y".into(),
+                "drag_target requires a destination target or non-zero delta_x or delta_y".into(),
             ));
         }
         let duration_ms = checked_drag_duration(args.duration_ms)?;
@@ -1024,57 +1115,43 @@ impl Tool for DragTargetTool {
             "drag_target",
         )?;
         ensure_targeted_capture(&observation)?;
-        let requested_id = args.source_target_id.normalized();
-        let requested = observation
-            .targets
-            .iter()
-            .find(|target| target.id == requested_id)
-            .ok_or_else(|| PokError::Tool(format!("unknown source target {requested_id:?}")))?;
         let expected = args.expected_source_label.trim();
-        if expected.is_empty() {
-            return Err(PokError::Tool(
-                "expected_source_label cannot be empty".into(),
-            ));
-        }
-        let (target, resolution) = if crate::grounding::grounding_quality(requested) != "low"
-            && label_match_score(expected, &requested.name) >= 2
-        {
-            (requested, "id_and_label_match")
+        let (target, resolution) =
+            match resolve_named_target(&observation, &args.source_target_id, expected, context)? {
+                Ok(found) => found,
+                Err(recovery) => return Ok(recovery),
+            };
+        let (start_x, start_y) = target_point(target);
+        let (end_x, end_y, destination_label) = if let Some((id, label)) = destination {
+            let (drop, _) = match resolve_named_target(&observation, id, label, context)? {
+                Ok(found) => found,
+                Err(recovery) => return Ok(recovery),
+            };
+            let (x, y) = target_point(drop);
+            (x, y, Some(drop.name.clone()))
         } else {
-            let candidates = semantic_target_candidates(&observation, expected);
-            if candidates.len() != 1 {
-                return target_resolution_recovery(
-                    &observation,
-                    requested,
-                    expected,
-                    &candidates,
-                    context,
-                );
-            }
-            (candidates[0], "corrected_unique_label")
+            let screenshot = observation
+                .screenshots
+                .first()
+                .ok_or_else(|| PokError::Tool("observation contains no model image".into()))?;
+            let capture = observation
+                .target
+                .as_ref()
+                .ok_or_else(|| PokError::Tool("observation contains no capture target".into()))?;
+            (
+                start_x.saturating_add(scale_offset(
+                    args.delta_x,
+                    screenshot.model_width,
+                    capture.bounds.width,
+                )),
+                start_y.saturating_add(scale_offset(
+                    args.delta_y,
+                    screenshot.model_height,
+                    capture.bounds.height,
+                )),
+                None,
+            )
         };
-        let screenshot = observation
-            .screenshots
-            .first()
-            .ok_or_else(|| PokError::Tool("observation contains no model image".into()))?;
-        let capture = observation
-            .target
-            .as_ref()
-            .ok_or_else(|| PokError::Tool("observation contains no capture target".into()))?;
-        let (start_x, start_y) = target.click_point.unwrap_or((
-            target.bounds.x + i32::try_from(target.bounds.width / 2).unwrap_or(i32::MAX),
-            target.bounds.y + i32::try_from(target.bounds.height / 2).unwrap_or(i32::MAX),
-        ));
-        let end_x = start_x.saturating_add(scale_offset(
-            args.delta_x,
-            screenshot.model_width,
-            capture.bounds.width,
-        ));
-        let end_y = start_y.saturating_add(scale_offset(
-            args.delta_y,
-            screenshot.model_height,
-            capture.bounds.height,
-        ));
         let button = args.button.unwrap_or(MouseButton::Left);
         let target_id = target.id.clone();
         let target_label = target.name.clone();
@@ -1097,8 +1174,65 @@ impl Tool for DragTargetTool {
                 "expected_label": expected,
                 "resolution": resolution,
                 "model_delta": [args.delta_x, args.delta_y],
+                "destination_label": destination_label,
                 "button": button,
                 "duration_ms": duration_ms,
+                "mapping_succeeded": true,
+            }),
+        )
+        .await
+    }
+}
+
+#[async_trait]
+impl Tool for HoverTargetTool {
+    fn name(&self) -> &'static str {
+        "hover_target"
+    }
+
+    fn description(&self) -> &'static str {
+        "Rest the mouse on a numbered target without clicking, then observe: for menus that open on hover and for tooltips. Supply its expected label; the harness moves only to a matching or uniquely corrected target."
+    }
+
+    fn input_schema(&self) -> Value {
+        schema::<HoverTargetArgs>()
+    }
+
+    fn risk(&self) -> RiskClass {
+        RiskClass::DesktopInput
+    }
+
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<Value> {
+        let args: HoverTargetArgs = serde_json::from_value(args)?;
+        let observation = current_observation_or_view(
+            context,
+            args.observation_id.as_deref(),
+            args.view_id.as_deref(),
+            "hover_target",
+        )?;
+        ensure_targeted_capture(&observation)?;
+        let (target, resolution) = match resolve_named_target(
+            &observation,
+            &args.target_id,
+            &args.expected_label,
+            context,
+        )? {
+            Ok(found) => found,
+            Err(recovery) => return Ok(recovery),
+        };
+        let (x, y) = target_point(target);
+        let target_id = target.id.clone();
+        let label = target.name.clone();
+        execute_input(
+            InputAction::Move { x, y },
+            observation,
+            context,
+            json!({
+                "kind": "hover_target",
+                "target_id": target_id,
+                "label": label,
+                "expected_label": args.expected_label,
+                "resolution": resolution,
                 "mapping_succeeded": true,
             }),
         )

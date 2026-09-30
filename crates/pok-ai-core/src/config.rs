@@ -593,6 +593,14 @@ pub struct Config {
     pub providers: BTreeMap<String, ProviderConfig>,
     #[serde(default)]
     pub decision_router: DecisionRouterConfig,
+    /// Maximum planner turns that act on the computer per run (a
+    /// `fast_actions` plan is one step). Unset means unlimited; benchmarks
+    /// such as Windows Agent Arena use 30.
+    #[serde(default)]
+    pub action_step_budget: Option<u32>,
+    /// Extra standing instructions appended to the agent's system prompt.
+    #[serde(default)]
+    pub standing_instructions: Option<String>,
 }
 
 fn default_decision_router_endpoint() -> String {
@@ -681,7 +689,9 @@ const fn default_ocr_containment_threshold() -> f32 {
     0.6
 }
 /// Applications whose screens hold passwords, money, mail, or other
-/// people's messages and customer records.
+/// people's messages. Words for this machine's own sensitive applications
+/// (a store's customer system, for example) go in `training-exclude.txt` in
+/// the data folder, which never leaves the machine (see `router_training`).
 fn default_training_exclude() -> Vec<String> {
     [
         "password",
@@ -693,8 +703,6 @@ fn default_training_exclude() -> Vec<String> {
         "mail",
         "outlook",
         "discord",
-        "example_pos",
-        "examplepos",
     ]
     .into_iter()
     .map(str::to_owned)
@@ -816,6 +824,8 @@ impl Default for Config {
             agent_temperature: default_agent_temperature(),
             providers: default_providers(),
             decision_router: DecisionRouterConfig::default(),
+            action_step_budget: None,
+            standing_instructions: None,
         }
     }
 }

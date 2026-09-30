@@ -21,6 +21,12 @@ New-Item -ItemType Directory -Force -Path $run, $out, $data | Out-Null
 $exitCode = 1
 
 try {
+    # This VM is a disposable test machine. Defender's heuristics have flagged
+    # new builds of this unsigned automation binary (it drives other apps and
+    # simulates input) as potentially unwanted and blocked every later start,
+    # so the agent's own folder is excluded here, in the test VM only.
+    try { Add-MpPreference -ExclusionPath $root -ErrorAction Stop } catch { }
+
     # The binary and configuration for this run.
     Copy-Item "$share\bin\*" $root -Force
 

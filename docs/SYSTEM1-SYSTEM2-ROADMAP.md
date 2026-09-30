@@ -51,11 +51,35 @@ We found no open harness that combines:
    when unsure;
 4. **skills and memory** learned only from the agent's own verified
    experience, deduplicated, and rewritten by the planner;
-5. a **training loop** that distills a hosted System 1 (JEV) and the planner's
-   own resolutions into a local one (Laya), on the user's own software.
+5. a **training loop** that turns the harness's own labeled decisions (proven
+   outcomes, the planner's resolutions of hand-backs, and confident answers from
+   whichever decision backend was configured) into a local System 1 (Laya), on
+   the user's own software.
 
 Absence of evidence is not proof; this claim should be rechecked before any
 publication.
+
+## System 1 as the default mode, not a tool
+
+In the brain, System 1 runs continuously and handles almost everything; System
+2 is recruited on surprise. POK-Ai so far used System 1 as a tool the planner
+calls now and then. The design below maps established models of human skill
+onto concrete harness mechanisms.
+
+| Brain principle | Model | Today | To build |
+| --- | --- | --- | --- |
+| System 1 runs whole motor sequences; System 2 sets goals | chunking, motor programs | System 1 clicks and scrolls; the planner does keys, typing, and most actions (85%) | keyboard and typing steps in `fast_actions` |
+| Predictive processing: escalate only on prediction error | error = observed − predicted | any `done_when` mismatch hands back | local System 1 recovery (retry, dismiss popup, scroll into view, re-find target) before escalating |
+| Evidence accumulation to a threshold | drift-diffusion | one-shot probability vs 0.90 / 0.80 | accumulate grounding, model, and post-action evidence before deciding |
+| Habit strength with practice | $C(N) = C_{\min} + (C_1 - C_{\min}) N^{-\beta}$ | skills replayed through the planner | direct skill execution by System 1; the planner confirms |
+| Trust learned from outcomes | Rescorla–Wagner / delta rule, $V \leftarrow V + \alpha(\lambda - V)$ | success/failure counts, fixed thresholds | per-skill trust $V$ that sets how much checking a skill needs |
+| Error-driven motor learning (cerebellum) | supervised correction | JEV answers logged | hand-back labels: every planner correction becomes a System 1 example |
+| Attention bottleneck | compact summaries | ~10 planner turns per task spent looking | actions return a compact "what changed" summary |
+
+Build order, by expected cut in planner calls: keys and typing in
+`fast_actions`; local recovery on prediction errors; compact state summaries;
+direct skill execution with trust; hand-back labels; evidence accumulation.
+Target: System 1 action share from 15% toward 70–90%.
 
 ## What is built
 
@@ -66,16 +90,26 @@ publication.
 | Typed-decision router (JEV, Laya, LLM choice) with thresholds and hand-back | done | `decision.rs`, `session/decision_router.rs` |
 | Cursor-free input (UI Automation patterns first) and background work | done | `builtins/input.rs`, `agent_window.rs` |
 | Skills: learn, deduplicate (3 layers), rewrite, load, reinforce, fail and disable | done | `memory.rs`, `session/curation.rs`, `session/run_loop.rs` |
-| Router training log (questions, proven labels, teacher answers) | done | `router_training.rs`, `scripts/build_router_dataset.py` |
+| Router training log (questions, proven labels, backend answers as soft labels) | done | `router_training.rs`, `scripts/build_router_dataset.py` |
 | Windows Agent Arena suite: parallel VMs, memory modes, per-task data, manifests | done | `scripts/arena/` |
-| Hand-back labels (planner resolutions become System 1 labels) | **todo** | `router_training.rs` |
-| Direct skill execution (System 1 runs a matched skill without re-planning) | **todo** | `session/run_loop.rs`, `session/fast_actions.rs` |
+| System 1 motor skills: typing and key chains the planner writes, right-click, hover, drag between quoted labels | done | `session/fast_actions.rs`, `builtins/targeting.rs` |
+| Popup reflex: an unexpected dialog is read (title, text, buttons) and handed back as text | done | `session/fast_actions.rs` |
+| Typed-text read-back from the screen when a field does not expose its text | done | `decision.rs`, `session/fast_actions.rs` |
+| OCR-only labels (e.g. LibreOffice menus) clickable by an exact quoted label seen once | done | `decision.rs` |
+| Hand-back labels (planner resolutions become System 1 labels; unseen targets counted as perception misses) | done | `router_training.rs`, `session/fast_actions.rs`, `scripts/build_router_dataset.py` |
+| UI Automation for owned dialogs (LibreOffice dialogs were blind: 14% of `lo7` screens) | done | `pok-ai-windows/src/lib.rs` |
+| Arena memory shared like one agent (VM copies merged after each piece and each pass) | done | `scripts/arena/merge_memory.py`, `scripts/arena/run_arena.py` |
+| Perception fixes from `v3`: Windows 11 control types (app bar button, toggle button/switch, option, data item, date pickers, header items) were not treated as clickable, so File Explorer's View/New/Sort never reached System 1; labels match without a keyboard-shortcut suffix (\"Extensions\" = \"Extensions (Ctrl+Shift+X)\"); a UI Automation walk that outlasted one capture no longer blinds the next ones. 12 of `v3`'s first 47 quoted-label misses resolve locally with these rules | done | `grounding.rs`, `decision.rs`, `pok-ai-windows/src/lib.rs` |
+| Direct skill execution: before the planner's first call, System 1 replays the top skill's motor program when the skill is verified and its trust (s+1)/(s+f+2) is at least 0.6; the planner gets the replayed steps and the screen after them. Replaying only a skill's opening steps (without a program) was tried in v4-v5 and removed: it cost more calls than it saved | done | `session/skill_replay.rs`, `session/run_loop.rs` |
+| Motor programs (muscle memory): a verified run with a clean result check saves its exact actions (clicks by label, keys, text the agent wrote; request text only as a fingerprint plus its surrounding words) on its skill; the same or a similar request (40% shared words) replays it end to end in one plan of up to 64 steps, with the new request's values filled into the recorded slots; a leaner program replaces a longer one, one that stops partway is replaced by the run that finished; skills that keep failing lose trust and are switched off. v5: -28% planner calls (median -42%) where a whole program ran | done | `session/motor_program.rs`, `session/skill_replay.rs`, `memory.rs` |
+| Learning from failures: a run that did not succeed leaves one general lesson in memory (approved when unattended, a draft for review otherwise) | done | `session/curation.rs` |
 | Perception in System 1 (actions return a state summary; no "look" turns) | **todo** | `session/fast_actions.rs`, `builtins/capture.rs` |
-| Target discovery for grids, unnamed icons, OCR-only labels | **todo** | `grounding.rs`, `builtins/capture.rs` |
+| Target discovery for grids and unnamed icons (OCR-only labels done) | **todo** | `grounding.rs`, `builtins/capture.rs` |
 | Document-aware code editing and app automation (UNO, COM) | **todo** | `builtins/`, `coding.rs` |
-| Protocol mode: 30-step cap counting System 1 actions; no instruction edits | **todo** | `session/run_loop.rs`, `scripts/arena/` |
+| Protocol mode: 30-step cap counting System 1 actions; no instruction edits | done | `session/run_loop.rs`, `scripts/arena/` |
 | Laya fine-tuned on arena data; VM-to-GPU bridge for Laya arms | **todo** | `scripts/arena/`, Laya notebook |
-| Arena: WAA Chrome setup for current Chrome (separate debug profile), per-app work-stealing, 5 workers, screenshot-only observations | **todo** | `scripts/arena/` |
+| Arena: 5 workers, even per-app split, work-stealing, clean reset between tasks, scorer crashes counted as failed attempts | done | `scripts/arena/` |
+| Arena: WAA Chrome setup for current Chrome (separate debug profile) | **todo** | `scripts/arena/` |
 
 ## Evidence so far
 
@@ -132,6 +166,162 @@ carry most of the acting. System 2 still performs 85% of actions, and many
 plans hand back before acting. The architecture is right; System 1's
 perception and confidence are the bottleneck on unfamiliar applications.
 LibreOffice Calc alone accounts for 17 of 51 failures.
+
+### LibreOffice iteration (`lo4`–`lo6`, 43 Calc and Writer tasks)
+
+Same stealth planner and JEV, fresh memory per run, one change set per run.
+`lo5` and `lo6` use the 30-step cap; `base1` and `lo4` had none.
+
+| Run | Calc (24) | Writer (19) | Total | Planner calls / task |
+| --- | --- | --- | --- | --- |
+| `base1` (no cap) | 7 | 12 | 19 (44.2%) | – |
+| `lo4` (no cap) | 11 | 7 | 18 (41.9%) | 45.3 |
+| `lo5` (cap 30, System 1 typing) | 7 | 9 | 16 (37.2%) | 42.3 |
+| `lo6` (cap 30, fixes below) | 8 | 15 | **23 (53.5%)** | 40.1 |
+
+What changed from `lo5` to `lo6`: OCR-only menu labels, the popup reflex,
+keeping the application's own dialogs instead of switching back, foreground
+mode in the VM, System 1 read-back after typing, hover/right-click/drag,
+working in the file the user has open, and a fresh look when the repeat-input
+guard blocks System 1.
+
+Harness and environment faults these runs exposed (each fixed):
+
+- LibreOffice's updater starts once a day even with its servers blocked,
+  holding or restarting LibreOffice without the task's file; the reset now
+  removes it. Runs after the golden image's first day would otherwise be
+  invalid.
+- "Replace existing" typing fell back to Ctrl+A and Delete, which in a
+  spreadsheet erases the whole sheet (285 such requests in `lo6` Calc). It now
+  only selects all in controls that expose their text. Expected to lift Calc
+  in `lo7`.
+- A same-application window (a dialog the agent opened) was treated as an
+  outside change and switched away from, discarding a planner turn each time.
+- Background mode returned focus to the launching console after each input,
+  which closes LibreOffice's open menus.
+- WAA's scorer can crash on an agent's result (cell colors); that attempt now
+  counts as a failure and is never rerun.
+
+### System 1 perception in LibreOffice (found after `lo8`)
+
+System 1 has no vision; it sees UI Automation labels and OCR. Probing the
+arena VMs showed that LibreOffice 24.8 exposed only its title bar to UI
+Automation (6 elements, against 185 on a desktop running 26.8), and every
+dialog was blind (0 elements: owned windows were only searched at the top
+level). In `lo4`–`lo8` System 1 therefore worked from OCR alone in
+LibreOffice. Fixes:
+
+- Owned dialogs are found under their owner window (Find and Replace now 35–54
+  elements, Format Cells 83).
+- UI Automation is walked level by level and never enters a table or data
+  grid, and typing verification never reads a focused table's text: a
+  spreadsheet sheet exposed as one table otherwise hangs the application.
+- LibreOffice 24.8 builds its tree only under Windows' screen-reader flag, and
+  its Calc then froze while cells were edited. The golden image was updated to
+  LibreOffice 26.8.0 (`setup_waa.py update-libreoffice`), which exposes the
+  tree without the flag; the previous image is kept. Runs record the image's
+  LibreOffice version in `manifest.json` (`golden_image`). This is an
+  environment change against published WAA results, which used an older
+  LibreOffice; WAA's checkers read the saved files, so scoring is unchanged.
+
+First test on 26.8 (3 tasks): no freezes, no blind dialogs, System 1 action
+share 37%, "no candidates" hand-backs 19% of plans (40–58% before).
+
+### Full clean run (`v2`, 154 tasks, 2 passes)
+
+Protocol: the fixed harness, a 30-step cap, memory empty at the start with
+online learning (VM copies merged as one agent), JEV, LibreOffice 26.8 image,
+5 VMs. The stealth planner is unchanged.
+
+| Measure | `base1` | `v2` pass 1 | `v2` pass 2 |
+| --- | --- | --- | --- |
+| Success (of 154) | 95 (61.7%, 145 runnable, no cap) | **93 (60.4%, all runnable, cap 30)** | 91 (59.1%) |
+| Planner calls per task (same tasks) | 28.1 | **22.7** | 24.5 (of 25.2 in pass 1) |
+| Time per task | 236 s | 308 s | 313 s (of 344 s) |
+
+- Pass 1 matches the baseline's success under a 30-step cap with 19% fewer
+  planner calls, and runs all 154 tasks (the 9 Chrome tasks WAA could not set
+  up before now run; 4 pass).
+- Three VS Code failures are WAA checker crashes: the agent wrote
+  `settings.json` with Windows PowerShell 5.1, whose UTF-8 output carries a
+  byte-order mark the checker's `json.load` rejects. Fixed for the next run:
+  `run_command` tells the planner to write text files as UTF-8 without a BOM.
+- Pass 2 barely improved (10 tasks gained, 12 lost; calls -2%, time -9%).
+  Tasks that loaded a learned skill passed slightly more (54 -> 56) but used
+  no fewer calls: skills are advisory text, and the planner still plans every
+  step. Failed pass-1 tasks teach nothing. The small cross-app check (short
+  tasks) showed -12% calls and -47% time; at full scale advisory skills are
+  not enough. **Next: direct skill execution by System 1** (replay a matched
+  skill's steps, hand back only on a mismatch, trust per skill), and learning
+  from failures.
+- Why v2 took longer per task (monotonic timings, 108 paired tasks; VM clock
+  jumps make wall-clock differences unreliable): of +54 s, about 40 s is the
+  planner model itself generating more slowly (12.2 -> 15.3 ms per output token,
+  median first token 2.5 -> 3.3 s; same model and reasoning setting, fewer and
+  smaller calls). The other ~13 s is the harness doing more per call: batches of
+  4.35 steps instead of 3 with 3.5x the key presses, System 1 plans, and a UI
+  Automation walk of ~0.5 s per capture instead of ~0.2 s. Compare time only
+  within one run, or with provider speed factored out.
+
+### Skill replay at full scale (`v4`, 154 tasks, 1 pass from v2's memory)
+
+v4 starts from v2's final memory and adds skill replay by System 1, Windows 11
+control types, label matching without keyboard-shortcut suffixes, replay that
+clicks only saved labels, and waiting for an application System 1 opened. It is
+compared with v2 pass 2, which also started from learned memory.
+
+| Measure | v2 pass 2 | v4 |
+| --- | --- | --- |
+| Success (of 154) | 89.7 (58.3%) | 88.7 (57.6%): 11 lost, 10 gained |
+| Planner calls per task (mean / median) | 24.5 / 21 | 27.3 / 26.5 |
+| System 1 action share | 36% | 38% |
+| System 1 plans with no target | 17% | 12% |
+
+- System 1 got more accurate (exact-label clicks up about 55%, no-target
+  hand-backs down), and Calc improved (7 vs 5), but planner calls rose. The
+  extra calls are looks: after a `fast_actions` result without the new screen
+  (a plan whose conditions already held), the planner captured again 67% of
+  the time, 91% after reads without an image, and 24% when the screen came back.
+  56 plans were rejected for format mistakes, and 46% of plans had one step.
+- Fixed for the next run: every System 1 result returns the current screen
+  (a no-op says so), plan-format repairs (lists in lists, missing goal or
+  done_when, empty entries, plain strings as keys), input sequences up to 40
+  entries, and planner guidance to send every foreseeable step in one plan.
+- Smoke tests on File Explorer, Settings and Clock (28 tasks, same memory):
+  24 vs 22 passed; replays finished whole sequences (3/3, 3/3, 5/5 steps).
+  Windows Defender blocked new unsigned builds inside the test VM; the VM
+  launcher now excludes the agent's folder.
+
+### Muscle memory at full scale (`v5`, 154 tasks, 2 passes from v2's memory)
+
+Verified runs save their exact actions as a program on the skill; in pass 2
+System 1 replays the program before the planner is asked. Golden image: Clock
+updated, OneDrive prompts off.
+
+| Measure | v2 pass 2 | v4 | v5 pass 1 | v5 pass 2 |
+| --- | --- | --- | --- | --- |
+| Success (of 154) | 89.7 | 88.7 | 87.8 | 88.7 |
+| Planner calls per task (mean / median) | 24.5 / 21 | 27.3 / 26.5 | 23.0 / 22 | 23.0 / 22 |
+| System 1 action share | 36% | 38% | 45% | 49% |
+
+Pass 2 by what System 1 did (same tasks, pass 1 -> pass 2):
+
+| Group | Tasks | Success | Calls (mean) | Calls (median) |
+| --- | --- | --- | --- | --- |
+| Whole program replayed | 26 | 18 -> 17 | 20.6 -> 14.8 (-28%) | 15.5 -> 9 (-42%) |
+| Any program replay | 48 | 33 -> 31 | 19.6 -> 16.6 | 14 -> 14.5 |
+| No replay | 88 | 41.8 -> 45.8 | 19.7 -> 20.7 | 16.5 -> 20 |
+| Opening-step replay (no program) | 18 | 13 -> 11.9 | 24.1 -> 28.3 | 22 -> 33.5 |
+
+- Muscle memory works where a whole program exists; too few tasks had one
+  (41 of 154 matched no skill, 30 matched a skill without a program).
+- Opening-step replays cost calls: turned off after v5; only programs replay.
+- Similar requests now replay too (40% word overlap), with the new request's
+  values filled into the recorded slots by their surrounding words.
+- Of 52 programs saved in pass 1, 15 came from runs the checker failed; only 4
+  of those showed a warning. Programs are now saved only when the result
+  check passed without recovery or accepted warnings; per-skill trust covers
+  the rest.
 
 ## Failure analysis (baseline, first 111 tasks)
 

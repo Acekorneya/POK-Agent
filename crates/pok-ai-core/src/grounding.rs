@@ -7,24 +7,45 @@ use base64::Engine;
 
 use crate::types::{InteractionTarget, Observation, OcrBlock, Rect, TargetSource, UiElement};
 
+/// UI Automation control types (localized names, lowercase) a user can act
+/// on. Any type ending in " button" also counts (WinUI and web variants such
+/// as "app bar button", "toggle button", "bookmark button").
 const INTERACTIVE_TYPES: &[&str] = &[
     "button",
+    "breadcrumb bar item",
+    "calendar date picker",
     "check box",
     "checkbox",
+    "column header",
     "combo box",
     "combobox",
+    "data item",
+    "duration picker",
     "edit",
+    "header item",
     "hyperlink",
     "link",
     "list item",
+    "looping picker",
     "menu item",
+    "menu item check box",
+    "menu item radio button",
+    "option",
     "radio button",
     "slider",
     "spinner",
     "split button",
+    "switch",
     "tab item",
+    "toggle switch",
     "tree item",
 ];
+
+/// Whether a UI Automation control type is one a user can act on.
+fn interactive_type(kind: &str) -> bool {
+    let kind = kind.trim().to_ascii_lowercase();
+    INTERACTIVE_TYPES.contains(&kind.as_str()) || kind.ends_with(" button")
+}
 
 pub fn build_targets(
     observation: &Observation,
@@ -535,16 +556,14 @@ fn valid_ocr(block: &OcrBlock, window: &Rect) -> bool {
 }
 
 fn is_actionable(element: &UiElement) -> bool {
-    let kind = element.control_type.to_ascii_lowercase();
-    INTERACTIVE_TYPES.iter().any(|value| kind == *value)
+    interactive_type(&element.control_type)
 }
 
 pub fn grounding_quality(target: &InteractionTarget) -> &'static str {
     if !target.enabled || !target.actionable || target.name.trim().is_empty() {
         return "low";
     }
-    let role = target.control_type.trim().to_ascii_lowercase();
-    let structural = INTERACTIVE_TYPES.iter().any(|value| role == *value);
+    let structural = interactive_type(&target.control_type);
     if structural && matches!(target.source, TargetSource::Uia | TargetSource::UiaOcr) {
         return "high";
     }
@@ -762,6 +781,32 @@ mod tests {
             targets: Vec::new(),
             timings_ms: Default::default(),
             warnings: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn windows_11_command_bar_and_toggle_controls_are_actionable() {
+        for kind in [
+            "app bar button",
+            "toggle button",
+            "toggle switch",
+            "option",
+            "data item",
+            "calendar date picker",
+            "header item",
+            "bookmark button",
+        ] {
+            let mut observation = observation();
+            observation.ocr.clear();
+            observation.ui_elements[0].name = "View".into();
+            observation.ui_elements[0].control_type = kind.into();
+            let targets = build_targets(&observation, 120, 0.1, 0.6, "view");
+            assert!(targets[0].actionable, "{kind}");
+            assert_eq!(grounding_quality(&targets[0]), "high", "{kind}");
+        }
+        // Structure without an action stays out of the clickable targets.
+        for kind in ["group", "text", "pane", "item", "header"] {
+            assert!(!interactive_type(kind), "{kind}");
         }
     }
 

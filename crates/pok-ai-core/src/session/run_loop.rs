@@ -364,6 +364,9 @@ impl Session {
         // router picks among the closest few (up to two) when it is enabled;
         // a strong local match is always eligible.
         let skill_candidates = self.context.memory.search_skills_scored(&prompt, 3)?;
+        // The strongest local match, if it is loaded, is offered to System 1
+        // to replay before the planner's first call.
+        let mut replay_candidate = None;
         if !skill_candidates.is_empty() {
             let candidates = skill_candidates
                 .iter()
@@ -400,6 +403,9 @@ impl Session {
                 // Using a verified skill is credited by learning (it reinforces
                 // the task); only a still-unverified skill is verified by use.
                 auto_loaded_skill_ids.push((skill.id, skill.success_count == 0));
+                if index == 0 && skill_candidates[0].0 >= SKILL_REPLAY_MIN_RELEVANCE {
+                    replay_candidate = Some((skill.clone(), skill_candidates[0].0));
+                }
                 self.messages.push(BrainMessage::text_with_origin(
                     "system",
                     format!(
@@ -464,8 +470,37 @@ impl Session {
         let mut diagnostic_command_streak = 0_u32;
         let mut diagnostic_pivot_cycles = 0_u32;
         let mut turn = 0_u32;
+        let mut action_steps_used = 0_u32;
+        self.motor_tape.clear();
+        self.stale_program = None;
+        if let Some((skill, relevance)) = replay_candidate {
+            action_steps_used += self
+                .replay_skill(&skill, relevance, &prompt, &mut metrics, &mut workflow)
+                .await?;
+        }
+        // The screen the first turn acts on (after any replay), without a
+        // planner call spent looking.
+        self.initial_look(send_images).await?;
 
         'turns: loop {
+            if let Some(budget) = self.action_step_budget
+                && action_steps_used >= budget
+                && !final_answer_only_active
+            {
+                // Out of steps: no more actions, answer from what is done.
+                final_answer_only_active = true;
+                self.messages.push(BrainMessage::text_with_origin(
+                    "system",
+                    format!(
+                        "<system-reminder>The action step budget ({budget} steps) is used up. Tool definitions are withheld. Report what was completed and verified, and what was not, now.</system-reminder>"
+                    ),
+                    MessageOrigin::SystemReminder,
+                ));
+                self.log(
+                    "action_step_budget_exhausted",
+                    json!({"budget": budget, "turn": turn}),
+                )?;
+            }
             if turn > 0 && turn % self.max_turns.max(1) == 0 {
                 let epoch = turn / self.max_turns.max(1) + 1;
                 self.messages.push(BrainMessage::text_with_origin(
@@ -647,6 +682,11 @@ impl Session {
                 // next navigation step goes through the router again.
                 self.raw_navigation_unlocked -= 1;
             }
+            if self.context.questions.is_none() {
+                // No one can answer: offering the tool only invites the model
+                // to stop and ask.
+                definitions.retain(|tool| tool.name != "ask_user_question");
+            }
             if withhold_plan {
                 definitions.retain(|tool| tool.name != "update_task_plan");
             }
@@ -759,6 +799,18 @@ impl Session {
                         || requests_visual_outcome(&root_request)));
             let buffer_candidate_text = adaptive_guard || objective_completion_pending;
             compacted_messages.push(task_reminder);
+            if let Some(budget) = self.action_step_budget
+                && !final_answer_only
+            {
+                compacted_messages.push(BrainMessage::text_with_origin(
+                    "system",
+                    format!(
+                        "<system-reminder>Action steps: {action_steps_used} of {budget} used, {} left. Each turn that acts on the computer is one step; one fast_actions plan is one step however many actions it runs. Plan so the task finishes within the budget.</system-reminder>",
+                        budget.saturating_sub(action_steps_used)
+                    ),
+                    MessageOrigin::SystemReminder,
+                ));
+            }
             if final_answer_only {
                 compacted_messages.push(BrainMessage::text_with_origin(
                     "system",
@@ -2045,6 +2097,11 @@ impl Session {
                         "status": "model_completed",
                     }),
                 )?;
+                // A program is saved only from a run whose result check passed
+                // at once: in v5, runs that needed recovery or accepted
+                // warnings failed the real check 40% of the time, against 26%.
+                self.clean_completion =
+                    accepted_completion_warnings.is_empty() && artifact_guard_fires == 0;
                 self.schedule_curation(
                     prompt.clone(),
                     final_answer.clone(),
@@ -2097,6 +2154,10 @@ impl Session {
                     warnings: accepted_completion_warnings,
                     deliverables,
                 });
+            }
+            if calls.iter().any(|call| is_acting_tool(&call.name)) {
+                action_steps_used = action_steps_used.saturating_add(1);
+                increment_metric(&mut metrics, "action_steps", 1);
             }
             let mut post_tool_batch_messages = Vec::new();
             for call in calls {
@@ -2221,6 +2282,20 @@ impl Session {
                                 }
                             }
                         };
+                        let mut result = result;
+                        let documents = referenced_document_names(&call.name, &call.arguments);
+                        if !documents.is_empty()
+                            && let Ok(value) = result.as_mut()
+                            && value.is_object()
+                            && let Ok(windows) = self.context.platform.list_windows().await
+                            && let Some(warning) = open_document_warning(&documents, &windows)
+                        {
+                            self.log(
+                                "open_document_warning",
+                                json!({"turn": turn_index + 1, "tool": call.name, "warning": warning}),
+                            )?;
+                            value["open_document_warning"] = warning;
+                        }
                         (signature, prior_attempts, result)
                     }
                     PreCallDecision::Suppress {
@@ -2278,6 +2353,7 @@ impl Session {
                         prior_attempts,
                         &result,
                     );
+                    self.record_handback(&call.name, &call.arguments, &feedback.outcome, &result);
                     if let Some(warning) = &feedback.warning {
                         self.log(
                             "tool_loop_warning",
@@ -2576,6 +2652,12 @@ impl Session {
                     if let Some(step) = workflow_step(&call.name, &call.arguments, value) {
                         push_workflow_step(&mut workflow, step);
                     }
+                    // System 1's own steps inside fast_actions are recorded
+                    // where they run.
+                    if call.name != "fast_actions" {
+                        let steps = motor_steps(&call.name, &call.arguments, value);
+                        self.motor_tape.extend(steps);
+                    }
                 }
                 if call.name == "run_command" {
                     let terminal_progress = result.as_ref().ok().is_some_and(|value| {
@@ -2719,4 +2801,33 @@ impl Session {
             }
         }
     }
+}
+
+/// Tools that act on the computer. A planner turn calling any of them is one
+/// action step; observing, planning, and memory tools are not steps.
+pub(super) fn is_acting_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "click_target"
+            | "type_text"
+            | "simulate_input"
+            | "scroll_view"
+            | "scroll_until_text"
+            | "click_localized"
+            | "move_pointer"
+            | "drag_pointer"
+            | "drag_target"
+            | "hover_target"
+            | "activate_window"
+            | "open_application"
+            | "browser_navigate"
+            | "execute_action_batch"
+            | "fast_actions"
+            | "run_command"
+            | "manage_command"
+            | "write_file"
+            | "edit_file"
+            | "undo_edit"
+            | "invoke_generated_tool"
+    ) || name.starts_with("managed_browser_") && name != "managed_browser_snapshot"
 }

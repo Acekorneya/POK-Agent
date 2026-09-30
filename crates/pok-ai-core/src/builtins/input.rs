@@ -880,12 +880,15 @@ pub(super) async fn execute_input(
         &action,
         InputAction::Click { .. } | InputAction::DoubleClick { .. }
     ) || matches!(&action, InputAction::Key { key } if key.eq_ignore_ascii_case("enter"));
+    // A hover settles too: menus and tooltips open a moment after the
+    // pointer arrives.
     let may_settle = matches!(
         &action,
         InputAction::Click { .. }
             | InputAction::DoubleClick { .. }
             | InputAction::Drag { .. }
             | InputAction::Key { .. }
+            | InputAction::Move { .. }
     );
     for delay_ms in [200_u64, 600_u64] {
         if state_change_has_effect(&state_change) || !may_settle {
@@ -921,6 +924,61 @@ pub(super) async fn execute_input(
             u64::try_from(fusion_started.elapsed().as_millis()).unwrap_or(u64::MAX),
         );
         state_change = state_change_value(&before, &after, &context.task_hint.lock());
+    }
+    // A command whose label ends in an ellipsis ("Paragraph...") opens a
+    // dialog, which can take a moment to appear. Wait for it here, so the
+    // planner does not start reasoning about a screen that is about to change.
+    let opens_dialog = matches!(
+        &action,
+        InputAction::Click { .. } | InputAction::DoubleClick { .. }
+    ) && ["label", "expected_label"].iter().any(|key| {
+        model_action
+            .get(*key)
+            .and_then(Value::as_str)
+            .is_some_and(|label| {
+                let label = label.trim_end();
+                label.ends_with("...") || label.ends_with('\u{2026}')
+            })
+    });
+    let front_before = before
+        .foreground_window
+        .as_ref()
+        .map(|window| window.id.clone());
+    if opens_dialog
+        && after
+            .foreground_window
+            .as_ref()
+            .map(|window| window.id.clone())
+            == front_before
+    {
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            let front = context.platform.foreground_window().await?;
+            if front.as_ref().map(|window| window.id.clone()) == front_before {
+                continue;
+            }
+            refresh_request =
+                refresh_request_after_input(&observation, front.as_ref(), context.vision_max_edge)?;
+            after = context
+                .platform
+                .observe(
+                    &refresh_request,
+                    true,
+                    true,
+                    context.uia_element_limit,
+                    Duration::from_millis(context.desktop_enrichment_timeout_ms),
+                )
+                .await?;
+            after.targets = build_targets(
+                &after,
+                context.model_target_limit,
+                context.fusion_iou_threshold,
+                context.ocr_containment_threshold,
+                &context.task_hint.lock(),
+            );
+            state_change = state_change_value(&before, &after, &context.task_hint.lock());
+            break;
+        }
     }
     // Selecting an item changed nothing: in galleries and similar lists a
     // click runs the item's action instead, which is its Invoke pattern.
@@ -1376,7 +1434,11 @@ pub(super) async fn simulate_input_for_window(
             if *replace_existing && context.platform.replace_focused_text(text).await? {
                 return Ok(());
             }
-            if *replace_existing {
+            // Select-all-and-delete clears a text field. On a control that does
+            // not expose its text (a spreadsheet grid, a canvas) Ctrl+A selects
+            // the whole sheet or document and Delete erases all of it; typing
+            // there already replaces the active cell's content.
+            if *replace_existing && context.platform.focused_text(1).await?.is_some() {
                 context
                     .platform
                     .simulate_input(&InputAction::Key {

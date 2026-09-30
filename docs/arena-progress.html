@@ -1,0 +1,412 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Arena progress report. Open in a browser, or serve docs/ with GitHub Pages.
+     The numbers come from Windows Agent Arena runs; see docs/results/arena-summary.json
+     and scripts/arena/make_report.py. -->
+<title>POK-Ai Arena Progress</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700&family=JetBrains+Mono:wght@400;600&family=Source+Sans+3:wght@400;600&display=swap">
+<style>
+:root {
+  --bg: #f5f7f9;
+  --panel: #ffffff;
+  --ink: #141a21;
+  --ink-2: #4a5561;
+  --muted: #76808b;
+  --rule: #dfe3e8;
+  --grid: #eceff2;
+  --series: #2a78d6;
+  --series-soft: rgba(42, 120, 214, 0.12);
+  --marker: #9aa4ae;
+  --good: #1f8a4c;
+  --bad: #c2412d;
+  --display: "Barlow Semi Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  --body: "Source Sans 3", "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #12161b;
+    --panel: #1a1f26;
+    --ink: #e6e9ed;
+    --ink-2: #b4bcc5;
+    --muted: #8a949e;
+    --rule: #2c333c;
+    --grid: #232a32;
+    --series: #3987e5;
+    --series-soft: rgba(57, 135, 229, 0.16);
+    --marker: #6b7580;
+    --good: #4cc07c;
+    --bad: #e8765f;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #12161b;
+  --panel: #1a1f26;
+  --ink: #e6e9ed;
+  --ink-2: #b4bcc5;
+  --muted: #8a949e;
+  --rule: #2c333c;
+  --grid: #232a32;
+  --series: #3987e5;
+  --series-soft: rgba(57, 135, 229, 0.16);
+  --marker: #6b7580;
+  --good: #4cc07c;
+  --bad: #e8765f;
+}
+body { background: var(--bg); color: var(--ink); font: 16px/1.55 var(--body); }
+.wrap { max-width: 1080px; margin: 0 auto; padding-inline: 20px; padding-block: 32px 56px; display: grid; gap: 36px; }
+h1, h2 { font-family: var(--display); font-weight: 700; letter-spacing: 0.005em; text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(30px, 5vw, 44px); line-height: 1.05; }
+h2 { font-size: 24px; line-height: 1.15; }
+.eyebrow { font: 600 12px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.lede { max-width: 66ch; color: var(--ink-2); margin: 10px 0 0; }
+header { display: grid; gap: 8px; }
+.section-head { display: grid; gap: 6px; }
+.section-head p { margin: 0; max-width: 70ch; color: var(--ink-2); }
+.num { font-variant-numeric: tabular-nums; }
+
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+.tile { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 16px 18px; display: grid; gap: 6px; align-content: start; }
+.tile .label { font: 600 13px/1.3 var(--body); color: var(--ink-2); }
+.tile .value { font: 700 36px/1 var(--display); font-variant-numeric: tabular-nums; }
+.tile .compare { font-size: 14px; color: var(--ink-2); }
+.delta { font: 600 13px/1 var(--mono); padding: 3px 6px; border-radius: 4px; background: var(--grid); }
+.delta.good { color: var(--good); }
+.delta.bad { color: var(--bad); }
+.delta.flat { color: var(--ink-2); }
+.tile .note { font-size: 13px; color: var(--muted); }
+
+.grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 14px; }
+@media (max-width: 480px) { .grid2 { grid-template-columns: 1fr; } }
+.chart { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 14px 8px; position: relative; }
+.chart h3 { font: 600 16px/1.2 var(--display); margin: 0 0 2px; }
+.chart .sub { font-size: 13px; color: var(--muted); margin: 0 0 6px; }
+.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.chart text { fill: var(--muted); font: 11px var(--mono); }
+.chart .val-label { fill: var(--ink); font: 600 11px var(--mono); }
+.chart .rule-label { fill: var(--muted); font: 10px var(--mono); }
+.tip { position: absolute; pointer-events: none; background: var(--ink); color: var(--bg); font: 12px/1.35 var(--body); padding: 7px 9px; border-radius: 6px; max-width: 240px; transform: translate(-50%, calc(-100% - 12px)); }
+.tip b { font-family: var(--mono); font-weight: 600; }
+.legend-note { display: flex; flex-wrap: wrap; gap: 16px; font-size: 13px; color: var(--ink-2); }
+.legend-note span { display: inline-flex; align-items: center; gap: 6px; }
+.swatch-line { width: 18px; height: 0; border-top: 2px dashed var(--marker); }
+.swatch-hollow { width: 9px; height: 9px; border-radius: 50%; border: 2px solid var(--series); background: var(--panel); }
+
+.table-wrap { overflow-x: auto; background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; }
+table { border-collapse: collapse; width: 100%; min-width: 560px; font-variant-numeric: tabular-nums; }
+th, td { padding: 10px 14px; text-align: right; border-bottom: 1px solid var(--rule); font-size: 14px; }
+th:first-child, td:first-child { text-align: left; }
+thead th { font: 600 12px/1.2 var(--mono); letter-spacing: 0.04em; text-transform: uppercase; color: var(--muted); }
+tbody tr:last-child td { border-bottom: 0; }
+td .arrow { color: var(--muted); padding-inline: 4px; }
+
+.timeline { display: grid; gap: 0; border-left: 2px solid var(--rule); margin-left: 6px; }
+.event { display: grid; grid-template-columns: 96px 1fr; gap: 14px; padding: 10px 0 10px 18px; position: relative; }
+.event::before { content: ""; position: absolute; left: -7px; top: 16px; width: 12px; height: 12px; border-radius: 50%; background: var(--panel); border: 2px solid var(--series); }
+.event .tag { font: 600 13px/1.4 var(--mono); color: var(--ink); }
+.event .tag small { display: block; font-weight: 400; color: var(--muted); }
+.event p { margin: 0; color: var(--ink-2); max-width: 70ch; }
+.event p strong { color: var(--ink); font-weight: 600; }
+@media (max-width: 480px) { .event { grid-template-columns: 1fr; gap: 4px; } }
+details { background: var(--panel); border: 1px solid var(--rule); border-radius: 10px; padding: 12px 16px; }
+summary { cursor: pointer; font-weight: 600; }
+summary:focus-visible { outline: 2px solid var(--series); outline-offset: 3px; border-radius: 4px; }
+.caveats { margin: 0; padding-left: 18px; color: var(--ink-2); display: grid; gap: 6px; max-width: 80ch; }
+</style>
+
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <span class="eyebrow">Windows Agent Arena · stealth planner + JEV</span>
+    <h1>POK-Ai Arena Progress</h1>
+    <p class="lede">Every arena run so far, from the first baseline to v5, where System 1 replays whole recorded programs (muscle memory). The goal is a System 1 that does more of the acting, so the planner LLM is called less, without losing success.</p>
+  </header>
+
+  <section class="section-head" aria-labelledby="h-v5">
+    <span class="eyebrow">Latest full run · 154 tasks · two passes</span>
+    <h2 id="h-v5">v5: muscle memory</h2>
+    <p>Each verified run now saves its exact actions as a program; in pass 2 System 1 replays the program before the planner is asked. Where a whole program ran, the planner needed far fewer calls; overall, too few tasks had a program yet to move the averages.</p>
+  </section>
+  <div class="tiles">
+    <div class="tile">
+      <span class="label">Tasks passed (v5 pass 2)</span>
+      <span class="value">88.7 <span style="font-size:20px;color:var(--muted)">/ 154</span></span>
+      <span class="compare num">v2 pass 2 89.7 · <span class="delta flat">−1.0</span></span>
+      <span class="note">57.6%; pass 1 was 87.8. Success held through every change.</span>
+    </div>
+    <div class="tile">
+      <span class="label">Planner LLM calls per task</span>
+      <span class="value num">23.0</span>
+      <span class="compare num">v4 27.3 · <span class="delta good">−16%</span></span>
+      <span class="note">First look taken by the harness, System 1 results return the screen.</span>
+    </div>
+    <div class="tile">
+      <span class="label">Calls when a whole program replayed</span>
+      <span class="value num">14.8</span>
+      <span class="compare num">same tasks, pass 1 20.6 · <span class="delta good">−28%</span></span>
+      <span class="note">26 tasks; median 15.5 → 9 (−42%) at the same success.</span>
+    </div>
+    <div class="tile">
+      <span class="label">Actions done by System 1</span>
+      <span class="value num">49%</span>
+      <span class="compare num">v2 pass 2 36% · <span class="delta good">+13 pts</span></span>
+      <span class="note">Pass 2 of v5.</span>
+    </div>
+  </div>
+
+  <section class="section-head" aria-labelledby="h-v4">
+    <span class="eyebrow">Previous full run · 154 tasks · same starting memory</span>
+    <h2 id="h-v4">v4 vs v2 pass 2</h2>
+    <p>Both runs start from v2's learned skills. v4 adds skill replay by System 1, Windows 11 control types, keyboard-shortcut label matching, and a guard against wrong clicks during replay. System 1 perceives and acts better; the planner has not yet cut its calls.</p>
+  </section>
+  <div class="tiles">
+    <div class="tile">
+      <span class="label">Tasks passed (v4)</span>
+      <span class="value">88.7 <span style="font-size:20px;color:var(--muted)">/ 154</span></span>
+      <span class="compare num">v2 pass 2 89.7 · <span class="delta flat">−1.0</span></span>
+      <span class="note">57.6% vs 58.3%. 11 tasks lost, 10 gained: within run-to-run noise.</span>
+    </div>
+    <div class="tile">
+      <span class="label">Planner LLM calls per task</span>
+      <span class="value num">27.3</span>
+      <span class="compare num">v2 pass 2 24.5 · <span class="delta bad">+11%</span></span>
+      <span class="note">Extra calls are mostly re-looks after System 1 results; fixed for the next run.</span>
+    </div>
+    <div class="tile">
+      <span class="label">Actions done by System 1</span>
+      <span class="value num">38%</span>
+      <span class="compare num">v2 pass 2 36% · <span class="delta good">+2 pts</span></span>
+      <span class="note">Exact-label clicks rose about 55%.</span>
+    </div>
+    <div class="tile">
+      <span class="label">System 1 plans with no target</span>
+      <span class="value num">12%</span>
+      <span class="compare num">v2 pass 2 17% · <span class="delta good">−5 pts</span></span>
+      <span class="note">Windows 11 buttons and toggles now reach System 1.</span>
+    </div>
+  </div>
+
+  <section class="section-head" aria-labelledby="h-full">
+    <span class="eyebrow">Where it started · 154 tasks</span>
+    <h2 id="h-full">Baseline vs v2 pass 1</h2>
+    <p>v2 ran with a 30-step cap and every task runnable; the baseline had no cap and 9 Chrome tasks could not be set up.</p>
+  </section>
+  <div class="tiles">
+    <div class="tile">
+      <span class="label">Tasks passed (v2 pass 1)</span>
+      <span class="value">93 <span style="font-size:20px;color:var(--muted)">/ 154</span></span>
+      <span class="compare num">Baseline 95 / 154 · <span class="delta flat">−2</span></span>
+      <span class="note">60.4% vs 61.7%. 3 VS Code losses are checker crashes.</span>
+    </div>
+    <div class="tile">
+      <span class="label">Planner LLM calls per task</span>
+      <span class="value num">22.7</span>
+      <span class="compare num">Baseline 28.1 · <span class="delta good">−19%</span></span>
+      <span class="note">Same 116 tasks with counts in both runs.</span>
+    </div>
+    <div class="tile">
+      <span class="label">Actions done by System 1</span>
+      <span class="value num">39%</span>
+      <span class="compare num">Baseline 21% · <span class="delta good">+18 pts</span></span>
+      <span class="note">Share of all on-screen actions.</span>
+    </div>
+    <div class="tile">
+      <span class="label">System 1 plans with no target</span>
+      <span class="value num">18%</span>
+      <span class="compare num">Baseline 25% · <span class="delta good">−7 pts</span></span>
+      <span class="note">Plans handed back because nothing matched.</span>
+    </div>
+  </div>
+
+  <section class="section-head" aria-labelledby="h-lo">
+    <span class="eyebrow">LibreOffice Calc + Writer · 43 tasks · same tasks every run</span>
+    <h2 id="h-lo">The LibreOffice iteration</h2>
+    <p>LibreOffice was the weakest app in the baseline, so it was used to test each round of fixes. Hover a point for its details.</p>
+    <div class="legend-note">
+      <span><i class="swatch-line"></i>Protocol change</span>
+      <span><i class="swatch-hollow"></i>Run stopped early (lo8: 30 of 43 tasks)</span>
+    </div>
+  </section>
+  <div class="grid2" id="charts"></div>
+
+  <section class="section-head" aria-labelledby="h-self">
+    <span class="eyebrow">Self-improvement · same tasks, memory kept</span>
+    <h2 id="h-self">Learned memory in use</h2>
+    <p>Each row repeats the same tasks with memory from an earlier pass. Advisory skills helped reliability but not calls; replay by System 1 finishes sequences on its own (Settings calls fell 50–70% in smoke tests), but at full scale the planner still re-checks too often.</p>
+  </section>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Run</th><th>Tasks</th><th>Passed</th><th>LLM calls / task</th><th>Time / task</th></tr></thead>
+      <tbody>
+        <tr><td>Cross-app check (12 apps)</td><td>14</td><td>7<span class="arrow">→</span><b>11</b></td><td>23.4<span class="arrow">→</span><b>20.5</b></td><td>380 s<span class="arrow">→</span><b>202 s</b></td></tr>
+        <tr><td>v2 pass 1 → pass 2</td><td>154</td><td>93<span class="arrow">→</span>91</td><td>25.2<span class="arrow">→</span>24.5</td><td>344 s<span class="arrow">→</span>313 s</td></tr>
+        <tr><td>v2 pass 2 → v4 (replay)</td><td>154</td><td>89.7<span class="arrow">→</span>88.7</td><td>24.5<span class="arrow">→</span>27.3</td><td>376 s<span class="arrow">→</span>380 s</td></tr>
+        <tr><td>v5 pass 1 → pass 2</td><td>154</td><td>87.8<span class="arrow">→</span>88.7</td><td>23.0<span class="arrow">→</span>23.0</td><td>383 s<span class="arrow">→</span>385 s</td></tr>
+        <tr><td>v5, whole program replayed</td><td>26</td><td>18<span class="arrow">→</span>17</td><td>20.6<span class="arrow">→</span><b>14.8</b></td><td>–</td></tr>
+        <tr><td>v5, partial replay (now off)</td><td>18</td><td>13<span class="arrow">→</span>11.9</td><td>24.1<span class="arrow">→</span>28.3</td><td>–</td></tr>
+        <tr><td>Smoke: File Explorer, Settings, Clock</td><td>28</td><td>22<span class="arrow">→</span><b>24</b></td><td>median 11<span class="arrow">→</span><b>10</b></td><td>179 s<span class="arrow">→</span><b>163 s</b></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <section class="section-head" aria-labelledby="h-changes">
+    <span class="eyebrow">Harness changes</span>
+    <h2 id="h-changes">What changed in each run</h2>
+  </section>
+  <div class="timeline">
+    <div class="event"><div class="tag">Baseline<small>Sep 24</small></div><p>Stealth planner with JEV as System 1, memory on, <strong>no step cap</strong>. 154 tasks, 9 Chrome tasks could not be set up.</p></div>
+    <div class="event"><div class="tag">lo4<small>Sep 26</small></div><p>Fixes from the baseline: spreadsheet navigation through the Name Box, working on the open document, LibreOffice's auto-update frozen.</p></div>
+    <div class="event"><div class="tag">lo5<small>Sep 26</small></div><p><strong>30-step cap</strong> from here on. System 1 types the keys and text the planner writes.</p></div>
+    <div class="event"><div class="tag">lo6<small>Sep 26</small></div><p>OCR menu labels, popup reflex, keeping the app's own dialogs, foreground mode in the VMs, read-back after typing, hover, right-click and drag.</p></div>
+    <div class="event"><div class="tag">lo7<small>Sep 26</small></div><p>The click tool accepts OCR text shown once, "replace" typing no longer wipes a sheet, malformed plans repaired.</p></div>
+    <div class="event"><div class="tag">lo8<small>Sep 27</small></div><p>The planner sees OCR labels as targets; menu chains continue after the first click. Stopped at 30 of 43 when the perception gap was found.</p></div>
+    <div class="event"><div class="tag">v2<small>Sep 27</small></div><p>Dialogs readable through UI Automation, <strong>LibreOffice 26.8</strong> (full UI tree for System 1), hand-back training labels, memory shared across VMs like one agent. Full 154 tasks, two passes.</p></div>
+    <div class="event"><div class="tag">v3<small>Sep 28</small></div><p><strong>Skill replay</strong> by System 1 and lessons from failed tasks, seeded from v2's memory. Stopped at 59 of 154 when traces showed Windows 11 buttons were invisible to System 1.</p></div>
+    <div class="event"><div class="tag">Smoke 11–12<small>Sep 28</small></div><p>Windows 11 control types, shortcut-suffix label matching, replay clicks only its saved labels, waits for a newly opened app, Defender exclusion in the test VM. 24 of 28 vs 22 in v2 pass 2.</p></div>
+    <div class="event"><div class="tag">v4<small>Sep 28</small></div><p>Full 154 tasks from v2's memory with all of the above. Success level with v2 pass 2, System 1 more accurate, planner calls up 11%.</p></div>
+    <div class="event"><div class="tag">Smoke 15–18<small>Sep 29</small></div><p><strong>Motor programs</strong>: a verified run's exact clicks, keys and text are saved on its skill and replayed end to end; request text kept only as a fingerprint; commit shortcuts left to the planner. The harness takes the first look itself.</p></div>
+    <div class="event"><div class="tag">v5<small>Sep 29</small></div><p>Full 154 tasks, two passes, on a golden image with Clock updated and OneDrive prompts off. Whole-program replays cut planner calls 28% (median 42%); partial replays cost calls. WAA scorer timeouts, a stuck-LibreOffice guard, and a memory-merge fix added along the way.</p></div>
+    <div class="event"><div class="tag">Next<small>after v5</small></div><p>Only whole programs replay; similar requests replay with their own values filled into the recorded slots; programs saved only from runs whose result check passed at once. Then fine-tune Laya on the collected System 1 data.</p></div>
+    <div class="event"><div class="tag">Earlier plan<small>after v4</small></div><p>Every System 1 result returns the new screen (re-looks after it were 67–91% without it), malformed plans repaired, longer typing sequences, and the planner told to send whole plans.</p></div>
+  </div>
+
+  <details>
+    <summary>Caveats and data</summary>
+    <ul class="caveats">
+      <li>The planner is an anonymous stealth model that varies run to run; differences of 2–3 tasks out of 43 are within that noise.</li>
+      <li>The baseline and lo4 had no step cap; every later run is capped at 30 acting steps.</li>
+      <li>v2 and later used LibreOffice 26.8 in the VM image; earlier runs used 24.8. WAA's checkers read the saved files, so scoring is unchanged.</li>
+      <li>v2 pass 1's System 1 figures in the LibreOffice charts cover both passes; later figures are per run.</li>
+      <li>v4 started from v2's final memory, so it is compared with v2 pass 2, which started from v2 pass 1's memory.</li>
+      <li>v3 was stopped at 59 of 154 tasks and is not charted. Smoke 11 lost 8 runs to Windows Defender blocking the agent in the test VM; its 8 tasks were rerun as smoke 12.</li>
+      <li>v5 started from v2's final memory, like v4; its pass 2 is compared with its pass 1 on the same tasks. Two Calc tasks in v5 pass 1 ran on a VM with a stuck LibreOffice process and scored 0.</li>
+      <li>LLM calls per task are means over tasks with recorded counts.</li>
+    </ul>
+    <div class="table-wrap" style="margin-top:12px">
+      <table id="data-table">
+        <thead><tr><th>Run</th><th>Date</th><th>Tasks</th><th>Passed</th><th>Success</th><th>LLM calls / task</th><th>System 1 share</th><th>No-target plans</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </details>
+</div>
+
+<script>
+const RUNS = [
+  { id: "Baseline", date: "Sep 24", n: 43, passed: 19, calls: 52.1, s1: 13, nocand: 53, note: "No step cap" },
+  { id: "lo4", date: "Sep 26", n: 43, passed: 18, calls: 45.3, s1: 11, nocand: 55, note: "No step cap" },
+  { id: "lo5", date: "Sep 26", n: 43, passed: 16, calls: 42.0, s1: 17, nocand: 64, note: "30-step cap from here" },
+  { id: "lo6", date: "Sep 26", n: 43, passed: 23, calls: 40.1, s1: 25, nocand: 68, note: "" },
+  { id: "lo7", date: "Sep 26", n: 43, passed: 20, calls: 39.6, s1: 30, nocand: 63, note: "" },
+  { id: "lo8", date: "Sep 27", n: 30, passed: 15, calls: 38.6, s1: 28, nocand: 51, note: "Stopped at 30 of 43", partial: true },
+  { id: "v2 p1", date: "Sep 27", n: 43, passed: 20, calls: 39.2, s1: 36, nocand: 20, note: "LibreOffice 26.8; System 1 figures cover both passes" },
+  { id: "v2 p2", date: "Sep 27", n: 43, passed: 18, calls: 33.8, s1: 31, nocand: 17, note: "Memory from pass 1" },
+  { id: "v4", date: "Sep 28", n: 43, passed: 18, calls: 40.6, s1: 34, nocand: 12, note: "v2 memory + skill replay + Windows 11 controls" },
+  { id: "v5 p1", date: "Sep 29", n: 43, passed: 18, calls: 34.4, s1: 40, nocand: 18, note: "First look by the harness; programs recorded" },
+  { id: "v5 p2", date: "Sep 29", n: 43, passed: 17, calls: 32.6, s1: 48, nocand: 19, note: "System 1 replays recorded programs" }
+];
+RUNS.forEach(r => { r.success = Math.round(1000 * r.passed / r.n) / 10; });
+
+const CHARTS = [
+  { key: "success", title: "Tasks passed", sub: "Share of the 43 LibreOffice tasks", unit: "%", domain: [0, 70], ticks: [0, 20, 40, 60], fmt: v => v.toFixed(1) + "%" },
+  { key: "calls", title: "Planner LLM calls per task", sub: "Lower means the planner is asked less", unit: "", domain: [0, 60], ticks: [0, 20, 40, 60], fmt: v => v.toFixed(1) },
+  { key: "s1", title: "Actions done by System 1", sub: "Share of on-screen actions", unit: "%", domain: [0, 50], ticks: [0, 25, 50], fmt: v => v + "%" },
+  { key: "nocand", title: "System 1 plans with no target", sub: "Plans handed back because nothing matched", unit: "%", domain: [0, 80], ticks: [0, 40, 80], fmt: v => v + "%" }
+];
+const MARKERS = [ { after: 1, label: "30-step cap" }, { after: 5, label: "LibreOffice 26.8" }, { after: 7, label: "Replay" }, { after: 8, label: "Programs" } ];
+
+const W = 520, H = 230, M = { l: 40, r: 16, t: 22, b: 34 };
+const NS = "http://www.w3.org/2000/svg";
+function el(name, attrs, parent) {
+  const node = document.createElementNS(NS, name);
+  for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+  if (parent) parent.appendChild(node);
+  return node;
+}
+
+const container = document.getElementById("charts");
+CHARTS.forEach(spec => {
+  const card = document.createElement("div");
+  card.className = "chart";
+  card.innerHTML = `<h3>${spec.title}</h3><p class="sub">${spec.sub}</p>`;
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": spec.title + " by run" });
+  card.appendChild(svg);
+  const tip = document.createElement("div");
+  tip.className = "tip"; tip.hidden = true;
+  card.appendChild(tip);
+  container.appendChild(card);
+
+  const x = i => M.l + (W - M.l - M.r) * (i / (RUNS.length - 1));
+  const y = v => M.t + (H - M.t - M.b) * (1 - (v - spec.domain[0]) / (spec.domain[1] - spec.domain[0]));
+
+  spec.ticks.forEach(t => {
+    el("line", { x1: M.l, x2: W - M.r, y1: y(t), y2: y(t), stroke: "var(--grid)", "stroke-width": 1 }, svg);
+    const tx = el("text", { x: M.l - 8, y: y(t) + 4, "text-anchor": "end" }, svg);
+    tx.textContent = t + spec.unit;
+  });
+  MARKERS.forEach((m, k) => {
+    const mx = (x(m.after) + x(m.after + 1)) / 2;
+    el("line", { x1: mx, x2: mx, y1: M.t - 6, y2: H - M.b, stroke: "var(--marker)", "stroke-width": 1, "stroke-dasharray": "3 3" }, svg);
+    // Neighbouring markers alternate height so their labels do not collide.
+    const lt = el("text", { x: mx + 4, y: M.t - 10 - (k % 2) * 11, class: "rule-label" }, svg);
+    lt.textContent = m.label;
+  });
+  RUNS.forEach((r, i) => {
+    const tx = el("text", { x: x(i), y: H - M.b + 18, "text-anchor": "middle" }, svg);
+    tx.textContent = r.id;
+  });
+
+  const pts = RUNS.map((r, i) => ({ r, i, v: r[spec.key] })).filter(p => p.v !== null && p.v !== undefined);
+  const area = `M ${x(pts[0].i)} ${y(spec.domain[0])} ` + pts.map(p => `L ${x(p.i)} ${y(p.v)}`).join(" ") + ` L ${x(pts[pts.length - 1].i)} ${y(spec.domain[0])} Z`;
+  el("path", { d: area, fill: "var(--series-soft)", stroke: "none" }, svg);
+  el("path", { d: pts.map((p, k) => `${k ? "L" : "M"} ${x(p.i)} ${y(p.v)}`).join(" "), fill: "none", stroke: "var(--series)", "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }, svg);
+
+  const first = pts[0], last = pts[pts.length - 1];
+  pts.forEach(p => {
+    const hollow = p.r.partial;
+    el("circle", { cx: x(p.i), cy: y(p.v), r: 4.5, fill: hollow ? "var(--panel)" : "var(--series)", stroke: hollow ? "var(--series)" : "var(--panel)", "stroke-width": 2 }, svg);
+    if (p === first || p === last) {
+      const anchor = p === first ? "start" : "end";
+      const lbl = el("text", { x: x(p.i), y: y(p.v) - 10, "text-anchor": anchor, class: "val-label" }, svg);
+      lbl.textContent = spec.fmt(p.v);
+    }
+  });
+
+  const hit = el("rect", { x: M.l - 10, y: M.t - 10, width: W - M.l - M.r + 20, height: H - M.t - M.b + 10, fill: "transparent", style: "cursor: crosshair" }, svg);
+  const guide = el("line", { x1: 0, x2: 0, y1: M.t, y2: H - M.b, stroke: "var(--ink-2)", "stroke-width": 1, opacity: 0 }, svg);
+  function show(evt) {
+    const box = svg.getBoundingClientRect();
+    const sx = (evt.clientX - box.left) * (W / box.width);
+    let best = pts[0];
+    pts.forEach(p => { if (Math.abs(x(p.i) - sx) < Math.abs(x(best.i) - sx)) best = p; });
+    guide.setAttribute("x1", x(best.i)); guide.setAttribute("x2", x(best.i)); guide.setAttribute("opacity", 0.35);
+    const extra = spec.key === "success" ? ` (${best.r.passed} of ${best.r.n})` : "";
+    tip.innerHTML = `<b>${best.r.id}</b> · ${best.r.date}<br>${spec.title}: <b>${spec.fmt(best.v)}</b>${extra}${best.r.note ? "<br>" + best.r.note : ""}`;
+    const cardBox = card.getBoundingClientRect();
+    tip.style.left = (box.left - cardBox.left + x(best.i) * box.width / W) + "px";
+    tip.style.top = (box.top - cardBox.top + y(best.v) * box.height / H) + "px";
+    tip.hidden = false;
+  }
+  hit.addEventListener("pointermove", show);
+  hit.addEventListener("pointerenter", show);
+  hit.addEventListener("pointerleave", () => { tip.hidden = true; guide.setAttribute("opacity", 0); });
+});
+
+const tbody = document.querySelector("#data-table tbody");
+RUNS.forEach(r => {
+  const tr = document.createElement("tr");
+  const cells = [r.id, r.date, r.n, r.passed, r.success.toFixed(1) + "%", r.calls.toFixed(1), r.s1 === null ? "–" : r.s1 + "%", r.nocand === null ? "–" : r.nocand + "%"];
+  cells.forEach(c => { const td = document.createElement("td"); td.textContent = c; tr.appendChild(td); });
+  tbody.appendChild(tr);
+});
+</script>
+
+</body>
+</html>

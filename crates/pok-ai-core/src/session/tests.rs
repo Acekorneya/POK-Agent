@@ -3184,6 +3184,7 @@ struct FastHarness {
     router: Arc<FastStubRouter>,
     clicks: Arc<parking_lot::Mutex<Vec<Value>>>,
     scrolls: Arc<parking_lot::Mutex<Vec<Value>>>,
+    batches: Arc<parking_lot::Mutex<Vec<Value>>>,
     static_screen: Arc<std::sync::atomic::AtomicBool>,
     _temp_dir: tempfile::TempDir,
 }
@@ -3206,6 +3207,12 @@ fn fast_harness(
     tools.register(RecordingInputTool {
         name: "scroll_view",
         calls: scrolls.clone(),
+        static_screen: static_screen.clone(),
+    });
+    let batches = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    tools.register(RecordingInputTool {
+        name: "execute_action_batch",
+        calls: batches.clone(),
         static_screen: static_screen.clone(),
     });
     let context = ToolContext {
@@ -3306,6 +3313,7 @@ fn fast_harness(
         router,
         clicks,
         scrolls,
+        batches,
         static_screen,
         _temp_dir: temp_dir,
     }
@@ -3595,7 +3603,7 @@ async fn fast_actions_hands_back_a_confident_pick_that_contradicts_the_hint() {
         .session
         .run_fast_actions(
             1,
-            &json!({"goal": "open the Rust Programming Language ownership chapter", "target_hint": "Understanding Ownership", "done_when": "ownership chapter is open", "max_steps": 1}),
+            &json!({"goal": "open the Rust Programming Language ownership chapter", "target_hint": "the Understanding Ownership chapter link", "done_when": "ownership chapter is open", "max_steps": 1}),
             &mut metrics,
         )
         .await
@@ -3837,7 +3845,7 @@ async fn quoted_done_when_is_decided_by_grounding_without_the_router() {
 }
 
 #[tokio::test]
-async fn fast_actions_reads_values_and_skips_the_screenshot() {
+async fn fast_actions_reads_values_and_says_when_nothing_needed_doing() {
     let mut harness = fast_harness(
         fast_router(usize::MAX, 0.99),
         vec![
@@ -3862,7 +3870,11 @@ async fn fast_actions_reads_values_and_skips_the_screenshot() {
         .unwrap();
     assert_eq!(result["status"], "done");
     assert_eq!(result["reads"]["rate"]["text"], "165 Hz");
-    assert!(result.get("observation").is_none());
+    // The condition already held: the planner is told nothing was needed,
+    // rather than seeing an empty step list it takes for a failure.
+    assert!(result["note"].as_str().unwrap().contains("already held"));
+    // This fixture has no screenshot, so only the observation id is returned.
+    assert!(result["observation_id"].is_string());
 }
 
 async fn run_plan(harness: &mut FastHarness, plan: Value) -> (Value, RunMetrics) {
@@ -4197,7 +4209,7 @@ async fn oversized_plans_are_rejected_before_acting() {
         vec![fast_link("t1", "general")],
         crate::config::DecisionRouterMode::Delegated,
     );
-    let steps = (0..16)
+    let steps = (0..64)
         .map(
             |index| json!({"goal": format!("step {index}"), "done_when": "\"general\" is visible"}),
         )
@@ -4212,7 +4224,7 @@ async fn oversized_plans_are_rejected_before_acting() {
         )
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("at most 16"), "{error}");
+    assert!(error.to_string().contains("at most 64"), "{error}");
     let rules = (0..5)
         .map(|_| json!({"when": "\"x\" is visible", "stop": true}))
         .collect::<Vec<_>>();
@@ -4964,15 +4976,13 @@ async fn a_relevant_learned_skill_is_given_to_the_model_once() {
         &qualification,
     )
     .unwrap();
-    let skill_messages = |session: &Session| {
-        session
-            .messages
-            .iter()
-            .filter(|message| {
-                serde_json::to_string(message)
-                    .unwrap()
-                    .contains("<loaded_skill")
-            })
+    // Counted from the trace: the loaded skill message itself may later be
+    // compacted out of a small context window.
+    let skill_loads = |session: &Session| {
+        std::fs::read_to_string(session.context.artifact_dir.join("trace.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.contains("\"kind\":\"skill_auto_loaded\""))
             .count()
     };
     for (prompt, expected) in [
@@ -4990,7 +5000,7 @@ async fn a_relevant_learned_skill_is_given_to_the_model_once() {
             calls: AtomicU64::new(0),
         });
         harness.session.run(prompt).await.unwrap();
-        assert_eq!(skill_messages(&harness.session), expected, "{prompt}");
+        assert_eq!(skill_loads(&harness.session), expected, "{prompt}");
     }
     // The run answered without any verified on-screen result, so the skill
     // it used is charged one failure (and ranks a little lower).
@@ -5265,4 +5275,1771 @@ async fn a_follow_up_that_cancels_review_still_keeps_the_learned_skill() {
         .unwrap();
     assert_eq!(skills.len(), 1);
     assert_eq!(skills[0].success_count, 1);
+}
+
+#[test]
+fn a_command_that_edits_an_open_document_is_flagged() {
+    let window = |title: &str, app: &str| crate::types::WindowInfo {
+        id: "w".into(),
+        title: title.into(),
+        process_name: app.into(),
+        bounds: crate::types::Rect {
+            x: 0,
+            y: 0,
+            width: 800,
+            height: 600,
+        },
+        elevated: false,
+        visible: true,
+        minimized: false,
+    };
+    let windows = vec![
+        window("Report_Q3.xlsx - LibreOffice Calc", "soffice.bin"),
+        window("Documents - File Explorer", "explorer.exe"),
+    ];
+    let command = json!({"command": "python -c \"import openpyxl; wb=openpyxl.load_workbook(r'C:\\Users\\Example\\Downloads\\Report_Q3.xlsx')\""});
+    let documents = referenced_document_names("run_command", &command);
+    assert_eq!(documents, ["Report_Q3.xlsx"]);
+    let warning = open_document_warning(&documents, &windows).unwrap();
+    assert_eq!(warning["open_in"][0]["app"], "soffice.bin");
+    // A file nobody has open is fine.
+    let other = referenced_document_names("write_file", &json!({"path": "C:\\data\\notes.txt"}));
+    assert!(open_document_warning(&other, &windows).is_none());
+    // The warning survives trimming of a large result.
+    let big = json!({"stdout": "x".repeat(200_000), "open_document_warning": warning});
+    let projected = project_tool_result_for_model("run_command", big);
+    assert!(projected.get("open_document_warning").is_some());
+}
+
+#[test]
+fn only_turns_that_act_count_as_steps() {
+    for tool in [
+        "fast_actions",
+        "click_target",
+        "run_command",
+        "managed_browser_click",
+        "type_text",
+    ] {
+        assert!(super::run_loop::is_acting_tool(tool), "{tool}");
+    }
+    for tool in [
+        "capture_screen",
+        "update_task_plan",
+        "managed_browser_snapshot",
+        "remember_fact",
+        "read_file",
+    ] {
+        assert!(!super::run_loop::is_acting_tool(tool), "{tool}");
+    }
+}
+
+/// A planner that clicks whenever it may, and otherwise answers.
+struct KeepsClickingBrain {
+    requests: AtomicU64,
+    tool_requests: AtomicU64,
+}
+
+#[async_trait]
+impl Brain for KeepsClickingBrain {
+    async fn list_models(&self) -> Result<Vec<String>> {
+        Ok(vec!["mock".into()])
+    }
+    fn stream(&self, request: BrainRequest) -> crate::brain::BrainStream {
+        let index = self.requests.fetch_add(1, Ordering::SeqCst);
+        let events = if request.tools.iter().any(|tool| tool.name == "click_target") {
+            self.tool_requests.fetch_add(1, Ordering::SeqCst);
+            vec![
+                Ok(BrainEvent::ToolCall {
+                    call: CompletedToolCall {
+                        id: format!("call-{index}"),
+                        name: "click_target".into(),
+                        arguments: json!({"target_id": "1", "expected_label": "Next"}),
+                    },
+                }),
+                Ok(BrainEvent::Finished {
+                    reason: Some("tool_calls".into()),
+                }),
+            ]
+        } else {
+            vec![
+                Ok(BrainEvent::TextDelta {
+                    text: "Stopped at the step budget; clicked Next twice.".into(),
+                }),
+                Ok(BrainEvent::Finished {
+                    reason: Some("stop".into()),
+                }),
+            ]
+        };
+        Box::pin(futures::stream::iter(events))
+    }
+}
+
+#[tokio::test]
+async fn the_run_stops_acting_when_the_step_budget_is_used() {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        vec![fast_link("1", "Next")],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    // Without a router the planner acts directly.
+    harness.session.decision_router = None;
+    harness.session.decision_router_config = None;
+    let brain = Arc::new(KeepsClickingBrain {
+        requests: AtomicU64::new(0),
+        tool_requests: AtomicU64::new(0),
+    });
+    harness.session.brain = brain.clone();
+    harness.session.action_step_budget = Some(2);
+    let result = harness
+        .session
+        .run("keep going to the next page")
+        .await
+        .unwrap();
+    assert!(result.answer.contains("step budget"), "{}", result.answer);
+    assert_eq!(brain.tool_requests.load(Ordering::SeqCst), 2);
+    assert_eq!(harness.clicks.lock().len(), 2);
+}
+
+#[test]
+fn a_task_finished_by_a_verified_command_can_be_learned() {
+    let command = workflow_step(
+        "run_command",
+        &json!({"command": "Set-Content -Path settings.json -Value '{}'"}),
+        &json!({"exit_code": 0, "goal_action": {"status": "verified"}}),
+    )
+    .unwrap();
+    let observe = workflow_step(
+        "capture_screen",
+        &json!({}),
+        &json!({"target": {"scope": "window", "app": "Code.exe"}}),
+    )
+    .unwrap();
+    let workflow = vec![observe, command];
+    let qualification = qualify_workflow(&workflow, &[]);
+    assert!(qualification.eligible);
+    assert_eq!(qualification.evidence, "verified_command_outcome");
+    // No UI state change, but the verified outcome passes the learning gate.
+    assert_eq!(
+        workflow_learning_rejection(
+            "change the editor setting",
+            &qualification,
+            &workflow,
+            &RunMetrics::default()
+        ),
+        None
+    );
+    // An unverified command alone is still not enough.
+    let unverified = vec![
+        workflow_step(
+            "run_command",
+            &json!({"command": "dir"}),
+            &json!({"exit_code": 0}),
+        )
+        .unwrap(),
+    ];
+    assert!(!qualify_workflow(&unverified, &[]).eligible);
+}
+
+#[tokio::test]
+async fn system_1_types_the_planners_input_into_a_grounded_field() {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        vec![fast_link("5", "Name Box"), fast_link("6", "Print")],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let (result, metrics) = run_plan(
+        &mut harness,
+        json!({
+            "goal": "go to cell B2",
+            "target_hint": "\"Name Box\"",
+            "done_when": "\"execute_action_batch result 1\" is visible",
+            "input": [{"text": "B2", "replace_existing": true}, {"key": "Enter"}],
+        }),
+    )
+    .await;
+    assert_eq!(result["status"], "done", "{result}");
+    let batches = harness.batches.lock().clone();
+    assert_eq!(batches.len(), 1);
+    let steps = batches[0]["steps"].as_array().unwrap();
+    // Focus and type in one guarded step, then the planner's key.
+    assert_eq!(steps[0]["kind"], "type_text");
+    assert_eq!(steps[0]["target_id"], "5");
+    assert_eq!(steps[0]["text"], "B2");
+    assert_eq!(steps[1], json!({"kind": "key", "key": "Enter"}));
+    assert_eq!(metrics.extras["fast_actions_input_nodes"], 1);
+    // No clicks were spent choosing a target.
+    assert!(harness.clicks.lock().is_empty());
+}
+
+#[tokio::test]
+async fn system_1_does_not_type_into_a_field_it_cannot_ground() {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        vec![fast_link("6", "Print"), fast_link("7", "Save")],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let (result, _) = run_plan(
+        &mut harness,
+        json!({
+            "goal": "type the total",
+            "target_hint": "\"Total amount\"",
+            "done_when": "\"1200\" is visible",
+            "input": [{"text": "1200"}],
+        }),
+    )
+    .await;
+    assert_eq!(result["status"], "uncertain", "{result}");
+    assert!(harness.batches.lock().is_empty());
+}
+
+#[tokio::test]
+async fn keys_without_a_target_go_to_the_focused_control() {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        vec![fast_link("6", "Print")],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let (result, _) = run_plan(
+        &mut harness,
+        json!({
+            "goal": "select columns A to C",
+            "done_when": "\"execute_action_batch result 1\" is visible",
+            "input": [{"key": "Ctrl+Shift+F5"}, {"text": "A1:C1", "replace_existing": true}, {"key": "Enter"}],
+        }),
+    )
+    .await;
+    assert_eq!(result["status"], "done", "{result}");
+    let batches = harness.batches.lock().clone();
+    let steps = batches[0]["steps"].as_array().unwrap();
+    assert_eq!(steps.len(), 3);
+    assert_eq!(steps[0]["key"], "Ctrl+Shift+F5");
+    assert!(steps[1].get("target_id").is_none());
+}
+
+#[test]
+fn an_input_entry_needs_exactly_one_of_key_or_text() {
+    let plan = |input: Value| {
+        let args: FastActionsArgs = serde_json::from_value(json!({
+            "goal": "enter a value", "done_when": "\"done\" is visible", "input": input,
+        }))
+        .unwrap();
+        FastPlan::from_args(&args).map(|_| ())
+    };
+    assert!(plan(json!([{"key": "Enter"}])).is_ok());
+    assert!(plan(json!([{"key": "Enter", "text": "x"}])).is_err());
+    assert!(plan(json!([{}])).is_err());
+    assert!(plan(json!(vec![json!({"key": "Tab"}); 41])).is_err());
+}
+
+#[test]
+fn a_session_no_one_can_answer_does_not_invite_questions() {
+    assert_eq!(SYSTEM_PROMPT.matches("{QUESTIONS}").count(), 1);
+    let harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        vec![fast_link("6", "Print")],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    assert!(harness.session.context.questions.is_none());
+    let system = harness
+        .session
+        .messages
+        .iter()
+        .filter(|message| message.role == "system")
+        .flat_map(|message| &message.content)
+        .filter_map(|part| match part {
+            MessageContent::Text { text } => Some(text.as_str()),
+            MessageContent::ImagePng { .. } => None,
+        })
+        .collect::<String>();
+    assert!(system.contains(UNATTENDED_QUESTIONS));
+    assert!(!system.contains("call ask_user_question"));
+    assert!(!system.contains("{QUESTIONS}"));
+}
+
+fn popup_ui(
+    name: &str,
+    kind: &str,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+) -> crate::types::UiElement {
+    crate::types::UiElement {
+        name: name.into(),
+        control_type: kind.into(),
+        automation_id: None,
+        value: None,
+        bounds: crate::types::Rect {
+            x,
+            y,
+            width,
+            height,
+        },
+        enabled: true,
+        password: false,
+        offscreen: false,
+        keyboard_focusable: false,
+        clickable_point: None,
+        selected: None,
+        focused: false,
+        desktop_shell: false,
+    }
+}
+
+fn popup_window(
+    id: &str,
+    title: &str,
+    process: &str,
+    width: u32,
+    height: u32,
+) -> crate::types::WindowInfo {
+    crate::types::WindowInfo {
+        id: id.into(),
+        title: title.into(),
+        process_name: process.into(),
+        bounds: crate::types::Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        },
+        elevated: false,
+        visible: true,
+        minimized: false,
+    }
+}
+
+fn popup_observation(
+    window: crate::types::WindowInfo,
+    ui_elements: Vec<crate::types::UiElement>,
+) -> crate::types::Observation {
+    crate::types::Observation {
+        version: Uuid::new_v4(),
+        captured_at: chrono::Utc::now(),
+        foreground_window: Some(window),
+        target: None,
+        cursor: None,
+        screenshots: Vec::new(),
+        ocr: Vec::new(),
+        ui_elements,
+        targets: Vec::new(),
+        timings_ms: BTreeMap::new(),
+        warnings: Vec::new(),
+    }
+}
+
+fn error_dialog() -> Vec<crate::types::UiElement> {
+    vec![
+        popup_ui("Save", "Button", 10, 10, 40, 20),
+        popup_ui("Invalid Entry", "Window", 200, 200, 300, 150),
+        popup_ui("Invalid reference in formula.", "Text", 220, 230, 200, 20),
+        popup_ui("OK", "Button", 300, 310, 60, 24),
+        popup_ui("Help", "Button", 370, 310, 60, 24),
+    ]
+}
+
+#[test]
+fn a_dialog_that_opened_during_a_step_is_read_for_the_planner() {
+    let sheet = popup_window("w1", "Budget - Example Calc", "soffice.bin", 800, 600);
+    let baseline = PopupBaseline::of(Some(&popup_observation(sheet.clone(), Vec::new())));
+    let now = popup_observation(sheet, error_dialog());
+    let popup = unexpected_popup(
+        &now,
+        &baseline,
+        "go to cell B2 \"Name Box\" \"B2\" is selected",
+    )
+    .unwrap()
+    .value();
+    assert_eq!(popup["title"], "Invalid Entry");
+    assert_eq!(popup["text"], "Invalid reference in formula.");
+    // Only the dialog's own buttons, not the window's toolbar behind it.
+    assert_eq!(popup["buttons"], json!(["OK", "Help"]));
+}
+
+#[test]
+fn dialogs_the_step_started_with_or_the_plan_names_are_expected() {
+    let sheet = popup_window("w1", "Budget - Example Calc", "soffice.bin", 800, 600);
+    let now = popup_observation(sheet.clone(), error_dialog());
+    // Already open when the step started: part of the task.
+    assert!(unexpected_popup(&now, &PopupBaseline::of(Some(&now)), "press OK").is_none());
+    let baseline = PopupBaseline::of(Some(&popup_observation(sheet, Vec::new())));
+    // The plan quotes text the dialog shows, or names the dialog itself.
+    assert!(unexpected_popup(&now, &baseline, "confirm \"Invalid reference\" is shown").is_none());
+    assert!(unexpected_popup(&now, &baseline, "close the invalid entry dialog").is_none());
+}
+
+#[test]
+fn a_dialog_window_of_the_same_application_counts_but_menus_and_other_apps_do_not() {
+    let sheet = popup_window("w1", "Budget - Example Calc", "soffice.bin", 800, 600);
+    let baseline = PopupBaseline::of(Some(&popup_observation(sheet, Vec::new())));
+    let dialog = popup_window("w2", "Keep current format?", "soffice.bin", 400, 200);
+    let popup =
+        unexpected_popup(&popup_observation(dialog, Vec::new()), &baseline, "save").unwrap();
+    assert_eq!(popup.title, "Keep current format?");
+    assert_eq!(popup.window_id.as_deref(), Some("w2"));
+    assert!(popup.needs_closer_look());
+    let menu = popup_window("w3", "", "soffice.bin", 200, 300);
+    assert!(
+        unexpected_popup(&popup_observation(menu, Vec::new()), &baseline, "open menu").is_none()
+    );
+    let other = popup_window("w4", "Example Notes", "notepad.exe", 400, 200);
+    assert!(unexpected_popup(&popup_observation(other, Vec::new()), &baseline, "save").is_none());
+}
+
+/// Typing that raises a dialog in the mock window.
+struct DialogRaisingBatch;
+
+#[async_trait]
+impl crate::tool::Tool for DialogRaisingBatch {
+    fn name(&self) -> &'static str {
+        "execute_action_batch"
+    }
+    fn description(&self) -> &'static str {
+        "test batch"
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn risk(&self) -> crate::policy::RiskClass {
+        crate::policy::RiskClass::ReadOnly
+    }
+    async fn execute(&self, _arguments: Value, context: &ToolContext) -> Result<Value> {
+        if let Some(observation) = context.latest_observation.lock().as_mut() {
+            observation.ui_elements.extend(error_dialog());
+        }
+        Ok(json!({"ok": true}))
+    }
+}
+
+#[tokio::test]
+async fn system_1_hands_back_a_dialog_its_typing_raised_with_what_it_says() {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        vec![fast_link("6", "Print")],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let mut tools = ToolRegistry::default();
+    tools.register(DialogRaisingBatch);
+    harness.session.tools = Arc::new(tools);
+    let (result, metrics) = run_plan(
+        &mut harness,
+        json!({
+            "goal": "enter the formula",
+            "done_when": "\"1200\" is visible",
+            "input": [{"text": "=SUM(A1:A)"}, {"key": "Enter"}],
+        }),
+    )
+    .await;
+    assert_eq!(result["status"], "popup", "{result}");
+    assert_eq!(result["popup"]["text"], "Invalid reference in formula.");
+    assert_eq!(result["popup"]["buttons"], json!(["OK", "Help"]));
+    assert_eq!(metrics.extras["fast_actions_popups"], 1);
+}
+
+fn fast_ocr_text(id: &str, name: &str, x: i32) -> crate::types::InteractionTarget {
+    let mut target = fast_link_at(id, name, x, 0);
+    target.control_type = "text".into();
+    target.source = crate::types::TargetSource::Ocr;
+    target.actionable = false;
+    target
+}
+
+#[tokio::test]
+async fn system_1_clicks_a_quoted_menu_label_that_only_ocr_can_read() {
+    // Applications such as LibreOffice expose their menu bar only as text.
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        vec![
+            fast_ocr_text("15", "Format", 0),
+            fast_ocr_text("19", "Tools", 100),
+        ],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let (result, _) = run_plan(
+        &mut harness,
+        json!({
+            "goal": "open the Format menu",
+            "target_hint": "menu \"Format\"",
+            "done_when": "\"click_target result 1\" is visible",
+        }),
+    )
+    .await;
+    assert_eq!(result["status"], "done", "{result}");
+    let clicks = harness.clicks.lock().clone();
+    assert_eq!(clicks.len(), 1);
+    assert_eq!(clicks[0]["target_id"], "15");
+}
+
+#[tokio::test]
+async fn system_1_does_not_guess_between_repeated_ocr_text() {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        vec![
+            fast_ocr_text("17", "Sheet", 0),
+            fast_ocr_text("42", "Sheet", 300),
+        ],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let (result, _) = run_plan(
+        &mut harness,
+        json!({
+            "goal": "open the Sheet menu",
+            "target_hint": "\"Sheet\"",
+            "done_when": "\"Insert Sheet\" is visible",
+        }),
+    )
+    .await;
+    assert_ne!(result["status"], "done", "{result}");
+    assert!(harness.clicks.lock().is_empty());
+}
+
+/// The task's application opened a dialog in front of its main window.
+struct AppDialogDesktop {
+    activations: Arc<parking_lot::Mutex<Vec<String>>>,
+}
+
+#[async_trait]
+impl crate::platform::DesktopPlatform for AppDialogDesktop {
+    async fn capture_screens(&self) -> Result<Vec<crate::types::Screenshot>> {
+        Ok(Vec::new())
+    }
+    async fn query_ocr(&self) -> Result<Vec<crate::types::OcrBlock>> {
+        Ok(Vec::new())
+    }
+    async fn query_ui_tree(&self) -> Result<Vec<crate::types::UiElement>> {
+        Ok(Vec::new())
+    }
+    async fn foreground_window(&self) -> Result<Option<crate::types::WindowInfo>> {
+        Ok(Some(test_window("dialog", "Format Cells", "soffice.bin")))
+    }
+    async fn list_windows(&self) -> Result<Vec<crate::types::WindowInfo>> {
+        Ok(vec![
+            test_window("sheet", "Budget.xlsx - Example Calc", "soffice.bin"),
+            test_window("dialog", "Format Cells", "soffice.bin"),
+        ])
+    }
+    async fn activate_window(&self, window_id: &str) -> Result<crate::types::WindowInfo> {
+        self.activations.lock().push(window_id.into());
+        Ok(test_window(window_id, "window", "soffice.bin"))
+    }
+    async fn cursor_position(&self) -> Result<Option<(i32, i32)>> {
+        Ok(None)
+    }
+    async fn simulate_input(&self, _action: &crate::types::InputAction) -> Result<()> {
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_dialog_the_task_app_opens_is_kept_not_switched_away_from() {
+    let mut harness = fast_harness(
+        fast_router(0, 0.99),
+        Vec::new(),
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let activations = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    harness.session.context.platform = Arc::new(AppDialogDesktop {
+        activations: activations.clone(),
+    });
+    let mut metrics = RunMetrics::default();
+    harness
+        .session
+        .recover_environment_change(
+            1,
+            test_window("sheet", "Budget.xlsx - Example Calc", "soffice.bin"),
+            Some(test_window("dialog", "Format Cells", "soffice.bin")),
+            &mut metrics,
+        )
+        .await
+        .unwrap();
+    // Switching back to the sheet would close over the agent's own dialog.
+    assert!(!activations.lock().contains(&"sheet".to_owned()));
+    let trace =
+        std::fs::read_to_string(harness.session.context.artifact_dir.join("trace.jsonl")).unwrap();
+    let recovered = trace
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|event| event["kind"] == "environment_recovered")
+        .expect("recovery logged");
+    assert_eq!(recovered["payload"]["action"], "observe_current");
+    assert_eq!(recovered["payload"]["used_jev"], false);
+}
+
+#[test]
+fn typed_text_counts_as_seen_only_when_it_newly_shows_on_screen() {
+    use crate::decision::typed_text_visible;
+    // In the formula bar after typing, with a misread "0" as "O".
+    assert_eq!(
+        typed_text_visible("Name Box A1", "Name Box A1 =SUM(A1:A1O)", "=SUM(A1:A10)"),
+        Some(true)
+    );
+    assert_eq!(
+        typed_text_visible("Name Box A1", "Name Box A2", "=SUM(A1:A10)"),
+        Some(false)
+    );
+    // Already on screen before typing proves nothing; too short to tell.
+    assert_eq!(typed_text_visible("Total 1200", "Total 1200", "1200"), None);
+    assert_eq!(typed_text_visible("", "B2", "B2"), None);
+}
+
+/// A batch that reports a failed step inside an OK result.
+struct FailingStepBatch;
+
+#[async_trait]
+impl crate::tool::Tool for FailingStepBatch {
+    fn name(&self) -> &'static str {
+        "execute_action_batch"
+    }
+    fn description(&self) -> &'static str {
+        "test batch"
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn risk(&self) -> crate::policy::RiskClass {
+        crate::policy::RiskClass::ReadOnly
+    }
+    async fn execute(&self, _arguments: Value, _context: &ToolContext) -> Result<Value> {
+        Ok(json!({
+            "success": false,
+            "failed_at_step": 1,
+            "error": "input action did not verify",
+            "step_results": [],
+        }))
+    }
+}
+
+#[tokio::test]
+async fn a_batch_step_that_failed_is_not_reported_as_typed() {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        vec![fast_link("6", "Print")],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let mut tools = ToolRegistry::default();
+    tools.register(FailingStepBatch);
+    harness.session.tools = Arc::new(tools);
+    let (result, _) = run_plan(
+        &mut harness,
+        json!({
+            "goal": "enter the total",
+            "done_when": "\"1200\" is visible",
+            "input": [{"text": "1200"}, {"key": "Enter"}],
+        }),
+    )
+    .await;
+    assert_eq!(result["status"], "input_failed", "{result}");
+    assert!(
+        result["reason"]
+            .as_str()
+            .unwrap()
+            .contains("did not verify")
+    );
+}
+
+#[tokio::test]
+async fn system_1_right_clicks_the_quoted_target() {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        vec![fast_ocr_text("30", "Sheet1", 0)],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let (result, _) = run_plan(
+        &mut harness,
+        json!({
+            "goal": "open the sheet tab's context menu",
+            "target_hint": "sheet tab \"Sheet1\"",
+            "done_when": "\"click_target result 1\" is visible",
+            "allowed_operations": ["right_click"],
+        }),
+    )
+    .await;
+    assert_eq!(result["status"], "done", "{result}");
+    let clicks = harness.clicks.lock().clone();
+    assert_eq!(clicks[0]["target_id"], "30");
+    assert_eq!(clicks[0]["button"], "right");
+}
+
+#[tokio::test]
+async fn system_1_hovers_and_drags_between_quoted_labels() {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        vec![
+            fast_ocr_text("15", "Format", 0),
+            fast_ocr_text("31", "Sheet2", 200),
+            fast_ocr_text("30", "Sheet1", 100),
+        ],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let hovers = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let drags = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let mut tools = ToolRegistry::default();
+    for (name, calls) in [("hover_target", &hovers), ("drag_target", &drags)] {
+        tools.register(RecordingInputTool {
+            name,
+            calls: calls.clone(),
+            static_screen: harness.static_screen.clone(),
+        });
+    }
+    harness.session.tools = Arc::new(tools);
+    let (hovered, _) = run_plan(
+        &mut harness,
+        json!({
+            "goal": "show the Format menu's tooltip",
+            "target_hint": "\"Format\"",
+            "done_when": "\"hover_target result 1\" is visible",
+            "allowed_operations": ["hover"],
+        }),
+    )
+    .await;
+    assert_eq!(hovered["status"], "done", "{hovered}");
+    assert_eq!(hovers.lock()[0]["target_id"], "15");
+    assert!(hovers.lock()[0].get("button").is_none());
+
+    let (dragged, metrics) = run_plan(
+        &mut harness,
+        json!({
+            "goal": "move Sheet2 before Sheet1",
+            "target_hint": "drag \"Sheet2\" onto \"Sheet1\"",
+            "done_when": "\"drag_target result 1\" is visible",
+            "allowed_operations": ["drag"],
+        }),
+    )
+    .await;
+    assert_eq!(dragged["status"], "done", "{dragged}");
+    let drag = drags.lock()[0].clone();
+    assert_eq!(drag["source_target_id"], "31");
+    assert_eq!(drag["destination_target_id"], "30");
+    assert_eq!(metrics.extras["fast_actions_drag_nodes"], 1);
+}
+
+#[tokio::test]
+async fn a_drag_without_both_labels_found_once_does_nothing() {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        vec![fast_ocr_text("31", "Sheet2", 200)],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let drags = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let mut tools = ToolRegistry::default();
+    tools.register(RecordingInputTool {
+        name: "drag_target",
+        calls: drags.clone(),
+        static_screen: harness.static_screen.clone(),
+    });
+    harness.session.tools = Arc::new(tools);
+    let (result, _) = run_plan(
+        &mut harness,
+        json!({
+            "goal": "move Sheet2 before Sheet1",
+            "target_hint": "drag \"Sheet2\" onto \"Sheet1\"",
+            "done_when": "\"Sheet2\" is left of \"Sheet1\"",
+            "allowed_operations": ["drag"],
+        }),
+    )
+    .await;
+    assert_eq!(result["status"], "uncertain", "{result}");
+    assert!(drags.lock().is_empty());
+}
+
+#[test]
+fn a_short_plain_hint_names_its_label_exactly_when_it_is_on_screen() {
+    let sheet = popup_window("w1", "Budget - Example Calc", "soffice.bin", 800, 600);
+    let mut observation = popup_observation(sheet, Vec::new());
+    observation.targets = vec![fast_link("7", "OK"), fast_link("8", "Discard All")];
+    let screen = Some(&observation);
+    assert_eq!(plain_label_as_quoted("OK", screen), "\"OK\"");
+    assert_eq!(
+        plain_label_as_quoted(" Discard All ", screen),
+        "\"Discard All\""
+    );
+    // A short description that names no visible label is left alone.
+    assert_eq!(
+        plain_label_as_quoted("display page", screen),
+        "display page"
+    );
+    // Already quoted, or a longer description: unchanged.
+    assert_eq!(
+        plain_label_as_quoted("menu \"File\"", screen),
+        "menu \"File\""
+    );
+    let described = "the OK button of the dialog below";
+    assert_eq!(plain_label_as_quoted(described, screen), described);
+    assert_eq!(plain_label_as_quoted("OK", None), "OK");
+}
+
+#[tokio::test]
+async fn system_1_takes_a_fresh_look_when_the_input_guard_asks_for_one() {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        vec![fast_ocr_text("8", "File", 0)],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    // Earlier input made no verified progress: more clicks need a new look.
+    harness.session.continuity.grounding_required = true;
+    let captures = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let mut tools = ToolRegistry::default();
+    tools.register(RecordingInputTool {
+        name: "click_target",
+        calls: harness.clicks.clone(),
+        static_screen: harness.static_screen.clone(),
+    });
+    tools.register(RecordingInputTool {
+        name: "capture_screen",
+        calls: captures.clone(),
+        static_screen: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+    });
+    harness.session.tools = Arc::new(tools);
+    let (result, metrics) = run_plan(
+        &mut harness,
+        json!({
+            "goal": "open the File menu",
+            "target_hint": "\"File\"",
+            "done_when": "\"click_target result 1\" is visible",
+        }),
+    )
+    .await;
+    assert_eq!(result["status"], "done", "{result}");
+    assert_eq!(captures.lock().len(), 1);
+    assert_eq!(harness.clicks.lock()[0]["target_id"], "8");
+    assert_eq!(metrics.extras["fast_actions_regrounds"], 1);
+}
+
+#[tokio::test]
+async fn without_a_target_hint_the_goals_quoted_label_names_the_target() {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        vec![
+            fast_ocr_text("12", "Table", 0),
+            fast_ocr_text("13", "Tools", 100),
+        ],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let (result, _) = run_plan(
+        &mut harness,
+        json!({
+            "goal": "open the \"Table\" menu",
+            "done_when": "\"click_target result 1\" is visible",
+        }),
+    )
+    .await;
+    assert_eq!(result["status"], "done", "{result}");
+    assert_eq!(harness.clicks.lock()[0]["target_id"], "12");
+}
+
+#[test]
+fn plans_with_nested_item_wrappers_and_single_entries_are_repaired() {
+    // Shapes a planner produced: doubly wrapped input, a branch's then given
+    // as one wrapped object, a then given as one object, and a wrapped
+    // operations list.
+    let mut plan = json!({
+        "goal": "format the essay",
+        "done_when": "\"12 pt\" is shown",
+        "allowed_operations": {"item": ["click", "hover"]},
+        "branches": [{
+            "when": "otherwise",
+            "then": {"item": {
+                "goal": "type 12 into the font size box",
+                "done_when": "the font size box shows 12 pt",
+                "input": {"item": {"item": [{"text": "12", "replace_existing": "true"}, {"key": "Enter"}]}},
+                "target_hint": "\"Font Size\"",
+            }},
+        }],
+        "then": {"goal": "save", "done_when": "saved", "input": {"item": [{"key": "Ctrl+S"}]}},
+    });
+    repair_fast_plan(&mut plan, true);
+    let args: FastActionsArgs = serde_json::from_value(plan).expect("repaired plan parses");
+    assert_eq!(args.allowed_operations.len(), 2);
+    assert_eq!(args.then.len(), 1);
+    assert_eq!(args.then[0].input.len(), 1);
+    assert_eq!(args.branches[0].then[0].input.len(), 2);
+    assert_eq!(
+        args.branches[0].then[0].input[0].text.as_deref(),
+        Some("12")
+    );
+}
+
+#[tokio::test]
+async fn clicking_the_only_named_target_continues_the_plan_instead_of_handing_back() {
+    // A menu label that only OCR reads is the only candidate. After the click
+    // the menu is open (not quoted, so not provable locally): the next step
+    // must still run rather than the plan stopping with no candidates.
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.2),
+        vec![fast_ocr_text("12", "Table", 0)],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let (result, _) = run_plan(
+        &mut harness,
+        json!({
+            "goal": "open the Table menu",
+            "target_hint": "\"Table\"",
+            "done_when": "the Table menu is open",
+            "then": [{"goal": "convert", "target_hint": "\"click_target result 1\"", "done_when": "\"click_target result 2\" is visible"}],
+        }),
+    )
+    .await;
+    let first = &result["subgoals"][0];
+    assert_eq!(first["status"], "unverified", "{result}");
+    // The plan went on to its next step.
+    assert_eq!(result["subgoals"][1]["goal"], "convert", "{result}");
+}
+
+#[tokio::test]
+async fn the_primary_models_fix_after_a_hand_back_becomes_a_training_record() {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        vec![fast_link("6", "Print")],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(crate::router_training::TrainingRecorder::new(
+        dir.path(),
+        harness.session.id,
+        &[],
+    ));
+    harness.session.training = Some(recorder.clone());
+    // System 1 cannot find the named target and hands back.
+    let (result, _) = run_plan(
+        &mut harness,
+        json!({"goal": "open the chart wizard", "target_hint": "\"Chart Wizard\"", "done_when": "\"Chart Type\" is visible"}),
+    )
+    .await;
+    assert_ne!(result["status"], "done", "{result}");
+    assert!(harness.session.pending_handback.is_some());
+    // A failed attempt by the primary model is not the answer...
+    harness.session.record_handback(
+        "click_localized",
+        &json!({"localization_id": "loc_1"}),
+        "no_progress",
+        &Ok(json!({})),
+    );
+    // ...the action that makes progress is.
+    harness.session.record_handback(
+        "click_target",
+        &json!({"observation_id": "obs_1", "target_id": "9", "expected_label": "Insert Chart"}),
+        "progress",
+        &Ok(json!({})),
+    );
+    assert!(harness.session.pending_handback.is_none());
+    let records = std::fs::read_to_string(recorder.path())
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .filter(|record| record["kind"] == "handback")
+        .collect::<Vec<_>>();
+    assert_eq!(records.len(), 1, "{records:?}");
+    let record = &records[0];
+    assert_eq!(record["status"], result["status"]);
+    assert_eq!(record["target_hint"], "\"Chart Wizard\"");
+    assert_eq!(record["resolution"]["tool"], "click_target");
+    assert_eq!(record["resolution"]["label"], "Insert Chart");
+    assert!(
+        !record["resolution"]["arguments"]
+            .as_str()
+            .unwrap()
+            .contains("obs_1")
+    );
+}
+
+#[tokio::test]
+async fn a_hand_back_the_primary_model_never_resolves_leaves_no_record() {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        vec![fast_link("6", "Print")],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let dir = tempfile::tempdir().unwrap();
+    let recorder = Arc::new(crate::router_training::TrainingRecorder::new(
+        dir.path(),
+        harness.session.id,
+        &[],
+    ));
+    harness.session.training = Some(recorder.clone());
+    run_plan(
+        &mut harness,
+        json!({"goal": "open the chart wizard", "target_hint": "\"Chart Wizard\"", "done_when": "\"Chart Type\" is visible"}),
+    )
+    .await;
+    for _ in 0..3 {
+        harness.session.record_handback(
+            "click_target",
+            &json!({"target_id": "9", "expected_label": "Insert Chart"}),
+            "no_progress",
+            &Ok(json!({})),
+        );
+    }
+    assert!(harness.session.pending_handback.is_none());
+    let text = std::fs::read_to_string(recorder.path()).unwrap_or_default();
+    assert!(!text.contains("\"handback\""));
+}
+
+fn replay_step(tool: &str, instruction: &str) -> ProcedureStep {
+    ProcedureStep {
+        tool: tool.into(),
+        instruction: instruction.into(),
+    }
+}
+
+fn replay_skill_record(
+    success_count: u64,
+    applications: &[&str],
+) -> crate::memory::ProcedureRecord {
+    crate::memory::ProcedureRecord {
+        id: Uuid::new_v4(),
+        kind: ProcedureKind::Workflow,
+        task_signature: "open system settings".into(),
+        title: "Open System settings".into(),
+        summary: "Open the System page.".into(),
+        applications: applications.iter().map(|app| (*app).to_owned()).collect(),
+        steps: vec![
+            replay_step(
+                "observe_desktop",
+                "Discover the current desktop and task applications.",
+            ),
+            replay_step(
+                "fast_actions",
+                "target_hint \"System\"; done_when \"Advanced display\" is visible",
+            ),
+            replay_step(
+                "execute_action_batch",
+                "Execute a freshly grounded action sequence using current task values.",
+            ),
+        ],
+        command_template: None,
+        evidence: String::new(),
+        enabled: true,
+        success_count,
+        failure_count: 0,
+        // What a verified run of this skill recorded: open "System", then
+        // "Display".
+        program: program_from_tape(
+            &[json!({"click": "System"}), json!({"click": "Display"})],
+            "open system settings",
+        ),
+        retrieval_count: 0,
+        created_at: chrono::Utc::now(),
+        updated_at: chrono::Utc::now(),
+        fingerprint: "replay-test".into(),
+    }
+}
+
+#[test]
+fn skill_trust_follows_successes_and_failures() {
+    let mut skill = replay_skill_record(0, &["chat.exe"]);
+    assert!((skill_trust(&skill) - 0.5).abs() < 1e-9);
+    skill.success_count = 2;
+    assert!(skill_trust(&skill) >= 0.6);
+    skill.failure_count = 3;
+    assert!(skill_trust(&skill) < 0.6);
+}
+
+/// A fast harness whose tool registry also answers the activation and
+/// capture the replay performs, on a desktop showing the observed window.
+fn replay_harness() -> FastHarness {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        vec![fast_link("t1", "System"), fast_link("t2", "Bluetooth")],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let observation = harness
+        .session
+        .context
+        .latest_observation
+        .lock()
+        .clone()
+        .unwrap();
+    harness.session.context.platform = crate::platform::MockDesktop::new(observation);
+    let mut tools = ToolRegistry::default();
+    tools.register(RecordingInputTool {
+        name: "click_target",
+        calls: harness.clicks.clone(),
+        static_screen: harness.static_screen.clone(),
+    });
+    // Launches are recorded in the harness's (otherwise unused) batch list.
+    tools.register(RecordingInputTool {
+        name: "open_application",
+        calls: harness.batches.clone(),
+        static_screen: harness.static_screen.clone(),
+    });
+    // Typing into a clicked field runs as a batch: recorded with the clicks.
+    tools.register(RecordingInputTool {
+        name: "execute_action_batch",
+        calls: harness.clicks.clone(),
+        static_screen: harness.static_screen.clone(),
+    });
+    for name in ["activate_window", "capture_screen"] {
+        tools.register(RecordingInputTool {
+            name,
+            calls: Default::default(),
+            static_screen: harness.static_screen.clone(),
+        });
+    }
+    harness.session.tools = Arc::new(tools);
+    harness
+}
+
+#[tokio::test]
+async fn a_trusted_skill_is_replayed_by_system_one_before_the_planner() {
+    let mut harness = replay_harness();
+    let mut metrics = RunMetrics::default();
+    let mut workflow = Vec::new();
+    let used = harness
+        .session
+        .replay_skill(
+            &replay_skill_record(2, &["chat.exe"]),
+            0.8,
+            "open system settings",
+            &mut metrics,
+            &mut workflow,
+        )
+        .await
+        .unwrap();
+    assert_eq!(used, 1);
+    assert_eq!(harness.clicks.lock().len(), 1);
+    assert_eq!(metrics.extras["skill_replays"], json!(1));
+    assert_eq!(metrics.extras["skill_replay_steps_completed"], json!(1));
+    assert_eq!(workflow.len(), 1);
+    let note = match harness.session.messages.last().unwrap().content.first() {
+        Some(MessageContent::Text { text }) => text.clone(),
+        _ => String::new(),
+    };
+    assert!(note.contains("System 1 replayed"), "{note}");
+    assert!(note.contains("target_hint \"System\""), "{note}");
+}
+
+#[tokio::test]
+async fn a_skill_is_not_replayed_when_unproven_or_its_application_is_closed() {
+    for (skill, reason) in [
+        (replay_skill_record(0, &["chat.exe"]), "unverified"),
+        (
+            replay_skill_record(2, &["notes.exe"]),
+            "application_not_open",
+        ),
+    ] {
+        let mut harness = replay_harness();
+        let messages = harness.session.messages.len();
+        let used = harness
+            .session
+            .replay_skill(
+                &skill,
+                0.8,
+                "open system settings",
+                &mut RunMetrics::default(),
+                &mut Vec::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(used, 0, "{reason}");
+        assert!(harness.clicks.lock().is_empty(), "{reason}");
+        assert_eq!(harness.session.messages.len(), messages, "{reason}");
+        let trace =
+            std::fs::read_to_string(harness.session.context.artifact_dir.join("trace.jsonl"))
+                .unwrap_or_default();
+        assert!(trace.contains(reason), "{reason}");
+    }
+}
+
+#[test]
+fn failure_lessons_stay_general_and_private_details_are_dropped() {
+    let lesson = accepted_lesson(
+        r#"{"lesson": "When changing a cell format in a spreadsheet, use the Format Cells dialog  instead of typing the format into the cell."}"#,
+    )
+    .unwrap()
+    .unwrap();
+    assert!(lesson.starts_with("Lesson from an earlier failed attempt: When changing"));
+    assert!(!lesson.contains("  "));
+    assert_eq!(accepted_lesson(r#"{"lesson": null}"#).unwrap(), None);
+    // Task values and personal details never become a lesson.
+    for private in [
+        r#"{"lesson": "When saving, write to C:\\Users\\example\\report.xlsx."}"#,
+        r#"{"lesson": "When emailing, send to someone@example.com."}"#,
+        r#"{"lesson": "When filling the form, use order 5550123456."}"#,
+    ] {
+        assert_eq!(accepted_lesson(private).unwrap(), None, "{private}");
+    }
+    assert!(accepted_lesson("no json here").is_err());
+}
+
+#[tokio::test]
+async fn system_one_finds_or_opens_the_application_a_skill_names() {
+    let trace = |harness: &FastHarness| {
+        std::fs::read_to_string(harness.session.context.artifact_dir.join("trace.jsonl"))
+            .unwrap_or_default()
+    };
+    // A Store app records no process; the skill's "Open" step names it and
+    // its window is titled with that name.
+    let mut store_app = replay_skill_record(2, &[]);
+    store_app
+        .steps
+        .insert(1, replay_step("open_application", "Open \"Chat\"."));
+    // An older skill that names no application: its title does.
+    let mut described = replay_skill_record(2, &[]);
+    described.title = "Open System settings from the Chat app".into();
+    for skill in [store_app, described] {
+        let mut harness = replay_harness();
+        let used = harness
+            .session
+            .replay_skill(
+                &skill,
+                0.8,
+                "open system settings",
+                &mut RunMetrics::default(),
+                &mut Vec::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(used, 1, "{}", skill.title);
+        assert_eq!(harness.clicks.lock().len(), 1, "{}", skill.title);
+        assert!(
+            harness.batches.lock().is_empty(),
+            "{}: nothing to open",
+            skill.title
+        );
+    }
+    // Not running: opening it is the skill's first motor step.
+    let mut closed = replay_skill_record(2, &[]);
+    closed
+        .steps
+        .insert(1, replay_step("open_application", "Open \"Notes\"."));
+    let mut harness = replay_harness();
+    let used = harness
+        .session
+        .replay_skill(
+            &closed,
+            0.8,
+            "open system settings",
+            &mut RunMetrics::default(),
+            &mut Vec::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        harness.batches.lock().as_slice(),
+        [json!({"name": "Notes"})]
+    );
+    // The stub launches nothing, so no window appears and nothing is clicked.
+    assert_eq!(used, 0);
+    assert!(harness.clicks.lock().is_empty());
+    assert!(trace(&harness).contains("application_did_not_open"));
+}
+
+#[test]
+fn a_store_app_skill_records_the_application_by_window_name() {
+    let step = |app: &str, title: &str| {
+        workflow_step(
+            "click_target",
+            &json!({"target_id": "3"}),
+            &json!({
+                "focus": {"app": app, "title": title},
+                "state_change": {"added_text": ["changed"]},
+            }),
+        )
+        .unwrap()
+    };
+    let store = step("ApplicationFrameHost.exe", "Settings");
+    assert_eq!(store.pointer("/focus/title"), Some(&json!("Settings")));
+    // Other windows' titles can name private documents and are not kept.
+    let document = step("Notepad.exe", "private-notes.txt - Notepad");
+    assert!(document.pointer("/focus/title").is_none());
+    let qualification = qualify_workflow(&[store, document], &[]);
+    assert_eq!(qualification.applications, ["Notepad.exe", "Settings"]);
+}
+
+#[tokio::test]
+async fn a_replay_never_clicks_anything_but_the_saved_label() {
+    // The saved label is not on this screen; a confident fast model would
+    // otherwise pick another target (a live trace clicked "Search").
+    let mut skill = replay_skill_record(2, &["chat.exe"]);
+    skill.program = program_from_tape(
+        &[
+            json!({"click": "Display"}),
+            json!({"click": "Advanced display"}),
+        ],
+        "open system settings",
+    );
+    for targets in [
+        vec![fast_link("t1", "System"), fast_link("t2", "Bluetooth")],
+        // A single candidate is not clicked just for being the only one.
+        vec![fast_link("t1", "System")],
+    ] {
+        let mut harness = replay_harness();
+        if let Some(observation) = harness.session.context.latest_observation.lock().as_mut() {
+            observation.targets = targets;
+        }
+        let used = harness
+            .session
+            .replay_skill(
+                &skill,
+                0.8,
+                "open system settings",
+                &mut RunMetrics::default(),
+                &mut Vec::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(used, 1);
+        assert!(harness.clicks.lock().is_empty());
+        assert!(!harness.session.skill_replay_active);
+        let note = match harness.session.messages.last().unwrap().content.first() {
+            Some(MessageContent::Text { text }) => text.clone(),
+            _ => String::new(),
+        };
+        assert!(note.contains("Nothing was changed by the replay"), "{note}");
+    }
+}
+
+#[tokio::test]
+async fn a_replay_uses_the_application_window_not_the_desktop_or_a_dialog() {
+    let window =
+        |id: &str, title: &str, process: &str, width: u32, height: u32| crate::types::WindowInfo {
+            id: id.into(),
+            title: title.into(),
+            process_name: process.into(),
+            bounds: crate::types::Rect {
+                x: 0,
+                y: 0,
+                width,
+                height,
+            },
+            elevated: false,
+            visible: true,
+            minimized: false,
+        };
+    let names = ["explorer.exe".to_owned()];
+    // The desktop shares File Explorer's process but is not its window.
+    assert!(!skill_application_window(
+        &window("1", "Program Manager", "explorer.exe", 1920, 1080),
+        &names,
+        ""
+    ));
+    assert!(skill_application_window(
+        &window("2", "Documents - File Explorer", "explorer.exe", 800, 600),
+        &names,
+        ""
+    ));
+}
+
+#[test]
+fn plan_shapes_that_failed_in_the_arena_are_repaired() {
+    let parse = |mut plan: Value| {
+        repair_fast_plan(&mut plan, true);
+        let args: FastActionsArgs =
+            serde_json::from_value(plan.clone()).unwrap_or_else(|error| panic!("{error}: {plan}"));
+        FastPlan::from_args(&args).unwrap_or_else(|error| panic!("{error}: {plan}"));
+        args
+    };
+    // A wrapped list inside a list, and doubly wrapped operations in a
+    // branch's wrapped step.
+    let args = parse(json!({
+        "goal": "open the folder",
+        "done_when": "\"Example\" is visible",
+        "input": [{"item": [{"key": "Ctrl+L"}, {"text": "C:\\Example", "replace_existing": "true"}, {"key": "Enter"}]}],
+        "branches": [{
+            "when": "\"Fonts\" is not shown",
+            "then": {"item": {
+                "allowed_operations": {"item": {"item": ["click", "scroll"]}},
+                "goal": "open fonts",
+                "done_when": "\"Fonts\" is shown",
+                "target_hint": "\"Fonts\"",
+            }},
+        }],
+        "then": [{
+            "allowed_operations": {"item": {"item": ["click", "scroll"]}},
+            "goal": "set the font",
+            "done_when": "\"Example Serif\" is shown",
+            "input": {"item": {"replace_existing": "true", "text": "Example Serif"}},
+            "target_hint": "\"Default\"",
+        }],
+    }));
+    assert_eq!(args.input.len(), 3);
+    assert_eq!(args.then[0].allowed_operations.len(), 2);
+    assert_eq!(args.branches[0].then[0].allowed_operations.len(), 2);
+    // A missing goal or done_when is taken from the other; empty entries are
+    // dropped; a plain string in input is a key or text.
+    let args = parse(json!({
+        "done_when": "\"Saved\" is visible",
+        "allowed_operations": ["click", ""],
+        "input": ["", "Ctrl+S", {"text": "notes"}],
+        "then": [{"goal": "close the dialog", "target_hint": "\"OK\""}],
+    }));
+    assert_eq!(args.goal, "\"Saved\" is visible");
+    assert_eq!(args.allowed_operations.len(), 1);
+    assert_eq!(args.input.len(), 2);
+    assert_eq!(args.input[0].key.as_deref(), Some("Ctrl+S"));
+    assert_eq!(args.then[0].done_when, "close the dialog");
+    // A long run of keys and text (a column of formulas) is one step.
+    let mut input = Vec::new();
+    for row in 2..=21 {
+        input.push(json!({"text": format!("=B{row}-C{row}")}));
+        input.push(json!({"key": "Enter"}));
+    }
+    let args = parse(
+        json!({"goal": "fill the column", "done_when": "\"=B21-C21\" is entered", "input": input}),
+    );
+    assert_eq!(args.input.len(), 40);
+}
+
+#[test]
+fn a_long_horizon_plan_fits_in_one_call() {
+    let step = |index: usize| {
+        json!({
+            "goal": format!("open item {index}"),
+            "target_hint": format!("\"Item {index}\""),
+            "done_when": format!("\"Item {index}\" is selected"),
+        })
+    };
+    let plan = |steps: usize| {
+        let mut plan = step(0);
+        plan["then"] = Value::Array((1..steps).map(step).collect());
+        repair_fast_plan(&mut plan, true);
+        let args: FastActionsArgs = serde_json::from_value(plan).unwrap();
+        FastPlan::from_args(&args)
+    };
+    assert_eq!(plan(50).unwrap().total_nodes, 50);
+    assert_eq!(plan(64).unwrap().total_nodes, 64);
+    assert!(plan(65).is_err());
+}
+
+#[test]
+fn a_run_records_its_motor_steps_from_every_acting_tool() {
+    let click = motor_steps(
+        "click_target",
+        &json!({"target_id": "4", "expected_label": "Format"}),
+        &json!({"action": {"label": "Format"}, "executed": true}),
+    );
+    assert_eq!(click, [json!({"click": "Format"})]);
+    let key = motor_steps(
+        "simulate_input",
+        &json!({"kind": "key", "key": "Ctrl+D"}),
+        &json!({"action": {"kind": "key", "key": "Ctrl+D"}}),
+    );
+    assert_eq!(key, [json!({"key": "Ctrl+D"})]);
+    let batch = motor_steps(
+        "execute_action_batch",
+        &json!({"steps": [
+            {"kind": "click", "expected_label": "Name Box"},
+            {"kind": "type", "text": "B2:B11", "replace_existing": true},
+            {"kind": "key", "key": "Enter"},
+        ]}),
+        &json!({"success": true}),
+    );
+    assert_eq!(
+        batch,
+        [
+            json!({"click": "Name Box"}),
+            json!({"text": "B2:B11", "replace": true}),
+            json!({"key": "Enter"}),
+        ]
+    );
+    // Looking leaves nothing; a vision click or a command cannot be repeated
+    // exactly, so it ends a program there.
+    assert!(motor_steps("capture_screen", &json!({}), &json!({})).is_empty());
+    assert_eq!(
+        motor_steps("click_localized", &json!({}), &json!({"executed": true})),
+        [json!({"stop": "click_localized"})]
+    );
+    // An action that did not run leaves nothing.
+    assert!(
+        motor_steps(
+            "click_target",
+            &json!({"expected_label": "OK"}),
+            &json!({"executed": false})
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn a_program_keeps_request_text_only_as_a_fingerprint() {
+    let tape = vec![
+        json!({"click": "Name Box"}),
+        json!({"text": "D2", "replace": true}),
+        json!({"key": "Enter"}),
+        json!({"text": "Example Report", "replace": true}),
+        json!({"text": "=B2-C2", "replace": false}),
+        json!({"text": "someone@example.com", "replace": false}),
+    ];
+    let program = program_from_tape(
+        &tape,
+        "Name the sheet Example Report and add a profit column",
+    )
+    .unwrap();
+    let steps = program["steps"].as_array().unwrap();
+    // Text the request supplied is not stored, only found again later.
+    assert!(steps[3].get("text").is_none());
+    assert_eq!(steps[3]["request_text"]["chars"], 14);
+    // Text the agent wrote itself (a cell address, a formula) is kept.
+    assert_eq!(steps[1]["text"], "D2");
+    assert_eq!(steps[4]["text"], "=B2-C2");
+    // Private-looking text ends the program.
+    assert_eq!(steps[5], json!({"stop": "private_text"}));
+    assert!(!program.to_string().contains("Example Report"));
+    // Fewer than two repeatable steps is not a program.
+    assert!(program_from_tape(&[json!({"stop": "run_command"})], "anything").is_none());
+}
+
+#[test]
+fn a_program_becomes_one_long_plan_for_the_same_task() {
+    let request = "Name the sheet Example Report and add a profit column";
+    let program = program_from_tape(
+        &[
+            json!({"click": "Sheet"}),
+            json!({"click": "Rename Sheet..."}),
+            json!({"text": "Example Report", "replace": true}),
+            json!({"key": "Enter"}),
+            json!({"click": "Name Box"}),
+            json!({"text": "D1", "replace": true}),
+            json!({"key": "Enter"}),
+            json!({"stop": "click_localized"}),
+            json!({"click": "Never reached"}),
+        ],
+        request,
+    )
+    .unwrap();
+    let nodes = program_nodes(
+        &program,
+        "Rename a sheet",
+        &task_signature(request),
+        request,
+    );
+    assert_eq!(nodes.len(), 5);
+    assert_eq!(nodes[0]["target_hint"], "\"Sheet\"");
+    assert_eq!(nodes[0]["done_when"], "\"Rename Sheet...\" is visible");
+    // Typing is its own step, into the control focused after the click, and
+    // the request's own text is found again for it.
+    assert!(nodes[2].get("target_hint").is_none());
+    assert_eq!(nodes[2]["input"][0]["text"], "Example Report");
+    assert_eq!(nodes[2]["input"][1]["key"], "Enter");
+    assert_eq!(nodes[3]["target_hint"], "\"Name Box\"");
+    assert_eq!(nodes[4]["input"].as_array().unwrap().len(), 2);
+    // A request asking for another name gets that name typed in the same
+    // slot (between "sheet" and "and add"), never the old one.
+    let other = "Name the sheet Quarterly Totals and add a profit column";
+    let nodes = program_nodes(&program, "Rename a sheet", &task_signature(request), other);
+    assert_eq!(nodes.len(), 5);
+    assert_eq!(nodes[2]["input"][0]["text"], "Quarterly Totals");
+    assert!(
+        !serde_json::to_string(&nodes)
+            .unwrap()
+            .contains("Example Report")
+    );
+    // Without that slot in the request, the replay stops before typing.
+    let unrelated = "Add a profit column to the sheet";
+    let nodes = program_nodes(
+        &program,
+        "Rename a sheet",
+        &task_signature(request),
+        unrelated,
+    );
+    assert_eq!(nodes.len(), 2);
+    assert!(nodes.iter().all(|node| node.get("input").is_none()));
+}
+
+#[test]
+fn a_similar_task_fills_its_own_value_into_the_recorded_slot() {
+    let request = "Add Kyoto to the world clock";
+    let program = program_from_tape(
+        &[
+            json!({"click": "World clock"}),
+            json!({"click": "Add a new city"}),
+            json!({"text": "Kyoto", "replace": true}),
+            json!({"key": "Enter"}),
+        ],
+        request,
+    )
+    .unwrap();
+    let other = "Add \"Lisbon\" to the world clock";
+    assert!(same_task(&task_signature(request), other));
+    let nodes = program_nodes(&program, "Add a city", &task_signature(request), other);
+    assert_eq!(nodes[2]["input"][0]["text"], "Lisbon");
+}
+
+#[tokio::test]
+async fn system_one_replays_a_stored_program_end_to_end() {
+    let request = "open system settings";
+    let mut skill = replay_skill_record(2, &["chat.exe"]);
+    skill.task_signature = task_signature(request);
+    skill.program = program_from_tape(
+        &[
+            json!({"click": "System"}),
+            json!({"click": "Bluetooth"}),
+            json!({"key": "Enter"}),
+        ],
+        request,
+    );
+    let mut harness = replay_harness();
+    harness.session.motor_tape.clear();
+    let used = harness
+        .session
+        .replay_skill(
+            &skill,
+            0.9,
+            request,
+            &mut RunMetrics::default(),
+            &mut Vec::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(used, 1);
+    // Both recorded clicks ran (the second with its key), in order, and the
+    // replayed steps are on this run's tape again.
+    let clicks = harness.clicks.lock().clone();
+    assert_eq!(clicks.len(), 3, "{clicks:?}");
+    assert_eq!(clicks[0]["expected_label"], "System");
+    assert_eq!(clicks[1]["expected_label"], "Bluetooth");
+    // The key goes to the control focused after the click, as recorded.
+    let typed = clicks[2]["steps"].to_string();
+    assert!(typed.contains("Enter"), "{typed}");
+    assert!(
+        harness
+            .session
+            .motor_tape
+            .iter()
+            .any(|step| step["click"] == "Bluetooth")
+    );
+    assert!(harness.session.stale_program.is_none());
+    let trace =
+        std::fs::read_to_string(harness.session.context.artifact_dir.join("trace.jsonl")).unwrap();
+    assert!(trace.contains("\"mode\":\"program\""), "{trace}");
+}
+
+#[tokio::test]
+async fn a_program_that_no_longer_fits_is_marked_for_replacement() {
+    let request = "open system settings";
+    let mut skill = replay_skill_record(2, &["chat.exe"]);
+    skill.task_signature = task_signature(request);
+    skill.program = program_from_tape(
+        &[json!({"click": "System"}), json!({"click": "Display"})],
+        request,
+    );
+    let mut harness = replay_harness();
+    harness
+        .session
+        .replay_skill(
+            &skill,
+            0.9,
+            request,
+            &mut RunMetrics::default(),
+            &mut Vec::new(),
+        )
+        .await
+        .unwrap();
+    // "Display" is not on this screen: the replay stops, and the program this
+    // run finishes with will replace the stored one.
+    assert_eq!(harness.session.stale_program, Some(skill.id));
+}
+
+#[test]
+fn the_leaner_program_wins_unless_the_stored_one_went_stale() {
+    let dir = tempfile::tempdir().unwrap();
+    let memory = crate::memory::MemoryStore::open(dir.path()).unwrap();
+    let workflow = explorer_workflow();
+    let qualification = qualify_workflow(&workflow, &[]);
+    let (skill, _) = learn_verified_procedures(
+        &memory,
+        "open the requested folder",
+        &workflow,
+        &qualification,
+    )
+    .unwrap()
+    .remove(0);
+    let program =
+        |steps: usize| json!({"version": 1, "steps": vec![json!({"key": "Enter"}); steps]});
+    let stored = |memory: &crate::memory::MemoryStore| {
+        memory.load_skill(skill.id).unwrap().0.program.unwrap()["steps"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    assert!(attach_program(&memory, skill.id, Some(&program(5)), None));
+    // A longer path does not replace a working one...
+    assert!(!attach_program(&memory, skill.id, Some(&program(8)), None));
+    assert!(attach_program(&memory, skill.id, Some(&program(3)), None));
+    assert_eq!(stored(&memory), 3);
+    // ...unless the stored one stopped before its end when replayed.
+    assert!(attach_program(
+        &memory,
+        skill.id,
+        Some(&program(7)),
+        Some(skill.id)
+    ));
+    assert_eq!(stored(&memory), 7);
+}
+
+#[test]
+fn a_replay_leaves_commit_shortcuts_to_the_planner() {
+    let request = "write a note and save it";
+    let program = program_from_tape(
+        &[
+            json!({"click": "Document"}),
+            json!({"text": "Draft", "replace": false}),
+            json!({"key": "Ctrl+S"}),
+            json!({"click": "Save"}),
+        ],
+        request,
+    )
+    .unwrap();
+    let nodes = program_nodes(&program, "Save a note", &task_signature(request), request);
+    // The click and the typing replay; the save shortcut (and all after it)
+    // is the planner's to confirm.
+    assert_eq!(nodes.len(), 2);
+    assert_eq!(nodes[1]["input"].as_array().unwrap().len(), 1);
+    assert!(!nodes[0].to_string().contains("Ctrl+S"));
+}
+
+#[tokio::test]
+async fn the_first_turn_starts_with_the_application_on_screen() {
+    // An application in front: captured once and handed to the planner as
+    // the result of its first look.
+    let mut harness = replay_harness();
+    let before = harness.session.messages.len();
+    harness.session.initial_look(true).await.unwrap();
+    let added = &harness.session.messages[before..];
+    assert_eq!(added[0].role, "assistant");
+    assert_eq!(added[0].tool_calls[0].name, "capture_screen");
+    assert_eq!(added[1].role, "tool");
+    assert_eq!(
+        added[1].tool_call_id.as_deref(),
+        Some(added[0].tool_calls[0].id.as_str())
+    );
+    // It counts as the run's fresh evidence, as the planner's own look would:
+    // a run that acts from it and succeeds is verified, and its skill learns.
+    assert!(harness.session.decision_router_fresh_evidence);
+    // A terminal in front (a question typed at the command line): nothing.
+    let mut harness = replay_harness();
+    if let Some(observation) = harness.session.context.latest_observation.lock().as_mut() {
+        observation.foreground_window.as_mut().unwrap().process_name = "WindowsTerminal.exe".into();
+    }
+    let observation = harness
+        .session
+        .context
+        .latest_observation
+        .lock()
+        .clone()
+        .unwrap();
+    harness.session.context.platform = crate::platform::MockDesktop::new(observation);
+    let before = harness.session.messages.len();
+    harness.session.initial_look(true).await.unwrap();
+    assert_eq!(harness.session.messages.len(), before);
+}
+
+#[test]
+fn a_program_replays_for_the_same_or_a_reworded_request_only() {
+    let original = task_signature("Please turn off system notifications in Windows Settings");
+    assert!(same_task(
+        &original,
+        "Please turn off system notifications in Windows Settings"
+    ));
+    // Reworded, same task.
+    assert!(same_task(
+        &original,
+        "turn off the system notifications in Windows Settings please"
+    ));
+    // A different task in the same app.
+    assert!(!same_task(
+        &original,
+        "Turn on Do not disturb in Windows Settings"
+    ));
+    assert!(!same_task("", "anything"));
 }

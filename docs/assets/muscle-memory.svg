@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 210" role="img" aria-label="Muscle memory: planner calls per task">
+<style>
+  .bg { fill: #ffffff; }
+  .ink { fill: #1f2328; }
+  .muted { fill: #59636e; }
+  .grid { stroke: #d1d9e0; }
+  .accent { fill: #2a78d6; }
+  .base { fill: #9aa4ae; }
+  text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  @media (prefers-color-scheme: dark) {
+    .bg { fill: #0d1117; }
+    .ink { fill: #e6edf3; }
+    .muted { fill: #9198a1; }
+    .grid { stroke: #30363d; }
+    .accent { fill: #4493f8; }
+    .base { fill: #6b7580; }
+  }
+</style>
+<rect class="bg" width="640" height="210" rx="8"/>
+<text class="ink" x="16" y="26" font-size="16" font-weight="600">Muscle memory: planner calls per task</text>
+<text class="muted" x="16" y="46" font-size="12">v5, the same tasks attempted twice; the second attempt replays programs recorded on the first</text>
+<rect class="base" x="16" y="58" width="12" height="10" rx="2"/>
+<text class="muted" x="34" y="67" font-size="11">first attempt</text>
+<rect class="accent" x="124" y="58" width="12" height="10" rx="2"/>
+<text class="muted" x="142" y="67" font-size="11">second attempt</text>
+<text class="ink" x="180" y="100" font-size="13" text-anchor="end">whole program replayed</text>
+<text class="muted" x="180" y="114" font-size="10" text-anchor="end">26 tasks</text>
+<rect class="base" x="190" y="84" width="322.2" height="18" rx="3"/>
+<text class="ink" x="518.2" y="97" font-size="11">20.6</text>
+<rect class="accent" x="190" y="106" width="231.5" height="18" rx="3"/>
+<text class="ink" x="427.5" y="119" font-size="11">14.8</text>
+<text class="ink" x="624" y="119" font-size="13" font-weight="600" text-anchor="end">-28%</text>
+<text class="ink" x="180" y="158" font-size="13" text-anchor="end">no replay</text>
+<text class="muted" x="180" y="172" font-size="10" text-anchor="end">88 tasks</text>
+<rect class="base" x="190" y="142" width="308.2" height="18" rx="3"/>
+<text class="ink" x="504.2" y="155" font-size="11">19.7</text>
+<rect class="accent" x="190" y="164" width="323.8" height="18" rx="3"/>
+<text class="ink" x="519.8" y="177" font-size="11">20.7</text>
+<text class="ink" x="624" y="177" font-size="13" font-weight="600" text-anchor="end">+5%</text>
+</svg>

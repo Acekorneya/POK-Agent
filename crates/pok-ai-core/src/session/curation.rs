@@ -27,6 +27,7 @@ pub(super) fn workflow_step(name: &str, arguments: &Value, result: &Value) -> Op
         "locate_visual_target",
         "click_localized",
         "move_pointer",
+        "hover_target",
         "drag_pointer",
         "drag_target",
         "type_text",
@@ -85,7 +86,23 @@ pub(super) fn workflow_step(name: &str, arguments: &Value, result: &Value) -> Op
                 })
             })
         },
-        |focus| Some(json!({"app": focus.get("app")})),
+        |focus| {
+            // A Store app runs in a shared frame host whose window title is
+            // the application's name ("Settings", "Clock"): keep that name so
+            // the skill knows its application. Other titles can name private
+            // documents and are not kept.
+            let frame_host = focus
+                .get("app")
+                .and_then(Value::as_str)
+                .is_some_and(|app| app.eq_ignore_ascii_case("applicationframehost.exe"));
+            let title = focus.get("title").and_then(Value::as_str).filter(|title| {
+                frame_host && !title.trim().is_empty() && title.chars().count() <= 40
+            });
+            Some(match title {
+                Some(title) => json!({"app": focus.get("app"), "title": title}),
+                None => json!({"app": focus.get("app")}),
+            })
+        },
     );
     Some(json!({
         "tool": name,
@@ -102,6 +119,10 @@ pub(super) fn workflow_step(name: &str, arguments: &Value, result: &Value) -> Op
             + usize::from(result.pointer("/state_change/focused_control_changed").and_then(Value::as_bool).unwrap_or(false)),
         "page_fingerprint": result.get("fingerprint").filter(|_| name.starts_with("managed_browser_")),
         "submission_status": result.pointer("/submission/status"),
+        // A command whose goal the runtime verified (for example a file
+        // written and read back) is outcome evidence without a UI change.
+        "goal_verified": name == "run_command"
+            && result.pointer("/goal_action/status").and_then(Value::as_str) == Some("verified"),
         "outcome": result.pointer("/_pok_continuity/outcome"),
         "error": result.get("error"),
     }))
@@ -376,6 +397,13 @@ pub(super) fn qualify_workflow(
             .and_then(Value::as_str)
             .filter(|app| !app.trim().is_empty() && !is_system_shell_application(app))
             .map(str::to_owned)
+            // A Store app is known by its window title (see workflow_step).
+            .or_else(|| {
+                step.pointer("/focus/title")
+                    .and_then(Value::as_str)
+                    .filter(|title| !title.trim().is_empty())
+                    .map(str::to_owned)
+            })
     };
     let mut applications = workflow
         .iter()
@@ -448,6 +476,11 @@ pub(super) fn qualify_workflow(
         // Desktop input tools synchronously refresh UIA after execution. Their
         // state-change evidence is therefore already a post-input observation.
         (true, "post_input_uia_state_change")
+    } else if workflow.iter().any(|step| {
+        successful_workflow_step(step)
+            && step.get("goal_verified").and_then(Value::as_bool) == Some(true)
+    }) {
+        (true, "verified_command_outcome")
     } else {
         (false, "insufficient_verification")
     };
@@ -457,6 +490,8 @@ pub(super) fn qualify_workflow(
         evidence,
     }
 }
+
+const FRESH_STATE_CHANGE_MISSING: &str = "workflow lacked fresh terminal state-change evidence";
 
 pub(super) fn workflow_quality_rejection(
     workflow: &[Value],
@@ -486,7 +521,7 @@ pub(super) fn workflow_quality_rejection(
                 .is_some_and(|count| count > 0)
     });
     if !recent_verified_change {
-        return Some("workflow lacked fresh terminal state-change evidence");
+        return Some(FRESH_STATE_CHANGE_MISSING);
     }
     None
 }
@@ -499,10 +534,21 @@ pub(super) fn workflow_learning_rejection(
 ) -> Option<&'static str> {
     if requests_live_information(prompt) && qualification.evidence == "post_input_uia_state_change"
     {
-        Some("read-only live information was not outcome-verified")
-    } else {
-        workflow_quality_rejection(workflow, metrics)
+        return Some("read-only live information was not outcome-verified");
     }
+    let rejection = workflow_quality_rejection(workflow, metrics);
+    // Work done with commands or file tools has no UI state change; a
+    // verified outcome (an inspected artifact, a verified submission, or a
+    // verified command result) is the evidence instead.
+    if rejection == Some(FRESH_STATE_CHANGE_MISSING)
+        && matches!(
+            qualification.evidence,
+            "verified_artifact_outcome" | "verified_external_outcome" | "verified_command_outcome"
+        )
+    {
+        return None;
+    }
+    rejection
 }
 
 pub(super) fn successful_workflow_step(step: &Value) -> bool {
@@ -1417,6 +1463,75 @@ pub(super) async fn curate_turn(
     .map_err(PokError::Provider)
 }
 
+#[derive(serde::Deserialize)]
+struct LessonEnvelope {
+    #[serde(default)]
+    lesson: Option<String>,
+}
+
+/// A lesson worth keeping from a run that did not succeed: one short,
+/// general instruction, free of the task's own values. Returns `None` when
+/// the run taught nothing general.
+pub(super) fn accepted_lesson(text: &str) -> std::result::Result<Option<String>, String> {
+    let json = extract_json_object(text).ok_or("lesson writer returned no JSON object")?;
+    let envelope = serde_json::from_str::<LessonEnvelope>(json)
+        .map_err(|error| format!("invalid lesson JSON: {error}"))?;
+    let Some(lesson) = envelope
+        .lesson
+        .map(|lesson| lesson.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|lesson| !lesson.is_empty() && !lesson.eq_ignore_ascii_case("none"))
+    else {
+        return Ok(None);
+    };
+    if lesson.chars().count() > 400
+        || looks_private(&lesson)
+        || memory_text_may_be_sensitive(&lesson)
+    {
+        return Ok(None);
+    }
+    Ok(Some(format!(
+        "Lesson from an earlier failed attempt: {lesson}"
+    )))
+}
+
+/// Asks the planner model what a failed run should teach the next attempt.
+pub(super) async fn failure_lesson(
+    brain: Arc<dyn Brain>,
+    model: &str,
+    reasoning: &HelperReasoning,
+    prompt: &str,
+    answer: &str,
+    workflow: &[Value],
+    cancellation: &CancellationToken,
+) -> Result<Option<String>> {
+    let request = BrainRequest {
+        model: model.to_owned(),
+        messages: vec![
+            BrainMessage::text(
+                "system",
+                "You review a computer-use run that did not complete its task. You have no tools. Write at most one lesson for the next attempt at this kind of task: one or two sentences that start with the kind of task and the application (\"When ... in <application>, ...\"), say what went wrong, and what to do instead. Keep it general: no file names, paths, cell values, numbers, names, or text the user asked for. If the failure was bad luck or nothing general can be learned, return null. Return JSON only: {\"lesson\": \"...\" | null}.",
+            ),
+            BrainMessage::text(
+                "user",
+                format!(
+                    "USER REQUEST:\n{}\n\nAGENT RESULT:\n{}\n\nSANITIZED WORKFLOW:\n{}",
+                    truncate_chars(prompt, 2_000),
+                    truncate_chars(answer, 2_000),
+                    truncate_chars(&serde_json::to_string(workflow)?, 6_000),
+                ),
+            ),
+        ],
+        tools: Vec::new(),
+        temperature: Some(0.0),
+        max_tokens: None,
+        seed: Some(42),
+        reasoning_effort: None,
+    };
+    helper_reply(brain, request, reasoning, cancellation, accepted_lesson)
+        .await?
+        .map_err(PokError::Provider)
+}
+
 pub(super) async fn verify_and_save_curated_memory(
     memory: &Arc<crate::memory::MemoryStore>,
     router: Option<Arc<dyn DecisionRouter>>,
@@ -1616,6 +1731,10 @@ impl Session {
         metrics: RunMetrics,
         cancellation: CancellationToken,
     ) {
+        let model_curation_enabled = matches!(
+            self.context.policy.mode,
+            PolicyMode::Interactive | PolicyMode::Autonomous
+        );
         if !verified_completion {
             let _ = self.log(
                 "curation_skipped",
@@ -1624,8 +1743,23 @@ impl Session {
                     "prompt": prompt,
                 }),
             );
+            if model_curation_enabled && !workflow.is_empty() {
+                self.schedule_failure_lesson(prompt, answer, workflow, cancellation);
+            }
             return;
         }
+        // What this verified run did, step by step, for System 1 to replay,
+        // kept only when its result check passed without recovery.
+        let program = if self.clean_completion {
+            program_from_tape(&self.motor_tape, &prompt)
+        } else {
+            let _ = self.log(
+                "skill_program_not_saved",
+                json!({"reason": "the result check needed recovery or accepted warnings"}),
+            );
+            None
+        };
+        let stale_program = self.stale_program;
         let mut qualification = qualify_workflow(&workflow, &verified);
         let verified_artifact = self.context.artifact_evidence.lock().iter().any(|item| {
             item.operation == "inspected"
@@ -1645,10 +1779,6 @@ impl Session {
                 json!({"reason": reason, "prompt": prompt}),
             );
         }
-        let model_curation_enabled = matches!(
-            self.context.policy.mode,
-            PolicyMode::Interactive | PolicyMode::Autonomous
-        );
         // With model curation, skills are learned in the background with the
         // router and LLM review below; otherwise deterministically here.
         match if model_curation_enabled {
@@ -1658,6 +1788,12 @@ impl Session {
         } {
             Ok(records) => {
                 for (record, created) in records {
+                    attach_program(
+                        &self.context.memory,
+                        record.id,
+                        program.as_ref(),
+                        stale_program,
+                    );
                     let _ = self.log(
                         if created {
                             "procedure_learned"
@@ -1728,6 +1864,7 @@ impl Session {
                         learn_verified_procedures(&memory, &prompt, &workflow, &qualification)
                 {
                     for (record, created) in records {
+                        attach_program(&memory, record.id, program.as_ref(), stale_program);
                         append_trace(
                             &artifact_dir,
                             curation_session_id,
@@ -1769,6 +1906,19 @@ impl Session {
                 &cancellation,
             )
             .await;
+            if let Ok(Some(learned)) = &skill {
+                let stored = attach_program(&memory, learned.id, program.as_ref(), stale_program);
+                append_trace(
+                    &artifact_dir,
+                    curation_session_id,
+                    "skill_program",
+                    json!({
+                        "id": learned.id,
+                        "stored": stored,
+                        "steps": program.as_ref().and_then(|program| program["steps"].as_array().map(Vec::len)),
+                    }),
+                );
+            }
             append_trace(
                 &artifact_dir,
                 curation_session_id,
@@ -1852,6 +2002,76 @@ impl Session {
                 &artifact_dir.join(format!("curation-{}.json", Uuid::new_v4())),
                 &serde_json::to_vec_pretty(&artifact).unwrap_or_default(),
             );
+        });
+        let mut tasks = self.curation_tasks.lock();
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(task);
+    }
+    /// Learning from a run that did not succeed: the planner model writes one
+    /// general lesson, saved as memory so the next similar task recalls it.
+    /// Unattended runs (no one to review drafts) save it approved; with a
+    /// user present it waits for review like other inferred memory.
+    fn schedule_failure_lesson(
+        &self,
+        prompt: String,
+        answer: String,
+        workflow: Vec<Value>,
+        cancellation: CancellationToken,
+    ) {
+        let brain = self.brain.clone();
+        let memory = self.context.memory.clone();
+        let model = self.model.clone();
+        let reasoning = HelperReasoning {
+            chosen: self.reasoning_effort.clone(),
+            fallback: self.bounded_reasoning_effort.clone(),
+        };
+        let approved = self.context.questions.is_none();
+        let artifact_dir = self.context.artifact_dir.clone();
+        let session_id = self.id;
+        let task = tokio::spawn(async move {
+            if tokio::time::timeout(std::time::Duration::from_secs(3), cancellation.cancelled())
+                .await
+                .is_ok()
+            {
+                return;
+            }
+            let lesson = failure_lesson(
+                brain,
+                &model,
+                &reasoning,
+                &prompt,
+                &answer,
+                &workflow,
+                &cancellation,
+            )
+            .await;
+            let (kind, detail) = match lesson {
+                Ok(Some(text)) => match memory.save_with_provenance(
+                    "lesson",
+                    &text,
+                    approved,
+                    MemoryWriteProvenance::InferredCuration,
+                ) {
+                    Ok(outcome) => (
+                        "failure_lesson_saved",
+                        json!({"id": outcome.record.id, "text": text, "approved": approved,
+                            "disposition": outcome.disposition}),
+                    ),
+                    Err(error) => (
+                        "failure_lesson_rejected",
+                        json!({"reason": error.to_string()}),
+                    ),
+                },
+                Ok(None) => (
+                    "failure_lesson_rejected",
+                    json!({"reason": "nothing general to learn"}),
+                ),
+                Err(error) => (
+                    "failure_lesson_rejected",
+                    json!({"reason": error.to_string()}),
+                ),
+            };
+            append_trace(&artifact_dir, session_id, kind, detail);
         });
         let mut tasks = self.curation_tasks.lock();
         tasks.retain(|task| !task.is_finished());

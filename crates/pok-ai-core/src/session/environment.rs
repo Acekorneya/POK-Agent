@@ -239,7 +239,11 @@ impl Session {
         };
         let mut selected_id = local_choice.to_owned();
         let mut used_jev = false;
-        if self.decision_router_failures < 3
+        // The task's own application opened a window (a dialog, an editor,
+        // Save As), usually because of the agent's last action: look at it.
+        // Switching back to the original window would undo that action.
+        if !same_process
+            && self.decision_router_failures < 3
             && let (Some(router), Some(config)) = (
                 self.decision_router.clone(),
                 self.decision_router_config.clone(),
@@ -554,5 +558,96 @@ impl Session {
             current_foreground,
         });
         Ok(true)
+    }
+}
+
+/// Windows that are not the task's application: shells, terminals, and the
+/// agent's own windows.
+fn shell_or_agent_window(window: &WindowInfo) -> bool {
+    let process = window.process_name.to_ascii_lowercase();
+    let title = window.title.trim().to_ascii_lowercase();
+    title.is_empty()
+        || title == "program manager"
+        || matches!(
+            process.trim_end_matches(".exe"),
+            "windowsterminal"
+                | "cmd"
+                | "powershell"
+                | "pwsh"
+                | "conhost"
+                | "openconsole"
+                | "pok-ai"
+                | "pok-ai-desktop"
+        )
+}
+
+impl Session {
+    /// The planner's first call on a desktop task is almost always a look at
+    /// the screen (129 of 152 arena tasks). When an application window is in
+    /// front, capture it before the first turn and hand it over as that
+    /// call's result, so the first turn can already act. A terminal, the
+    /// agent's own window, or the bare desktop is left to the planner.
+    pub(super) async fn initial_look(&mut self, send_images: bool) -> Result<()> {
+        if !self
+            .tools
+            .names()
+            .iter()
+            .any(|name| name == "capture_screen")
+        {
+            return Ok(());
+        }
+        let Some(window) = self
+            .context
+            .platform
+            .foreground_window()
+            .await
+            .ok()
+            .flatten()
+            .filter(|window| {
+                window.visible
+                    && !window.minimized
+                    && !window.elevated
+                    && !shell_or_agent_window(window)
+            })
+        else {
+            return Ok(());
+        };
+        let call = CompletedToolCall {
+            id: format!("initial-look-{}", Uuid::new_v4()),
+            name: "capture_screen".into(),
+            arguments: json!({"scope": "window", "window_id": window.id}),
+        };
+        let result = self
+            .tools
+            .call(&call.name, call.arguments.clone(), &self.context)
+            .await;
+        match &result {
+            Err(PokError::Cancelled) => return Err(PokError::Cancelled),
+            Err(error) => {
+                self.log("initial_look_skipped", json!({"reason": error.to_string()}))?;
+                return Ok(());
+            }
+            // The planner acts from this capture as from its own: it is fresh
+            // evidence for verifying the run's completion.
+            Ok(value) => {
+                if qualifies_as_fresh_evidence(&call.name, value, true) {
+                    self.decision_router_fresh_evidence = true;
+                }
+            }
+        }
+        self.messages.push(BrainMessage {
+            role: "assistant".into(),
+            content: Vec::new(),
+            origin: MessageOrigin::Assistant,
+            tool_call_id: None,
+            tool_calls: vec![call.clone()],
+        });
+        self.messages
+            .extend(tool_result_messages(&call, result, send_images));
+        self.log(
+            "initial_look",
+            json!({"window": {"title": window.title, "application": window.process_name}}),
+        )?;
+        Ok(())
     }
 }

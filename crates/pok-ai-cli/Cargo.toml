@@ -1,6 +1,7 @@
 [package]
 name = "pok-ai-cli"
 version.workspace = true
+authors.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true

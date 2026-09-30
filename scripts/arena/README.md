@@ -27,13 +27,27 @@ run_arena.py ── docker run ──▶  WAA client run.py
 - POK-Ai runs **inside** the VM and observes and acts through UI Automation there.
   WAA still prepares and scores every task the way it does for any agent.
 - The agent (`waa_agent/agent.py`) is installed into WAA as `mm_agents/pokai`.
-  `setup_waa.py` adds a five-line patch to WAA's `run.py`: one to register the agent,
-  one to tell it which task it is running.
+  `setup_waa.py` patches WAA's `run.py` to register the agent, tell it which task it
+  is running, and re-read the task list before each task.
 - Each task's instruction gets one sentence telling POK-Ai how to report an impossible
   task (`INFEASIBLE:`). The agent turns that into WAA's `FAIL` action, which is the
   expected answer for WAA's 13 infeasible tasks. WAA's own agent has the same option.
 - Every pass starts from a fresh copy of the golden VM disk. POK-Ai's memory lives on
   the arena share, not in the VM, so it carries across passes with `--memory persist`.
+- WAA's local runs do not revert the VM between tasks, so before each task the agent
+  closes what the previous task left open (browsers, LibreOffice, VLC, Explorer
+  windows), clears LibreOffice's crash-recovery list, and lets Ctrl+S keep a
+  document's format without asking. WAA's checkers press Ctrl+S themselves.
+- A VM that runs out of work takes the back half of the tasks another VM has not
+  started yet (never the one it is running), booting a fresh VM if its own has
+  stopped.
+- Memory is shared as it would be by one agent. With `--memory persist`, each VM
+  learns into its own copy of an application's memory (`<app>-w<n>`, seeded from
+  `<app>`), since several VMs cannot safely write one SQLite file over the shared
+  folder. When a VM finishes a piece of work, and at the end of every pass,
+  `merge_memory.py` merges its copy back into `<app>`: new skills and facts are
+  added, counts keep the larger value, and deletions carry over. The next piece
+  and the next pass start from everything learned so far.
 - API keys are read from Windows Credential Manager on the host. They pass through a
   private temporary env file into the container, and are uploaded to the VM per task
   (WAA's server does not log uploads). The in-VM wrapper deletes them after reading.
@@ -51,7 +65,13 @@ python3 scripts/arena/setup_waa.py images    # pull windowsarena/winarena
 # Center and save it as <waa>/src/win-arena-container/vm/image/setup.iso
 python3 scripts/arena/setup_waa.py prepare   # ~20 min; watch http://localhost:8006
 python3 scripts/arena/setup_waa.py status
+python3 scripts/arena/setup_waa.py update-apps   # optional: update Clock, turn OneDrive prompts off
 ```
+
+`update-apps` updates the Store's Clock app in the golden image (it otherwise
+shows "needs an update" in every fresh VM) and turns off OneDrive's backup
+prompts, keeping the previous image. The agent's reset repeats the OneDrive
+settings before every task.
 
 WAA is cloned to `~/arena/WindowsAgentArena` (override with `POKAI_WAA_DIR`).
 
@@ -74,6 +94,13 @@ python3 scripts/arena/run_arena.py summary --tag waa1
 - `--llm` and `--arms` are the same names as `scripts/live_bench.py`. Arms that need a
   local decision-model sidecar (Laya, Zeiger, llm_choice) cannot reach the VM yet;
   `none` and `jev` work.
+- `--seed-memory <tag>` starts from another run's final memory (same planner and arm) instead of
+  empty, so its skills are used from the first task; compare with that run's later passes.
+- A stopped or crashed run leaves its VM disks behind (about 20 GB per VM). The next
+  `run` removes them first; `run_arena.py clean` does it on demand. Neither touches a
+  running VM or any results.
+- Inside the test VM only, `run-task.ps1` excludes `C:\pokai` from Defender: its heuristics
+  flagged new unsigned builds as potentially unwanted and blocked them mid-run.
 - Release `pok-ai.exe` is built automatically (`build-cli.ps1`), or pass `--exe`.
 
 Results go to `~/arena/runs/<tag>/`:
@@ -88,6 +115,17 @@ Results go to `~/arena/runs/<tag>/`:
 `summary` prints success, LLM calls, time, how often a skill was used, the skill count,
 and duplicates (skills beyond one per task), then pass 1 against the last pass on the
 same tasks.
+
+## Report for the README
+
+```bash
+python3 scripts/arena/make_report.py
+```
+
+Recomputes success, planner calls, System 1's share of actions, and the
+muscle-memory comparison from the runs, and writes the SVG charts in
+`docs/assets/` and `docs/results/arena-summary.json`. Edit `FULL_RUNS` in the
+script to chart other runs.
 
 ## Training data
 

@@ -25,11 +25,11 @@ where `state`, `questions`, and `gold` are JSON strings, as in the
 Usage:
     python scripts/build_router_dataset.py --output dataset/ \\
         [--input DIR ...] [--test-fraction 0.15] [--exclude-source SOURCE ...] \\
-        [--teacher jev --teacher-min 0.9]
+        [--teacher BACKEND --teacher-min 0.9]
 
-`--teacher` adds distillation: where no proven label exists, a confident
-answer from that backend (JEV's calibrated probabilities) becomes a soft
-target. Proven labels always take precedence.
+`--teacher BACKEND` adds soft labels: where no proven label exists, a
+confident answer recorded from that decision backend becomes a soft target.
+Proven labels always take precedence.
 
 `--outcomes` joins each session's task result (JSONL of {session_id, score},
 written by `scripts/arena/run_arena.py dataset`), and
@@ -63,9 +63,10 @@ def default_input() -> list[str]:
     return [str(Path.home() / ".local" / "share" / "pok-ai" / "router-training")]
 
 
-def read_records(folders: list[str]) -> tuple[dict[str, dict], list[dict]]:
+def read_records(folders: list[str]) -> tuple[dict[str, dict], list[dict], list[dict]]:
     questions: dict[str, dict] = {}
     labels: list[dict] = []
+    handbacks: list[dict] = []
     for folder in folders:
         for path in sorted(glob.glob(os.path.join(folder, "**", "*.jsonl"), recursive=True)):
             # Session traces and result tables share the extension; skip them.
@@ -84,7 +85,71 @@ def read_records(folders: list[str]) -> tuple[dict[str, dict], list[dict]]:
                         questions[record["id"]] = record
                     elif record.get("kind") == "label" and record.get("id"):
                         labels.append(record)
-    return questions, labels
+                    elif record.get("kind") == "handback":
+                        handbacks.append(record)
+    return questions, labels, handbacks
+
+
+def words(text: str) -> str:
+    return " ".join("".join(c.lower() if c.isalnum() else " " for c in text).split())
+
+
+def handback_examples(
+    handbacks: list[dict], questions: dict[str, dict], stats: collections.Counter
+) -> tuple[list[dict], dict[str, dict]]:
+    """Training data from steps System 1 handed back and the primary model
+    then did. When System 1 had asked a target question, the resolving
+    control answers it (as a label). When it had no candidates, a choice
+    question over the labels it could see is built, answered the same way.
+    A resolving label System 1 could not see is a perception miss: counted,
+    never trained on."""
+    labels: list[dict] = []
+    built: dict[str, dict] = {}
+    for handback in handbacks:
+        resolution = handback.get("resolution") or {}
+        label = str(resolution.get("label") or "").strip()
+        if not label:
+            stats["handback: resolving action has no label"] += 1
+            continue
+        wanted = words(label)
+        question = questions.get(str(handback.get("question_id") or ""))
+        target = ((question or {}).get("questions") or {}).get("target_click")
+        if target:
+            matches = [option for option, text in (target.get("criteria") or {}).items()
+                       if wanted and wanted in words(str(text))]
+            if len(matches) == 1:
+                labels.append({"id": question["id"], "question": "target_click", "label": matches[0], "source": "handback"})
+            else:
+                stats["handback: resolving control not among System 1's options"] += 1
+            continue
+        visible = []
+        for text in handback.get("visible") or []:
+            text = str(text).strip()
+            if text and text not in visible:
+                visible.append(text)
+        options = visible[:16]
+        chosen = [text for text in options if words(text) == wanted]
+        if len(chosen) != 1:
+            stats["handback: resolving control not in System 1's evidence (perception miss)"] += 1
+            continue
+        record_id = "handback-" + hashlib.sha256(json.dumps(handback, sort_keys=True).encode()).hexdigest()[:24]
+        criteria = {f"option_{index}": text for index, text in enumerate(options)}
+        built[record_id] = {
+            "id": record_id,
+            "session_id": handback.get("session_id"),
+            "source": "handback",
+            "state": {"window": handback.get("window"), "goal": handback.get("goal"),
+                      "target_hint": handback.get("target_hint"), "visible": options},
+            "questions": {"target_click": {
+                "type": "choice",
+                "instructions": "Which visible control should be activated next to accomplish the step?",
+                "criteria": criteria,
+            }},
+        }
+        labels.append({"id": record_id, "question": "target_click",
+                       "label": next(key for key, text in criteria.items() if text == chosen[0]),
+                       "source": "handback"})
+    return labels, built
 
 
 def gold_for(question: dict, label: str) -> dict | None:
@@ -128,7 +193,11 @@ def main() -> int:
                     row = json.loads(line)
                     scores[str(row["session_id"])] = float(row["score"])
 
-    questions, labels = read_records(args.input or default_input())
+    questions, labels, handbacks = read_records(args.input or default_input())
+    handback_stats: collections.Counter = collections.Counter()
+    handback_labels, handback_questions = handback_examples(handbacks, questions, handback_stats)
+    questions.update(handback_questions)
+    labels.extend(handback_labels)
     # First proven label per (record, question) wins; later ones are ignored.
     gold_by_record: dict[str, dict[str, tuple[str, str]]] = collections.defaultdict(dict)
     for label in labels:
@@ -136,8 +205,8 @@ def main() -> int:
             continue
         gold_by_record[label["id"]].setdefault(label.get("question", ""), (str(label.get("label")), label.get("source", "")))
 
-    # Distillation: a strong backend's confident answers fill in questions no
-    # proven label covers. Proven labels always win; the teacher's full
+    # Soft labels: a backend's confident answers fill in questions no proven
+    # label covers. Proven labels always win; the teacher's full
     # probability spread is kept as a soft target.
     teacher_gold: dict[str, dict[str, dict]] = collections.defaultdict(dict)
     if args.teacher:
@@ -164,7 +233,7 @@ def main() -> int:
 
     rows: dict[str, list[dict]] = {"train": [], "test": []}
     seen: set[str] = set()
-    stats = collections.Counter()
+    stats = collections.Counter(handback_stats)
     for record_id, gold in gold_by_record.items():
         record = questions.get(record_id)
         if not record:
@@ -218,7 +287,7 @@ def main() -> int:
                 handle.write(json.dumps(item, ensure_ascii=False) + "\n")
 
     decisions = sum(len(json.loads(row["gold"])) for items in rows.values() for row in items)
-    print(f"{len(questions)} questions read, {len(labels)} labels")
+    print(f"{len(questions)} questions read, {len(labels)} labels, {len(handbacks)} hand-backs")
     print(f"train: {len(rows['train'])} states, test: {len(rows['test'])} states, {decisions} labeled decisions")
     for key, count in sorted(stats.items()):
         print(f"  {count:6}  {key}")

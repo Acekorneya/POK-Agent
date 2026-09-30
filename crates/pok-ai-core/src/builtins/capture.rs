@@ -989,14 +989,18 @@ pub(crate) fn model_observation_value(observation: &Observation, annotate: bool)
         let interaction_point = element
             .click_point
             .map(|(x, y)| local_point(x, y, &target.bounds, screenshot));
+        // Text only OCR read, shown once: click_target accepts it by its
+        // exact label, so present it as clickable.
+        let clickable_text = unique_exact_ocr_text(observation, element, &element.name);
+        let quality = crate::grounding::grounding_quality(element);
         json!({
             "id": element.id,
             "label": element.name,
             "role": element.control_type,
             "box": [bounds.x, bounds.y, bounds.width, bounds.height],
             "source": element.source,
-            "actionable": element.actionable,
-            "grounding_quality": crate::grounding::grounding_quality(element),
+            "actionable": element.actionable || clickable_text,
+            "grounding_quality": if clickable_text && quality == "low" { "medium" } else { quality },
             "selected": element.selected,
             "focused": element.focused,
             "desktop_shell": element.desktop_shell,
@@ -1232,6 +1236,26 @@ pub(super) fn sparse_annotation_target_ids(
         {
             ids.push(target.id.clone());
         }
+    }
+    // Then text that only OCR read and that appears once (menus and labels
+    // in applications with little UI Automation), most task-relevant first:
+    // click_target accepts it by its exact label, so the planner needs its id.
+    let mut texts = observation
+        .targets
+        .iter()
+        .filter(|target| {
+            crate::grounding::grounding_quality(target) == "low"
+                && !target.id.is_empty()
+                && !ids.contains(&target.id)
+                && unique_exact_ocr_text(observation, target, &target.name)
+        })
+        .collect::<Vec<_>>();
+    texts.sort_by_key(|target| std::cmp::Reverse(target.rank_score));
+    for target in texts {
+        if ids.len() >= limit {
+            break;
+        }
+        ids.push(target.id.clone());
     }
     ids
 }
@@ -1794,6 +1818,74 @@ impl Tool for QueryWindowTreeTool {
             "target": value.get("target").cloned().unwrap_or(Value::Null),
             "targets": value.get("targets").cloned().unwrap_or_else(|| json!([])),
             "count": observation.targets.len(),
+        }))
+    }
+}
+
+/// Read the clipboard as text. Copying a spreadsheet or grid range puts it
+/// there as tab-separated rows, so select-copy-read verifies cell contents
+/// that screenshots and UI Automation do not expose reliably.
+pub(super) struct ReadClipboardTool;
+
+/// Rows of a tab-separated copy (spreadsheets, data grids), bounded.
+pub(super) fn clipboard_rows(text: &str) -> Option<Vec<Vec<String>>> {
+    if !text.contains('\t') {
+        return None;
+    }
+    Some(
+        text.lines()
+            .take(100)
+            .map(|line| {
+                line.split('\t')
+                    .take(30)
+                    .map(|cell| crate::decision::bounded_text(cell, 200))
+                    .collect()
+            })
+            .collect(),
+    )
+}
+
+#[async_trait]
+impl Tool for ReadClipboardTool {
+    fn name(&self) -> &'static str {
+        "read_clipboard"
+    }
+    fn description(&self) -> &'static str {
+        "Return the current clipboard text. To check spreadsheet or grid contents after a change, select the range, press Ctrl+C, then call this: copied cells come back as rows of columns. Read-only; it does not change the clipboard."
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object", "properties": {}})
+    }
+    fn risk(&self) -> RiskClass {
+        RiskClass::ReadOnly
+    }
+    async fn execute(&self, _args: Value, _context: &ToolContext) -> Result<Value> {
+        if !cfg!(windows) {
+            return Err(PokError::Unsupported("read_clipboard needs Windows".into()));
+        }
+        let output = tokio::time::timeout(
+            Duration::from_secs(10),
+            tokio::process::Command::new("powershell")
+                .args([
+                    "-NoProfile",
+                    "-NonInteractive",
+                    "-Command",
+                    "[Console]::OutputEncoding = [Text.Encoding]::UTF8; Get-Clipboard -Raw",
+                ])
+                .output(),
+        )
+        .await
+        .map_err(|_| PokError::Tool("reading the clipboard timed out".into()))??;
+        let text = String::from_utf8_lossy(&output.stdout)
+            .trim_end_matches(['\r', '\n'])
+            .replace("\r\n", "\n");
+        let rows = clipboard_rows(&text);
+        Ok(json!({
+            "text": crate::decision::bounded_text(&text, 20_000),
+            "chars": text.chars().count(),
+            "row_count": rows.as_ref().map(Vec::len),
+            "column_count": rows.as_ref().and_then(|rows| rows.iter().map(Vec::len).max()),
+            "rows": rows,
         }))
     }
 }

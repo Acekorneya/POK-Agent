@@ -590,11 +590,13 @@ async fn run_cli() -> anyhow::Result<()> {
             }
             let mut session = session
                 .with_temperature(config.agent_temperature.value())
+                .with_action_step_budget(config.action_step_budget)
+                .with_standing_instructions(config.standing_instructions.as_deref())
                 .with_observer(Arc::new(ConsoleObserver { router_name }));
             let result = session.run(prompt).await?;
             println!("{}", result.answer);
             session
-                .finish_background_work(std::time::Duration::from_secs(120))
+                .finish_background_work(std::time::Duration::from_secs(300))
                 .await;
             eprintln!("\nArtifacts: {}", result.artifact_dir.display());
         }

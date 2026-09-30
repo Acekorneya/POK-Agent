@@ -1336,7 +1336,7 @@ impl Tool for RunCommandTool {
         "run_command"
     }
     fn description(&self) -> &'static str {
-        "Run a complete shell command with live output and safe process-tree ownership. Fast commands finish inline; after 30 seconds a still-running foreground command is returned as a background task without restarting it. Set background=true to return immediately. Use manage_command to poll, read, wait, kill, or send stdin. timeout_seconds is an optional hard execution limit; 0 means unlimited. On Windows submit the PowerShell body directly. PTY requests must run in background."
+        "Run a complete shell command with live output and safe process-tree ownership. Fast commands finish inline; after 30 seconds a still-running foreground command is returned as a background task without restarting it. Set background=true to return immediately. Use manage_command to poll, read, wait, kill, or send stdin. timeout_seconds is an optional hard execution limit; 0 means unlimited. On Windows submit the PowerShell body directly (Windows PowerShell 5.1): its Set-Content/Out-File -Encoding UTF8 write a byte-order mark that breaks JSON, settings, and CSV readers, so write text files with [IO.File]::WriteAllText($path, $text, [Text.UTF8Encoding]::new($false)). PTY requests must run in background."
     }
     fn input_schema(&self) -> Value {
         schema::<CommandArgs>()

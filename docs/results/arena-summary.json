@@ -1,0 +1,102 @@
+{
+ "runs": [
+  {
+   "tag": "base1",
+   "pass": 1,
+   "label": "Baseline",
+   "note": "no step cap",
+   "tasks": 154,
+   "passed": 93.8,
+   "calls_mean": 29.3,
+   "calls_median": 23,
+   "system1_share": 23,
+   "seconds_mean": 339
+  },
+  {
+   "tag": "v2",
+   "pass": 2,
+   "label": "v2",
+   "note": "skills as advice",
+   "tasks": 154,
+   "passed": 89.7,
+   "calls_mean": 24.5,
+   "calls_median": 21,
+   "system1_share": 36,
+   "seconds_mean": 376
+  },
+  {
+   "tag": "v4",
+   "pass": 1,
+   "label": "v4",
+   "note": "skill replay",
+   "tasks": 154,
+   "passed": 88.7,
+   "calls_mean": 27.3,
+   "calls_median": 26.5,
+   "system1_share": 38,
+   "seconds_mean": 380
+  },
+  {
+   "tag": "v5",
+   "pass": 1,
+   "label": "v5 \u00b7 1st",
+   "note": "first look, System 1 plans",
+   "tasks": 154,
+   "passed": 87.8,
+   "calls_mean": 23.0,
+   "calls_median": 22,
+   "system1_share": 45,
+   "seconds_mean": 383
+  },
+  {
+   "tag": "v5",
+   "pass": 2,
+   "label": "v5 \u00b7 2nd",
+   "note": "muscle memory",
+   "tasks": 154,
+   "passed": 88.7,
+   "calls_mean": 23.0,
+   "calls_median": 22.0,
+   "system1_share": 49,
+   "seconds_mean": 385
+  }
+ ],
+ "muscle_memory_v5": {
+  "program, partly replayed": {
+   "tasks": 22,
+   "passed_first": 15.0,
+   "passed_second": 14.0,
+   "calls_first": 18.5,
+   "calls_second": 18.6,
+   "median_first": 13.5,
+   "median_second": 17.5
+  },
+  "no replay": {
+   "tasks": 88,
+   "passed_first": 41.8,
+   "passed_second": 45.8,
+   "calls_first": 19.7,
+   "calls_second": 20.7,
+   "median_first": 16.5,
+   "median_second": 20.0
+  },
+  "whole program replayed": {
+   "tasks": 26,
+   "passed_first": 18.0,
+   "passed_second": 17.0,
+   "calls_first": 20.6,
+   "calls_second": 14.8,
+   "median_first": 15.5,
+   "median_second": 9.0
+  },
+  "opening steps only": {
+   "tasks": 18,
+   "passed_first": 13.0,
+   "passed_second": 11.9,
+   "calls_first": 24.1,
+   "calls_second": 28.3,
+   "median_first": 22.0,
+   "median_second": 33.5
+  }
+ }
+}

@@ -10,6 +10,13 @@ pub enum FastOperation {
     /// Double-click a target, to open folders or files that a single click
     /// only selects.
     DoubleClick,
+    /// Right-click a target to open its context menu.
+    RightClick,
+    /// Rest the pointer on a target, for menus that open on hover and tooltips.
+    Hover,
+    /// Drag the first quoted label in target_hint onto the second, e.g.
+    /// "drag \"Sheet2\" onto \"Sheet1\"".
+    Drag,
     Scroll,
     ActivateWindow,
     BrowserClick,
@@ -17,9 +24,12 @@ pub enum FastOperation {
 }
 
 impl FastOperation {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 9] = [
         Self::Click,
         Self::DoubleClick,
+        Self::RightClick,
+        Self::Hover,
+        Self::Drag,
         Self::Scroll,
         Self::ActivateWindow,
         Self::BrowserClick,
@@ -29,13 +39,31 @@ impl FastOperation {
     /// The harness tool a candidate must use to belong to this operation.
     pub fn tool(self) -> &'static str {
         match self {
-            Self::Click | Self::DoubleClick => "click_target",
+            Self::Click | Self::DoubleClick | Self::RightClick => "click_target",
+            Self::Hover => "hover_target",
+            Self::Drag => "drag_target",
             Self::Scroll => "scroll_view",
             Self::ActivateWindow => "activate_window",
             Self::BrowserClick => "managed_browser_click",
             Self::BrowserScroll => "managed_browser_scroll",
         }
     }
+}
+
+/// One input step System 1 performs for you: press `key` (a named key or
+/// plus-separated shortcut such as "Ctrl+Shift+F5") or type `text`. Give
+/// exactly one of them.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct FastInputStep {
+    #[serde(default)]
+    #[schemars(length(max = 60))]
+    pub key: Option<String>,
+    #[serde(default)]
+    #[schemars(length(max = 4000))]
+    pub text: Option<String>,
+    /// Replace the field's current content instead of adding to it.
+    #[serde(default)]
+    pub replace_existing: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -81,6 +109,12 @@ pub struct FastActionsArgs {
     /// When every value is found the result omits the screenshot.
     #[serde(default)]
     pub read: Vec<crate::decision::ReadRequest>,
+    /// Keys and text for System 1 to enter for this step, in order. With a
+    /// target_hint, that field (found by its exact visible label) is focused
+    /// first; without one, input goes to the focused control. Write every key
+    /// and character yourself; System 1 only performs them and checks done_when.
+    #[serde(default)]
+    pub input: Vec<FastInputStep>,
 }
 
 /// A popup or dialog rule: when `when` holds, click `target_hint` (quote its
@@ -114,6 +148,9 @@ pub struct FastSubgoal {
     pub avoid: Vec<String>,
     #[serde(default)]
     pub branches: Vec<FastLeafBranch>,
+    /// Keys and text for System 1 to enter for this step (see the top level).
+    #[serde(default)]
+    pub input: Vec<FastInputStep>,
 }
 
 /// A branch whose steps may branch once more.
@@ -148,6 +185,9 @@ pub struct FastLeaf {
     pub allowed_operations: Vec<FastOperation>,
     #[serde(default)]
     pub avoid: Vec<String>,
+    /// Keys and text for System 1 to enter for this step (see the top level).
+    #[serde(default)]
+    pub input: Vec<FastInputStep>,
 }
 
 /// Schema-only registration: `Session` intercepts this call and runs the
@@ -161,7 +201,7 @@ impl Tool for FastActionsTool {
     }
 
     fn description(&self) -> &'static str {
-        "Run a short navigation plan (clicks, double-clicks to open folders or files, scrolls, window switches, managed-browser clicks) with the fast decision model instead of issuing each click yourself. Quote exact visible labels in target_hint and done_when so they are checked locally. Chain steps with then, choose between alternatives with branches (\"otherwise\" as default), handle popups with on_interrupt, forbid targets with avoid, and read values with read. It never types text or commits consequential actions. Returns status per step (done, unverified, uncertain, uncertain_branch, interrupted, stalled, no_candidates, budget_exhausted, unavailable), the executed steps, read values, and the newest observation."
+        "Run a plan of up to 64 steps, the whole path you already know (clicks, double-clicks to open folders or files, right-clicks, hovers, drags between two quoted labels, scrolls, window switches, managed-browser clicks, and keyboard input you write) with the fast decision model instead of issuing each action yourself. Quote exact visible labels in target_hint and done_when so they are checked locally. A step's input lists keys (\"Ctrl+Shift+F5\", \"Enter\") and text to enter in order, into the target_hint field or the focused control; you write every key and character, System 1 performs them and checks done_when. Chain steps with then, choose between alternatives with branches (\"otherwise\" as default), handle popups with on_interrupt, forbid targets with avoid, and read values with read. It never chooses text itself or commits consequential clicks. Returns status per step (done, unverified, uncertain, uncertain_branch, interrupted, popup (a dialog the plan did not expect, with its title, text, and buttons), stalled, no_candidates, budget_exhausted, unavailable), the executed steps, read values, and the newest observation."
     }
 
     fn input_schema(&self) -> Value {

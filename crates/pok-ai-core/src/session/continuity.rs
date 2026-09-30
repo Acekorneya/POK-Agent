@@ -82,6 +82,7 @@ impl ExecutionContinuity {
                 "click_target"
                     | "click_localized"
                     | "move_pointer"
+                    | "hover_target"
                     | "drag_pointer"
                     | "drag_target"
                     | "simulate_input"
@@ -239,6 +240,7 @@ impl ExecutionContinuity {
             "click_target"
                 | "click_localized"
                 | "move_pointer"
+                | "hover_target"
                 | "drag_pointer"
                 | "drag_target"
                 | "simulate_input"
@@ -356,6 +358,7 @@ pub(super) fn is_continuity_tool(name: &str) -> bool {
             | "click_target"
             | "click_localized"
             | "move_pointer"
+            | "hover_target"
             | "drag_pointer"
             | "drag_target"
             | "execute_action_batch"
@@ -386,6 +389,7 @@ pub(super) fn is_guarded_action(name: &str) -> bool {
             | "drag_target"
             | "execute_action_batch"
             | "move_pointer"
+            | "hover_target"
             | "scroll_until_text"
             | "scroll_view"
             | "simulate_input"
@@ -407,6 +411,7 @@ pub(super) fn action_signature(
             "activate_window"
                 | "click_localized"
                 | "move_pointer"
+                | "hover_target"
                 | "drag_pointer"
                 | "drag_target"
                 | "simulate_input"
@@ -463,7 +468,7 @@ pub(super) fn goal_action_key(
 ) -> Option<String> {
     let observation = observation?;
     let target = match tool_name {
-        "click_target" => {
+        "click_target" | "hover_target" => {
             let target_id = arguments.get("target_id").and_then(|value| {
                 value
                     .as_str()

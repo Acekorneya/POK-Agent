@@ -1930,6 +1930,15 @@ async fn run_prompt(
         *conversation = Some(
             session
                 .with_temperature(agent_temperature.value())
+                .with_action_step_budget(runtime.config.lock().action_step_budget)
+                .with_standing_instructions(
+                    runtime
+                        .config
+                        .lock()
+                        .standing_instructions
+                        .clone()
+                        .as_deref(),
+                )
                 .with_observer(Arc::new(TauriSessionObserver::new(app))),
         );
         *conversation_provider = Some(provider);

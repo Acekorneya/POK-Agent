@@ -566,15 +566,14 @@ python scripts/build_router_dataset.py --output dataset/ \
 Windows Agent Arena runs (`scripts/arena/`) are the other source. Their
 tasks run in a clean VM, so the records hold no personal data. Each session
 is joined with its task's automatic score (`run_arena.py dataset`), and
-teacher answers can be limited to tasks that passed
+backend answers can be limited to tasks that passed
 (`--outcomes … --teacher-successful-only`).
 
-To distill a stronger backend into Laya, collect with that backend selected
-(for example JEV, whose probabilities are calibrated) and add
-`--teacher jev --teacher-min 0.9`: where no proven label exists, the
-teacher's confident answer becomes a soft target (its full probability
-spread). Proven labels always take precedence, so the student can still
-surpass the teacher where grounding knows better.
+Soft labels: with `--teacher <backend> --teacher-min 0.9`, where no proven
+label exists, a confident answer recorded from the configured backend becomes
+a soft target (its full probability spread). Proven labels always take
+precedence, so the trained model can still improve on any backend where
+grounding knows better.
 
 It keeps questions with a proven label that is one of the offered options,
 drops duplicates, splits train/test by conversation, and writes

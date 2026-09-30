@@ -123,6 +123,20 @@ pub(super) fn project_browser_snapshot_for_model(value: &Value) -> Value {
 }
 
 pub(super) fn project_tool_result_for_model(name: &str, mut value: Value) -> Value {
+    // A harness warning always reaches the model, however the rest is cut.
+    let warning = value
+        .as_object_mut()
+        .and_then(|object| object.remove("open_document_warning"));
+    let mut projected = project_tool_result_body(name, value);
+    if let Some(warning) = warning
+        && let Some(object) = projected.as_object_mut()
+    {
+        object.insert("open_document_warning".into(), warning);
+    }
+    projected
+}
+
+fn project_tool_result_body(name: &str, mut value: Value) -> Value {
     if name == "run_command" {
         for key in ["stdout", "stderr"] {
             if let Some(text) = value
@@ -806,4 +820,61 @@ pub(super) fn is_focused_visual_artifact_evidence(name: &str, value: &Value) -> 
             .and_then(Value::as_str)
             .is_some_and(|app| !app.trim().is_empty())
         && value.get("executed").and_then(Value::as_bool) != Some(false)
+}
+
+/// Document file names a file or command tool call refers to: the `path` of a
+/// file tool, or document-like names in a command's text.
+pub(super) fn referenced_document_names(tool: &str, arguments: &Value) -> Vec<String> {
+    static DOCUMENT: std::sync::LazyLock<Regex> = std::sync::LazyLock::new(|| {
+        Regex::new(
+            r"(?i)([A-Za-z0-9_\-()\[\]. ]+\.(?:xlsx|xlsm|xls|ods|csv|docx|doc|odt|rtf|txt|md|pptx|ppt|odp|pdf|json|xml|html?|ini|cfg|log))\b",
+        )
+        .expect("document name pattern")
+    });
+    let text = match tool {
+        "write_file" | "edit_file" => arguments.get("path").and_then(Value::as_str),
+        "run_command" => arguments.get("command").and_then(Value::as_str),
+        _ => None,
+    };
+    let mut names = text
+        .map(|text| {
+            DOCUMENT
+                .captures_iter(text)
+                .filter_map(|capture| {
+                    let name = capture[1].rsplit(['\\', '/']).next()?.trim();
+                    (name.len() > 4).then(|| name.to_owned())
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Open windows whose title names one of `documents`: the application may hold
+/// its own copy, which a later save would write over a file changed by a
+/// command or file tool.
+pub(super) fn open_document_warning(
+    documents: &[String],
+    windows: &[crate::types::WindowInfo],
+) -> Option<Value> {
+    let open = documents
+        .iter()
+        .flat_map(|document| {
+            let needle = document.to_lowercase();
+            windows
+                .iter()
+                .filter(move |window| window.title.to_lowercase().contains(&needle))
+                .map(move |window| {
+                    json!({"document": document, "window": window.title, "app": window.process_name})
+                })
+        })
+        .collect::<Vec<_>>();
+    (!open.is_empty()).then(|| {
+        json!({
+            "open_in": open,
+            "instruction": "This file is open in an application. Its open copy can overwrite your change when saved, and it does not show your change yet. Close the document without saving and reopen it to verify, or make the change in the application.",
+        })
+    })
 }

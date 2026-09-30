@@ -175,6 +175,14 @@ pub struct ProcedureRecord {
     pub evidence: String,
     pub enabled: bool,
     pub success_count: u64,
+    /// Runs that used this procedure and failed (`record_skill_failure`).
+    #[serde(default)]
+    pub failure_count: u64,
+    /// The exact action sequence of the latest verified run (clicks by
+    /// label, keys, and text), which System 1 can replay end to end. Text the
+    /// user's request supplied is kept only as a fingerprint.
+    #[serde(default)]
+    pub program: Option<serde_json::Value>,
     pub retrieval_count: u64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -1326,6 +1334,43 @@ impl MemoryStore {
         )? == 1)
     }
 
+    /// Store the action sequence System 1 can replay for this skill. A new
+    /// program replaces the old one only when it is no longer (a leaner path
+    /// wins) or the old one did not lead to a verified run since.
+    pub fn set_procedure_program(
+        &self,
+        id: Uuid,
+        program: &serde_json::Value,
+        replace_longer: bool,
+    ) -> Result<bool> {
+        let steps = |value: &serde_json::Value| {
+            value
+                .get("steps")
+                .and_then(serde_json::Value::as_array)
+                .map_or(usize::MAX, Vec::len)
+        };
+        let connection = self.connection.lock();
+        let current = connection
+            .query_row(
+                "SELECT program FROM procedures WHERE id = ?1",
+                params![id.to_string()],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok());
+        if let Some(current) = &current
+            && !replace_longer
+            && steps(current) < steps(program)
+        {
+            return Ok(false);
+        }
+        Ok(connection.execute(
+            "UPDATE procedures SET program = ?2 WHERE id = ?1",
+            params![id.to_string(), serde_json::to_string(program)?],
+        )? == 1)
+    }
+
     pub fn mark_skill_verified(&self, id: Uuid, evidence: &str) -> Result<bool> {
         Ok(self.connection.lock().execute(
             "UPDATE procedures SET success_count = success_count + 1, evidence = ?2,
@@ -1469,6 +1514,10 @@ fn migrate_memory_schema(connection: &Connection, root: &Path) -> Result<()> {
             )?;
         }
         // Runs that used a skill and did not end verified.
+        // The replayable action sequence of a skill's latest verified run.
+        if !columns.iter().any(|column| column == "program") {
+            connection.execute("ALTER TABLE procedures ADD COLUMN program TEXT", [])?;
+        }
         if !columns.iter().any(|column| column == "failure_count") {
             connection.execute(
                 "ALTER TABLE procedures ADD COLUMN failure_count INTEGER NOT NULL DEFAULT 0",
@@ -1834,7 +1883,7 @@ fn load_procedure(connection: &Connection, id: &str) -> Result<ProcedureRecord> 
     let values = connection.query_row(
         "SELECT id, kind, task_signature, title, summary, applications, steps,
                 command_template, evidence, enabled, success_count, retrieval_count,
-                created_at, updated_at, fingerprint
+                created_at, updated_at, fingerprint, failure_count, program
          FROM procedures WHERE id = ?1",
         params![id],
         |row| {
@@ -1854,6 +1903,8 @@ fn load_procedure(connection: &Connection, id: &str) -> Result<ProcedureRecord> 
                 row.get::<_, String>(12)?,
                 row.get::<_, String>(13)?,
                 row.get::<_, String>(14)?,
+                row.get::<_, u64>(15)?,
+                row.get::<_, Option<String>>(16)?,
             ))
         },
     )?;
@@ -1869,6 +1920,11 @@ fn load_procedure(connection: &Connection, id: &str) -> Result<ProcedureRecord> 
         evidence: values.8,
         enabled: values.9,
         success_count: values.10,
+        failure_count: values.15,
+        program: values
+            .16
+            .as_deref()
+            .and_then(|program| serde_json::from_str(program).ok()),
         retrieval_count: values.11,
         created_at: DateTime::parse_from_rfc3339(&values.12)
             .map_err(|error| PokError::Other(error.into()))?

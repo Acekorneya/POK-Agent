@@ -12,6 +12,89 @@ See [TODO.md](TODO.md) for the implementation roadmap toward a local Windows
 “Jarvis,” including deeper coding workflows, terminal-only model benchmarks,
 durable automation, Discord, voice, and safe self-improvement.
 
+## Research: System 1 and System 2 for computer use
+
+Most computer-use agents send every click through a large language model. POK-Agent splits the
+work the way people do:
+
+- **System 2, the planner** (a large LLM), reads the task, decides what to do, and writes plans
+  that can run dozens of steps ahead.
+- **System 1, a small fast decision model** (Laya locally, or the hosted JEV), carries those plans
+  out on screen. It answers small, well-posed questions (which of these labels to click, whether
+  a step is done) with calibrated probabilities, and hands back to the planner whenever it is
+  unsure.
+- **Grounding** fuses Windows UI Automation and OCR into numbered targets, so most steps are
+  checked locally by exact label, with no model at all.
+- **Muscle memory.** Every verified run is saved as a *motor program*: the exact clicks, keys,
+  and text that worked. The next time the same or a similar task comes up, System 1 replays the
+  program and the planner is only needed where the screen differs. Values from the new request
+  are filled into the recorded slots; text from a user's request is never stored, only
+  fingerprinted.
+- **Self-improvement.** Skills gain trust with every verified run and lose it with every failure.
+  A replay that no longer fits is replaced by the path that finished the job, a leaner path
+  replaces a longer one, and every System 1 question, answer, and planner hand-back becomes
+  training data for fine-tuning the local System 1.
+
+### Results on Windows Agent Arena
+
+Measured on [Windows Agent Arena](https://github.com/microsoft/WindowsAgentArena): 154 scored
+tasks across 12 Windows applications (browsers, File Explorer, LibreOffice Calc and Writer,
+VS Code, VLC, Settings, Clock, Paint, Notepad, Calculator), each in a clean Windows 11 VM.
+Planner: an anonymous preview ("stealth") model on OpenRouter. System 1: JEV. 30-step budget per
+task, where one System 1 plan counts as one step.
+
+| Run | What changed | Passed (of 154) | Planner calls per task | Actions by System 1 |
+| --- | --- | --- | --- | --- |
+| Baseline | no step budget | 93.8 (60.9%) | 29.3 | 23% |
+| v2 (2nd pass) | learned skills as advice | 89.7 (58.3%) | 24.5 | 36% |
+| v4 | skill replay, Windows 11 controls | 88.7 (57.6%) | 27.3 | 38% |
+| v5 (1st pass) | harness takes the first look; System 1 returns the new screen | 87.8 (57.0%) | 23.0 | 45% |
+| **v5 (2nd pass)** | **muscle memory: recorded programs replayed** | **88.7 (57.6%)** | **23.0** | **49%** |
+
+**Where System 1 replayed a whole recorded program, the planner needed 28% fewer calls on
+average and 42% fewer at the median (20.6 → 14.8 mean, 15.5 → 9 median over 26 tasks), at the
+same success.** On tasks with no program yet, calls were unchanged, which is why the overall
+average held flat: only a third of the tasks had a program after one pass, so coverage is the
+next lever. Success held steady through every change while System 1's share of actions more than
+doubled from the baseline.
+
+<p>
+<img src="docs/assets/muscle-memory.svg" alt="Planner calls per task on the first and second attempt, by whether System 1 replayed a recorded program" width="640">
+</p>
+<p>
+<img src="docs/assets/arena-calls.svg" alt="Planner LLM calls per task for each full run" width="640">
+<img src="docs/assets/arena-system1.svg" alt="Share of on-screen actions done by System 1 for each full run" width="640">
+<img src="docs/assets/arena-success.svg" alt="Tasks passed for each full run" width="640">
+</p>
+
+The full progress report, with the LibreOffice iteration, every run, and caveats, is in
+[`docs/arena-progress.html`](docs/arena-progress.html) (open it in a browser, or serve `docs/`
+with GitHub Pages). The numbers behind the charts are in
+[`docs/results/arena-summary.json`](docs/results/arena-summary.json) and are regenerated from
+the runs by `scripts/arena/make_report.py`. The thesis, the evidence, and the prioritized
+remaining work are in [`docs/SYSTEM1-SYSTEM2-ROADMAP.md`](docs/SYSTEM1-SYSTEM2-ROADMAP.md).
+
+**Honest limits.** The planner is a preview model whose behaviour varies between runs, so
+differences of a few tasks are noise. A program is saved when the agent's own checks say a run
+succeeded; about 3 in 10 of those runs failed the benchmark's stricter check, so skill trust,
+not the self-check alone, has to weed out wrong programs. Some applications (Clock's pickers,
+canvas-like controls) are still visible only to the planner's vision, not to System 1. The local
+System 1 (Laya) has not yet been fine-tuned on the collected data; the runs above use the hosted
+JEV.
+
+### What comes next
+
+1. **Fine-tune the local System 1** on the harness's own labeled decisions (proven outcomes and
+   the planner's resolutions of hand-backs), so the whole loop runs on local hardware.
+2. **Broaden muscle memory** to more task shapes, and measure the learning curve of planner calls
+   over repeated passes.
+3. **Close the perception gaps** that force the planner's vision (grids, pickers, unnamed icons).
+4. **Transfer to small local planners**: measure how much of the gap between a small local
+   planner and a large hosted one learned skills and a trained System 1 can close.
+
+Each full arena pass takes 5-6 hours on five VMs; GPU time for fine-tuning and more parallel VMs
+would speed up all four directly.
+
 ## Current MVP boundaries
 
 - Native Windows owns screen capture, OCR/UI Automation queries, and input.
@@ -321,8 +404,9 @@ file management, browsers, settings, forms, creative tools, and communication ap
 External text submissions additionally require exact non-editable UIA/OCR evidence. Learned skills
 record the reusable action pattern while replacing recipients, message contents, paths, coordinates,
 and target numbers with fresh-task placeholders. They are written as `SKILL.md`, indexed in FTS5,
-and relevant ones are loaded into later requests, so a repeated task can be replayed as one
-delegated plan. One task keeps one skill: repeats reinforce it, differently worded versions of the
+and relevant ones are loaded into later requests. A verified run with a clean result check also
+saves its exact actions as the skill's motor program, which System 1 replays for the same or a
+similar request before the planner is asked (see "Muscle memory" in `docs/ARCHITECTURE.md`). One task keeps one skill: repeats reinforce it, differently worded versions of the
 same task are merged, the LLM rewrites new skills into clean guidance, and skills that keep failing
 lose rank and are disabled. See "Skill lifecycle" in `docs/ARCHITECTURE.md`.
 Exam sessions never run the curator or learn skills.
@@ -425,10 +509,10 @@ Thank you for your support!
 
 ## License and attribution
 
-POK-Ai is free and open-source software licensed under the
-[Apache License 2.0](LICENSE). You may use, modify, and redistribute it,
+POK-Agent (POK-Ai) is developed by **KNY Industries**. It is free and open-source software
+licensed under the [Apache License 2.0](LICENSE). You may use, modify, and redistribute it,
 including for commercial purposes, subject to that license.
 
 Redistributions and derivative works must include the Apache 2.0 license and
-retain the POK-Ai attribution in [NOTICE](NOTICE). Contributions back to POK-Ai
+retain the KNY Industries attribution in [NOTICE](NOTICE). Contributions back to POK-Ai
 are welcomed and appreciated, but they are not required by the license.

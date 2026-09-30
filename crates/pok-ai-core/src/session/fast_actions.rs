@@ -12,6 +12,8 @@ pub(super) struct FastPlanNode {
     pub(super) allowed: Vec<FastOperation>,
     pub(super) avoid: Vec<String>,
     pub(super) branches: Vec<(String, Vec<FastPlanNode>)>,
+    /// Keys and text the planner wrote for System 1 to enter.
+    pub(super) input: Vec<crate::builtins::FastInputStep>,
 }
 
 /// A validated `fast_actions` plan: the root chain (the call's own subgoal
@@ -44,7 +46,7 @@ pub(super) enum FastConditionOutcome {
     NeedsRouter(PendingFastCondition),
 }
 
-pub(super) const FAST_MAX_NODES: usize = 16;
+pub(super) const FAST_MAX_NODES: usize = 64;
 /// Most options a delegated run offers the decision model in one question.
 pub(super) const FAST_MAX_OPTIONS: usize = 16;
 pub(super) const FAST_MAX_BRANCHES: usize = 4;
@@ -57,6 +59,185 @@ pub(super) const FAST_SCROLL_MIN_PROBABILITY: f64 = 0.5;
 /// An interrupt rule the fast model judged true ends or redirects the whole
 /// run, so it needs stronger evidence than a completion check.
 pub(super) const FAST_INTERRUPT_MIN_PROBABILITY: f64 = 0.8;
+
+/// The dialogs on screen when a step started: a dialog already there then is
+/// part of the task, not an interruption.
+#[derive(Debug, Clone, Default)]
+pub(super) struct PopupBaseline {
+    window_id: Option<String>,
+    window_area: u64,
+    process: Option<String>,
+    dialogs: HashSet<String>,
+}
+
+impl PopupBaseline {
+    pub(super) fn of(observation: Option<&crate::types::Observation>) -> Self {
+        let window = observation.and_then(|observation| observation.foreground_window.as_ref());
+        Self {
+            window_id: window.map(|window| window.id.clone()),
+            window_area: window.map_or(0, |window| rect_area(&window.bounds)),
+            process: window.map(|window| window.process_name.to_lowercase()),
+            dialogs: observation
+                .map(|observation| {
+                    dialog_elements(observation)
+                        .map(|element| element.name.trim().to_lowercase())
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }
+    }
+}
+
+fn rect_area(rect: &crate::types::Rect) -> u64 {
+    u64::from(rect.width) * u64::from(rect.height)
+}
+
+fn rect_inside(inner: &crate::types::Rect, outer: &crate::types::Rect) -> bool {
+    inner.x >= outer.x
+        && inner.y >= outer.y
+        && i64::from(inner.x) + i64::from(inner.width)
+            <= i64::from(outer.x) + i64::from(outer.width)
+        && i64::from(inner.y) + i64::from(inner.height)
+            <= i64::from(outer.y) + i64::from(outer.height)
+}
+
+/// Named dialog windows inside the captured window (not the window itself).
+fn dialog_elements(
+    observation: &crate::types::Observation,
+) -> impl Iterator<Item = &crate::types::UiElement> {
+    let root_area = observation
+        .foreground_window
+        .as_ref()
+        .map_or(u64::MAX, |window| rect_area(&window.bounds));
+    observation.ui_elements.iter().filter(move |element| {
+        let kind = element.control_type.to_ascii_lowercase();
+        (kind == "dialog" || kind == "window")
+            && !element.offscreen
+            && !element.name.trim().is_empty()
+            && rect_area(&element.bounds) < root_area
+    })
+}
+
+/// A dialog System 1 noticed: what a person reads at a glance.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(super) struct Popup {
+    pub(super) title: String,
+    pub(super) text: String,
+    pub(super) buttons: Vec<String>,
+    /// The dialog's own window, when it is one, for a closer look.
+    pub(super) window_id: Option<String>,
+}
+
+impl Popup {
+    pub(super) fn value(&self) -> Value {
+        json!({"title": self.title, "text": self.text, "buttons": self.buttons})
+    }
+
+    /// Fill in the message and buttons from the dialog's own elements.
+    fn read(&mut self, elements: &[crate::types::UiElement], region: Option<&crate::types::Rect>) {
+        let mut text = Vec::<String>::new();
+        let mut buttons = Vec::<String>::new();
+        for element in elements {
+            let name = element.name.trim();
+            if element.offscreen
+                || name.is_empty()
+                || region.is_some_and(|region| !rect_inside(&element.bounds, region))
+            {
+                continue;
+            }
+            let kind = element.control_type.to_ascii_lowercase();
+            if kind == "text" && name != self.title && !text.iter().any(|seen| seen == name) {
+                text.push(name.to_owned());
+            } else if kind == "button"
+                && buttons.len() < 8
+                && !buttons.iter().any(|seen| seen == name)
+            {
+                buttons.push(name.to_owned());
+            }
+        }
+        // The title bar's Close button says nothing about the dialog.
+        if buttons.len() > 1 {
+            buttons.retain(|button| !button.eq_ignore_ascii_case("close"));
+        }
+        if !text.is_empty() {
+            self.text = crate::decision::bounded_text(&text.join(" "), 600);
+        }
+        if buttons.len() > self.buttons.len()
+            || self.buttons.iter().all(|b| b.eq_ignore_ascii_case("close")) && !buttons.is_empty()
+        {
+            self.buttons = buttons;
+        }
+    }
+
+    /// The capture that noticed the dialog may not have walked into it (a
+    /// dialog is often its own window), leaving only its title.
+    pub(super) fn needs_closer_look(&self) -> bool {
+        self.text.is_empty()
+            || self
+                .buttons
+                .iter()
+                .all(|button| button.eq_ignore_ascii_case("close"))
+    }
+}
+
+/// A dialog that opened during this step and that the plan did not mention,
+/// read from UI Automation the way a person glances at a popup: its title,
+/// message, and buttons. The planner then acts on what it says instead of
+/// the step stalling behind it. A dialog the plan names (in its goal, target,
+/// or completion condition) is expected and not reported.
+pub(super) fn unexpected_popup(
+    observation: &crate::types::Observation,
+    baseline: &PopupBaseline,
+    plan_text: &str,
+) -> Option<Popup> {
+    let window = observation.foreground_window.as_ref();
+    let (mut popup, region) = if let Some(dialog) = dialog_elements(observation).find(|element| {
+        !baseline
+            .dialogs
+            .contains(&element.name.trim().to_lowercase())
+    }) {
+        (
+            Popup {
+                title: dialog.name.trim().to_owned(),
+                ..Popup::default()
+            },
+            dialog.bounds.clone(),
+        )
+    } else {
+        // A smaller window of the same application took the foreground: a
+        // dialog shown as its own window. Menus and pickers have no title.
+        let window = window.filter(|window| {
+            baseline
+                .window_id
+                .as_deref()
+                .is_some_and(|id| id != window.id)
+                && baseline.process.as_deref() == Some(window.process_name.to_lowercase().as_str())
+                && rect_area(&window.bounds) < baseline.window_area
+                && !window.title.trim().is_empty()
+        })?;
+        (
+            Popup {
+                title: window.title.trim().to_owned(),
+                window_id: Some(window.id.clone()),
+                ..Popup::default()
+            },
+            window.bounds.clone(),
+        )
+    };
+    let plan = plan_text.to_lowercase();
+    if plan.contains(&popup.title.to_lowercase()) {
+        return None;
+    }
+    popup.read(&observation.ui_elements, Some(&region));
+    let seen = format!("{} {}", popup.title, popup.text).to_lowercase();
+    if crate::decision::quoted_labels(plan_text)
+        .iter()
+        .any(|label| seen.contains(&label.to_lowercase()))
+    {
+        return None;
+    }
+    Some(popup)
+}
 
 /// Delegated operations that only move the view.
 pub(super) fn is_read_only_fast_tool(tool: &str) -> bool {
@@ -83,7 +264,25 @@ impl FastPlan {
             allowed: &[FastOperation],
             avoid: &[String],
             branches: Vec<(String, Vec<FastPlanNode>)>,
+            input: &[crate::builtins::FastInputStep],
         ) -> Result<FastPlanNode> {
+            if input.len() > 40
+                || input.iter().any(|step| {
+                    step.key.is_some() == step.text.is_some()
+                        || step
+                            .key
+                            .as_deref()
+                            .is_some_and(|key| key.trim().is_empty() || key.chars().count() > 60)
+                        || step
+                            .text
+                            .as_deref()
+                            .is_some_and(|text| text.chars().count() > 4000)
+                })
+            {
+                return Err(PokError::Tool(
+                    "a fast_actions step's input holds at most 40 entries, each with exactly one of key (a named key or shortcut) or text (at most 4000 characters)".into(),
+                ));
+            }
             let goal = goal.trim();
             let done_when = done_when.trim();
             let hint = hint.map(str::trim).unwrap_or_default();
@@ -105,6 +304,7 @@ impl FastPlan {
                 allowed: allowed.to_vec(),
                 avoid: avoid.to_vec(),
                 branches,
+                input: input.to_vec(),
             })
         }
         fn checked_when(when: &str) -> Result<String> {
@@ -138,6 +338,7 @@ impl FastPlan {
                                 &leaf.allowed_operations,
                                 &leaf.avoid,
                                 Vec::new(),
+                                &leaf.input,
                             )
                         })
                         .collect::<Result<Vec<_>>>()?;
@@ -151,6 +352,7 @@ impl FastPlan {
                 &step.allowed_operations,
                 &step.avoid,
                 branches,
+                &step.input,
             )
         }
         fn count(nodes: &[FastPlanNode]) -> usize {
@@ -190,6 +392,7 @@ impl FastPlan {
             &args.allowed_operations,
             &[],
             Vec::new(),
+            &args.input,
         )?];
         for step in &args.then {
             chain.push(subgoal(step)?);
@@ -372,6 +575,33 @@ pub(super) fn fast_window_candidates(
         .collect()
 }
 
+/// A target hint that is only a short label ("OK", "Discard All") and names
+/// a target on screen exactly counts as if the planner had quoted it; any
+/// other unquoted hint is a description, left for the fast model.
+pub(super) fn plain_label_as_quoted(
+    hint: &str,
+    observation: Option<&crate::types::Observation>,
+) -> String {
+    let trimmed = hint.trim();
+    let plain = !trimmed.is_empty()
+        && trimmed.chars().count() <= 40
+        && trimmed.split_whitespace().count() <= 4
+        && !trimmed.contains(['"', '\u{201c}', '\u{201d}']);
+    let label = crate::decision::normalized_evidence(trimmed);
+    let on_screen = !label.is_empty()
+        && observation.is_some_and(|observation| {
+            observation
+                .targets
+                .iter()
+                .any(|target| crate::decision::normalized_evidence(&target.name) == label)
+        });
+    if plain && on_screen {
+        format!("\"{trimmed}\"")
+    } else {
+        hint.to_owned()
+    }
+}
+
 /// The single candidate whose label strongly matches the subgoal text when
 /// every other candidate scores at most half as well. Scores come from
 /// `desktop_candidates_for_task` term overlap against goal and target hint.
@@ -391,15 +621,113 @@ pub(super) fn unambiguous_label_match(
 /// Target gate for a delegated pick. When every candidate shares one
 /// operation, the operation stage is forced and only target certainty is a
 /// real signal; otherwise the ordinary combined gate applies.
+/// A plain input string that names a key or shortcut rather than text.
+fn looks_like_key(text: &str) -> bool {
+    let parts = text.trim().split('+').map(str::trim).collect::<Vec<_>>();
+    let Some((last, modifiers)) = parts.split_last() else {
+        return false;
+    };
+    let named = matches!(
+        last.to_ascii_lowercase().as_str(),
+        "enter"
+            | "tab"
+            | "escape"
+            | "esc"
+            | "backspace"
+            | "delete"
+            | "space"
+            | "home"
+            | "end"
+            | "pageup"
+            | "pagedown"
+            | "up"
+            | "down"
+            | "left"
+            | "right"
+            | "insert"
+    ) || (last.len() >= 2
+        && last.len() <= 3
+        && last.starts_with(['F', 'f'])
+        && last[1..]
+            .chars()
+            .all(|character| character.is_ascii_digit()));
+    let modified = !modifiers.is_empty()
+        && modifiers.iter().all(|modifier| {
+            matches!(
+                modifier.to_ascii_lowercase().as_str(),
+                "ctrl" | "control" | "alt" | "shift" | "win"
+            )
+        })
+        && (named || last.chars().count() == 1);
+    named || modified
+}
+
 /// Accept plan shapes models commonly produce for nested steps, which the
 /// schema normalizer does not reach inside the recursive `then`/`branches`:
-/// lists wrapped as `{"item": ...}` (an XML-style serialization), and a step
-/// that only reads values, without its own `goal` or `done_when`.
+/// lists wrapped as `{"item": ...}` (an XML-style serialization) or nested in
+/// lists, empty entries, plain strings as input, and a step given only its
+/// goal or only its condition.
 pub(super) fn repair_fast_plan(node: &mut Value, top_level: bool) {
     unwrap_item_lists(node);
+    coerce_plan_scalars(node);
     let Some(object) = node.as_object_mut() else {
         return;
     };
+    // A list field given one entry directly ("then": {...}) is that entry.
+    for key in [
+        "then",
+        "branches",
+        "input",
+        "avoid",
+        "allowed_operations",
+        "read",
+        "on_interrupt",
+    ] {
+        if let Some(field) = object.get_mut(key)
+            && !field.is_array()
+            && !field.is_null()
+        {
+            *field = Value::Array(vec![field.take()]);
+        }
+    }
+    if let Some(branches) = object.get_mut("branches").and_then(Value::as_array_mut) {
+        for branch in branches {
+            if let Some(steps) = branch.get_mut("then")
+                && steps.is_object()
+            {
+                *steps = Value::Array(vec![steps.take()]);
+            }
+        }
+    }
+    // A list given inside a list (`"input": [[...]]`, left by an unwrapped
+    // wrapper) is one list; empty entries are dropped.
+    for key in ["then", "input", "avoid", "allowed_operations"] {
+        if let Some(items) = object.get_mut(key).and_then(Value::as_array_mut) {
+            let flat = items
+                .drain(..)
+                .flat_map(|item| match item {
+                    Value::Array(inner) => inner,
+                    other => vec![other],
+                })
+                .filter(|item| {
+                    !(item.is_null() || item.as_str().is_some_and(|text| text.trim().is_empty()))
+                })
+                .collect::<Vec<_>>();
+            *items = flat;
+        }
+    }
+    // A plain string in input is a key ("Ctrl+S", "Enter") or text to type.
+    if let Some(items) = object.get_mut("input").and_then(Value::as_array_mut) {
+        for item in items {
+            if let Some(text) = item.as_str().map(str::to_owned) {
+                *item = if looks_like_key(&text) {
+                    json!({"key": text.trim()})
+                } else {
+                    json!({"text": text})
+                };
+            }
+        }
+    }
     if !top_level {
         let first_read = object
             .get("read")
@@ -436,6 +764,25 @@ pub(super) fn repair_fast_plan(node: &mut Value, top_level: bool) {
             object.insert("done_when".into(), json!(format!("{label} is visible")));
         }
     }
+    // A step given only its goal or only its condition: each stands in for
+    // the other (an unquoted condition is then judged by the fast model).
+    let text_field = |object: &serde_json::Map<String, Value>, key: &str| {
+        object
+            .get(key)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+    };
+    match (text_field(object, "goal"), text_field(object, "done_when")) {
+        (None, Some(done_when)) => {
+            object.insert("goal".into(), json!(done_when));
+        }
+        (Some(goal), None) => {
+            object.insert("done_when".into(), json!(goal));
+        }
+        _ => {}
+    }
     for key in ["then", "branches"] {
         if let Some(children) = object.get_mut(key).and_then(Value::as_array_mut) {
             for child in children {
@@ -453,6 +800,34 @@ pub(super) fn repair_fast_plan(node: &mut Value, top_level: bool) {
     }
 }
 
+/// Flags and counts written as strings ("true", "2") anywhere in a plan,
+/// including nested steps the schema normalizer does not reach.
+pub(super) fn coerce_plan_scalars(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            for (key, field) in object.iter_mut() {
+                match (key.as_str(), &*field) {
+                    ("replace_existing" | "stop", Value::String(text)) => {
+                        match text.trim().to_ascii_lowercase().as_str() {
+                            "true" => *field = Value::Bool(true),
+                            "false" => *field = Value::Bool(false),
+                            _ => {}
+                        }
+                    }
+                    ("max_steps", Value::String(text)) => {
+                        if let Ok(number) = text.trim().parse::<u32>() {
+                            *field = json!(number);
+                        }
+                    }
+                    _ => coerce_plan_scalars(field),
+                }
+            }
+        }
+        Value::Array(items) => items.iter_mut().for_each(coerce_plan_scalars),
+        _ => {}
+    }
+}
+
 /// Replace every `{"item": x}` object with a list (`x` itself when it is a
 /// list, otherwise `[x]`). No fast-actions field is named `item`.
 pub(super) fn unwrap_item_lists(value: &mut Value) {
@@ -461,7 +836,15 @@ pub(super) fn unwrap_item_lists(value: &mut Value) {
             if object.len() == 1
                 && let Some(item) = object.get_mut("item")
             {
-                let item = item.take();
+                let mut item = item.take();
+                // Nested wrappers ({"item": {"item": [...]}}) are one list.
+                while let Some(inner) = item
+                    .as_object_mut()
+                    .filter(|inner| inner.len() == 1)
+                    .and_then(|inner| inner.get_mut("item"))
+                {
+                    item = inner.take();
+                }
                 *value = match item {
                     Value::Array(items) => Value::Array(items),
                     other => Value::Array(vec![other]),
@@ -548,9 +931,19 @@ impl Session {
             .normalized_arguments("fast_actions", arguments.clone());
         repair_fast_plan(&mut arguments, true);
         let args: FastActionsArgs = serde_json::from_value(arguments)
-            .map_err(|error| PokError::Tool(format!("invalid fast_actions arguments: {error}")))?;
+            .map_err(|error| {
+                PokError::Tool(format!(
+                    "invalid fast_actions arguments: {error}. Shape: every step (the top level and each entry of then, and of each branch's then) is an object with goal and done_when; input is a list of {{\"key\": ...}} or {{\"text\": ...}} objects; allowed_operations, avoid, then, and branches are lists."
+                ))
+            })?;
         let plan = FastPlan::from_args(&args)?;
         increment_metric(metrics, "fast_actions_runs", 1);
+        // A new plan supersedes a hand-back still waiting for its resolution.
+        self.pending_handback = None;
+        let target_question_before = self
+            .training
+            .as_ref()
+            .and_then(|recorder| recorder.last_question("target_click"));
         let mut run = FastRunContext {
             interrupts: args.on_interrupt.clone(),
             interrupts_used: 0,
@@ -596,8 +989,14 @@ impl Session {
                 node.allowed.clone()
             };
             nodes_run += 1;
-            let outcome = self
-                .run_fast_subgoal(
+            let outcome = if !node.input.is_empty() {
+                self.run_fast_input_node(turn, &node, &avoid, metrics)
+                    .await?
+            } else if allowed.contains(&FastOperation::Drag) {
+                self.run_fast_drag_node(turn, &node, &avoid, metrics)
+                    .await?
+            } else {
+                self.run_fast_subgoal(
                     turn,
                     &node.goal,
                     &node.hint,
@@ -608,7 +1007,8 @@ impl Session {
                     &mut run,
                     metrics,
                 )
-                .await?;
+                .await?
+            };
             executed_steps += outcome["steps"].as_array().map_or(0, Vec::len);
             status = outcome["status"].as_str().unwrap_or("stalled").to_owned();
             results.push(outcome);
@@ -664,8 +1064,7 @@ impl Session {
             );
         }
         // Read the values the planner asked for straight from grounded
-        // evidence, so the final answer turn does not need a screenshot.
-        let mut reads_complete = false;
+        // evidence, beside the screen they came from.
         if !args.read.is_empty() && matches!(status.as_str(), "done" | "unverified") {
             let browser_state = crate::browser::decision_state(&self.context).await;
             let has_page = browser_state
@@ -676,7 +1075,7 @@ impl Session {
                 has_page.then_some(&browser_state),
                 &args.read,
             );
-            reads_complete = reads
+            let reads_complete = reads
                 .values()
                 .all(|value| value.get("source").and_then(Value::as_str) != Some("not_found"));
             increment_metric(
@@ -690,17 +1089,518 @@ impl Session {
             );
             result["reads"] = Value::Object(reads);
         }
+        // A hand-back is a question System 1 could not answer: keep what it
+        // was asked and saw, so the primary model's resolving action can
+        // become its answer.
+        if !matches!(status.as_str(), "done" | "unverified")
+            && let Some(recorder) = &self.training
+        {
+            let question = recorder
+                .last_question("target_click")
+                .filter(|id| Some(id) != target_question_before.as_ref());
+            let failed = results
+                .iter()
+                .rev()
+                .find(|node| node.get("goal").is_some())
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            let visible = observation
+                .as_ref()
+                .map(|observation| {
+                    crate::decision::condition_evidence_labels(
+                        observation,
+                        &format!(
+                            "{} {}",
+                            args.goal,
+                            args.target_hint.clone().unwrap_or_default()
+                        ),
+                        40,
+                    )
+                })
+                .unwrap_or_default();
+            self.pending_handback = Some(json!({
+                "status": status,
+                "goal": failed.get("goal").cloned().unwrap_or_else(|| json!(args.goal)),
+                "target_hint": args.target_hint,
+                "question_id": question,
+                "window": observation
+                    .as_ref()
+                    .and_then(|observation| observation.foreground_window.as_ref())
+                    .map(|window| json!({"title": window.title, "application": window.process_name})),
+                "visible": visible,
+                "attempts": 0,
+            }));
+        }
+        // A plan whose conditions already held did nothing; say so, so the
+        // planner does not take the empty step list for a failure.
+        if executed_steps == 0 && status == "done" {
+            result["note"] = json!(
+                "every done_when already held on the current screen (shown below), so nothing needed doing"
+            );
+        }
         // Return the newest verified observation so the primary model can
-        // continue from it (including its image) without another capture.
-        if executed_steps > 0
-            && !reads_complete
-            && let Some(observation) = observation.as_ref()
+        // continue from it (including its image) without another capture. In
+        // the arena, results without it were followed by a capture 67-91% of
+        // the time, against 24% with it.
+        if let Some(observation) = observation.as_ref()
             && let Ok(value) =
                 crate::builtins::model_observation_value(observation, self.context.annotate_targets)
         {
             result["observation"] = value;
         } else if let Some(observation) = observation.as_ref() {
             result["observation_id"] = json!(crate::builtins::observation_id_for(observation));
+        }
+        Ok(result)
+    }
+
+    /// A drag between two labels the planner quoted ("drag \"A\" onto
+    /// \"B\""). Both must be found by their exact visible label, once each;
+    /// otherwise nothing is dragged and the step hands back.
+    pub(super) async fn run_fast_drag_node(
+        &mut self,
+        turn: u32,
+        node: &FastPlanNode,
+        avoid: &[String],
+        metrics: &mut RunMetrics,
+    ) -> Result<Value> {
+        let outcome = |status: &str, reason: Option<String>, steps: Vec<Value>| {
+            json!({
+                "goal": node.goal,
+                "done_when": node.done_when,
+                "status": status,
+                "reason": reason,
+                "steps": steps,
+            })
+        };
+        let completion = std::slice::from_ref(&node.done_when);
+        if !self.skill_replay_active
+            && self
+                .pick_fast_condition(turn, &node.goal, completion, "completion", metrics)
+                .await?
+                == Some(0)
+        {
+            return Ok(outcome("done", None, Vec::new()));
+        }
+        let labels = crate::decision::quoted_labels(&node.hint);
+        if labels.len() < 2 {
+            return Ok(outcome(
+                "uncertain",
+                Some(
+                    "a drag step quotes what to drag and where to drop it, e.g. target_hint \"drag \\\"Sheet2\\\" onto \\\"Sheet1\\\"\""
+                        .into(),
+                ),
+                Vec::new(),
+            ));
+        }
+        let Some(observation) = self.context.latest_observation.lock().clone() else {
+            return Ok(outcome(
+                "no_candidates",
+                Some("there is no current observation to drag in".into()),
+                Vec::new(),
+            ));
+        };
+        let find = |label: &String| {
+            let found =
+                crate::decision::exact_label_candidates(&observation, std::slice::from_ref(label))
+                    .into_iter()
+                    .filter(|candidate| {
+                        !avoid.iter().any(|phrase| {
+                            crate::decision::mentions_phrase(&candidate.description, phrase)
+                        })
+                    })
+                    .collect::<Vec<_>>();
+            (found.len() == 1).then(|| found[0].arguments.clone())
+        };
+        let (Some(source), Some(destination)) = (find(&labels[0]), find(&labels[1])) else {
+            return Ok(outcome(
+                "uncertain",
+                Some(format!(
+                    "could not find {:?} and {:?} exactly once each by their visible labels",
+                    labels[0], labels[1]
+                )),
+                Vec::new(),
+            ));
+        };
+        let baseline = PopupBaseline::of(Some(&observation));
+        increment_metric(metrics, "fast_actions_drag_nodes", 1);
+        let arguments = json!({
+            "observation_id": source["observation_id"],
+            "source_target_id": source["target_id"],
+            "expected_source_label": source["expected_label"],
+            "destination_target_id": destination["target_id"],
+            "expected_destination_label": destination["expected_label"],
+        });
+        let result = tokio::select! {
+            () = self.context.cancellation.cancelled() => return Err(PokError::Cancelled),
+            result = self.tools.call("drag_target", arguments.clone(), &self.context) => result,
+        };
+        self.record_motor("drag_target", &arguments, &result);
+        let error = result
+            .as_ref()
+            .err()
+            .map(|error| crate::decision::bounded_text(&error.to_string(), 200));
+        self.log(
+            "fast_actions_drag",
+            json!({"turn": turn, "from": labels[0], "to": labels[1], "ok": error.is_none(), "error": error}),
+        )?;
+        let steps = vec![json!({
+            "tool": "drag_target",
+            "ok": error.is_none(),
+            "from": labels[0],
+            "to": labels[1],
+            "error": error,
+        })];
+        if let Some(error) = error {
+            return Ok(outcome("input_failed", Some(error), steps));
+        }
+        let done = self
+            .pick_fast_condition(turn, &node.goal, completion, "completion", metrics)
+            .await?
+            == Some(0);
+        let current = self.context.latest_observation.lock().clone();
+        if !done
+            && let Some(found) = current.as_ref().and_then(|observation| {
+                unexpected_popup(
+                    observation,
+                    &baseline,
+                    &format!("{} {} {}", node.goal, node.hint, node.done_when),
+                )
+            })
+        {
+            let found = self.look_closer(found).await.value();
+            increment_metric(metrics, "fast_actions_popups", 1);
+            self.log("fast_actions_popup", json!({"turn": turn, "popup": found}))?;
+            let mut result = outcome(
+                "popup",
+                Some("a dialog opened that the plan did not expect; its title, text, and buttons are in popup".into()),
+                steps,
+            );
+            result["popup"] = found;
+            return Ok(result);
+        }
+        Ok(outcome(
+            if done { "done" } else { "unverified" },
+            (!done).then(|| "dragged as planned; completion could not be confirmed, so check the observation".into()),
+            steps,
+        ))
+    }
+
+    /// The primary model's action after a System 1 hand-back: the first one
+    /// that makes verified progress is how the step should have been done,
+    /// and becomes a training record. Three actions without progress drop it.
+    pub(super) fn record_handback(
+        &mut self,
+        name: &str,
+        arguments: &Value,
+        outcome: &str,
+        result: &Result<Value>,
+    ) {
+        if name == "fast_actions" || !super::run_loop::is_acting_tool(name) {
+            return;
+        }
+        let Some(pending) = self.pending_handback.as_mut() else {
+            return;
+        };
+        if outcome != "progress" || result.is_err() {
+            let attempts = pending["attempts"].as_u64().unwrap_or(0) + 1;
+            pending["attempts"] = json!(attempts);
+            if attempts >= 3 {
+                self.pending_handback = None;
+            }
+            return;
+        }
+        let Some(mut record) = self.pending_handback.take() else {
+            return;
+        };
+        let value = result.as_ref().ok();
+        let label = ["expected_label", "label", "expected_source_label"]
+            .iter()
+            .find_map(|key| arguments.get(*key).and_then(Value::as_str))
+            .or_else(|| {
+                value.and_then(|value| {
+                    ["/model_action/label", "/label", "/target/label"]
+                        .iter()
+                        .find_map(|pointer| value.pointer(pointer).and_then(Value::as_str))
+                })
+            })
+            .map(|label| crate::decision::bounded_text(label, 120));
+        let mut action = arguments.clone();
+        if let Some(object) = action.as_object_mut() {
+            object.remove("observation_id");
+            object.remove("view_id");
+        }
+        record["resolution"] = json!({
+            "tool": name,
+            "label": label,
+            "arguments": crate::decision::bounded_text(&action.to_string(), 600),
+        });
+        if let Some(recorder) = &self.training {
+            recorder.handback(&record);
+        }
+    }
+
+    /// A closer look at a dialog whose message the noticing capture did not
+    /// include: read the dialog window's own UI tree (no screenshot, no model).
+    pub(super) async fn look_closer(&self, mut popup: Popup) -> Popup {
+        if !popup.needs_closer_look() {
+            return popup;
+        }
+        let window_id = match popup.window_id.clone() {
+            Some(id) => Some(id),
+            None => self
+                .context
+                .platform
+                .list_windows()
+                .await
+                .ok()
+                .and_then(|windows| {
+                    windows
+                        .into_iter()
+                        .find(|window| window.title.trim() == popup.title)
+                        .map(|window| window.id)
+                }),
+        };
+        let Some(window_id) = window_id else {
+            return popup;
+        };
+        let request = crate::types::CaptureRequest {
+            scope: crate::types::CaptureScope::Window,
+            window_id: Some(window_id),
+            monitor_id: None,
+            region: None,
+            max_edge: 640,
+        };
+        if let Ok(Ok(elements)) = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            self.context.platform.query_ui_tree_target(&request),
+        )
+        .await
+        {
+            popup.read(&elements, None);
+        }
+        popup
+    }
+
+    /// A plan node with `input`: System 2 wrote the exact keys and text;
+    /// System 1 finds the field to focus by local grounding only, performs
+    /// the input as one batch through the ordinary input pipeline (policy,
+    /// password guard, effect checks), and checks `done_when`. A field that
+    /// is not grounded by its visible label is handed back, never guessed.
+    pub(super) async fn run_fast_input_node(
+        &mut self,
+        turn: u32,
+        node: &FastPlanNode,
+        avoid: &[String],
+        metrics: &mut RunMetrics,
+    ) -> Result<Value> {
+        let outcome = |status: &str, reason: Option<String>, steps: Vec<Value>| {
+            json!({
+                "goal": node.goal,
+                "done_when": node.done_when,
+                "status": status,
+                "reason": reason,
+                "steps": steps,
+            })
+        };
+        let completion = std::slice::from_ref(&node.done_when);
+        if self
+            .pick_fast_condition(turn, &node.goal, completion, "completion", metrics)
+            .await?
+            == Some(0)
+        {
+            return Ok(outcome("done", None, Vec::new()));
+        }
+        let mut batch = Vec::new();
+        let mut first_step_attached = false;
+        let mut target_label = None;
+        if !node.hint.is_empty() {
+            let Some(observation) = self.context.latest_observation.lock().clone() else {
+                return Ok(outcome(
+                    "no_candidates",
+                    Some("there is no current observation to find the field in".into()),
+                    Vec::new(),
+                ));
+            };
+            let limit = self
+                .decision_router_config
+                .as_ref()
+                .map_or(60, |config| config.max_candidates.min(250));
+            let mut candidates = crate::decision::exact_label_candidates(
+                &observation,
+                &crate::decision::quoted_labels(&node.hint),
+            );
+            candidates.extend(desktop_candidates_for_task(
+                &observation,
+                &node.goal,
+                &node.hint,
+                limit,
+            ));
+            candidates.retain(|candidate| {
+                candidate.tool == "click_target"
+                    && candidate.arguments.get("expected_label").is_some()
+                    && !avoid.iter().any(|phrase| {
+                        crate::decision::mentions_phrase(&candidate.description, phrase)
+                    })
+            });
+            let matched = crate::decision::exact_quoted_match(
+                &candidates,
+                &format!("{} {}", node.hint, node.goal),
+            )
+            .or_else(|| unambiguous_label_match(&candidates))
+            .cloned();
+            let Some(matched) = matched else {
+                return Ok(outcome(
+                    "uncertain",
+                    Some("the field for this input is not grounded by a visible label; focus it yourself or quote its exact label".into()),
+                    Vec::new(),
+                ));
+            };
+            target_label = Some(crate::decision::bounded_text(&matched.description, 160));
+            let target_id = matched.arguments["target_id"].clone();
+            match node.input.first() {
+                // Focus and type in one step: the batch refuses to type into
+                // anything that is not a text field.
+                Some(first) if first.text.is_some() => {
+                    batch.push(json!({
+                        "kind": "type_text",
+                        "target_id": target_id,
+                        "text": first.text,
+                        "replace_existing": first.replace_existing,
+                    }));
+                    first_step_attached = true;
+                }
+                _ => batch.push(json!({
+                    "kind": "click_target",
+                    "target_id": target_id,
+                    "expected_label": matched.arguments["expected_label"],
+                })),
+            }
+        }
+        for (index, step) in node.input.iter().enumerate() {
+            if index == 0 && first_step_attached {
+                continue;
+            }
+            if let Some(key) = &step.key {
+                batch.push(json!({"kind": "key", "key": key}));
+            } else if let Some(text) = &step.text {
+                batch.push(json!({
+                    "kind": "type_text",
+                    "text": text,
+                    "replace_existing": step.replace_existing,
+                }));
+            }
+        }
+        increment_metric(metrics, "fast_actions_input_nodes", 1);
+        let before = self.context.latest_observation.lock().clone();
+        let baseline = PopupBaseline::of(before.as_ref());
+        let before_evidence = before
+            .as_ref()
+            .map(crate::decision::observation_evidence_text)
+            .unwrap_or_default();
+        let started = Instant::now();
+        let result = tokio::select! {
+            () = self.context.cancellation.cancelled() => return Err(PokError::Cancelled),
+            result = self.tools.call("execute_action_batch", json!({"steps": batch.clone()}), &self.context) => result,
+        };
+        self.record_motor("execute_action_batch", &json!({"steps": batch}), &result);
+        if let Ok(value) = &result
+            && qualifies_as_fresh_evidence("execute_action_batch", value, true)
+        {
+            self.decision_router_fresh_evidence = true;
+        }
+        // A batch reports a step that failed inside its result, not as an error.
+        let error = match &result {
+            Err(error) => Some(error.to_string()),
+            Ok(value) if value.get("failed_at_step").is_some() => Some(format!(
+                "input step {} failed: {}",
+                value["failed_at_step"],
+                value
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("not verified")
+            )),
+            Ok(_) => None,
+        }
+        .map(|error| crate::decision::bounded_text(&error, 200));
+        self.log(
+            "fast_actions_input",
+            json!({
+                "turn": turn,
+                "target": target_label,
+                "input_steps": node.input.len(),
+                "ok": error.is_none(),
+                "error": error,
+                "elapsed_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            }),
+        )?;
+        let steps = vec![json!({
+            "tool": "execute_action_batch",
+            "ok": error.is_none(),
+            "outcome": if error.is_none() { "progress" } else { "failed" },
+            "target": target_label,
+            "input_steps": node.input.len(),
+            "error": error,
+        })];
+        if let Some(error) = error {
+            return Ok(outcome("input_failed", Some(error), steps));
+        }
+        let done = self
+            .pick_fast_condition(turn, &node.goal, completion, "completion", metrics)
+            .await?
+            == Some(0);
+        // The typing raised a dialog the plan did not expect (an invalid
+        // value, a confirmation): pass on what it says.
+        let current = self.context.latest_observation.lock().clone();
+        // Glance at what was typed: the last text entry should now show on
+        // screen. Fields in some applications (LibreOffice cells, for one)
+        // do not expose their text to UI Automation, so this reads the screen.
+        let typed_visible = node
+            .input
+            .iter()
+            .rev()
+            .find_map(|step| step.text.as_deref())
+            .zip(current.as_ref())
+            .and_then(|(text, observation)| {
+                crate::decision::typed_text_visible(
+                    &before_evidence,
+                    &crate::decision::observation_evidence_text(observation),
+                    text,
+                )
+            });
+        if !done
+            && let Some(found) = current.as_ref().and_then(|observation| {
+                unexpected_popup(
+                    observation,
+                    &baseline,
+                    &format!("{} {} {}", node.goal, node.hint, node.done_when),
+                )
+            })
+        {
+            let found = self.look_closer(found).await.value();
+            increment_metric(metrics, "fast_actions_popups", 1);
+            self.log("fast_actions_popup", json!({"turn": turn, "popup": found}))?;
+            let mut result = outcome(
+                "popup",
+                Some(
+                    "a dialog opened that the plan did not expect; its title, text, and buttons are in popup"
+                        .into(),
+                ),
+                steps,
+            );
+            result["popup"] = found;
+            return Ok(result);
+        }
+        let reason = (!done).then(|| {
+            match typed_visible {
+                Some(true) => "typed as planned and the text now shows on screen; the completion condition could not be confirmed",
+                Some(false) => "typed, but the text does not show on screen afterward (a formula shows its result, and Enter or Tab may have moved on); check the result",
+                None => "typed as planned; completion could not be confirmed, so check the observation",
+            }
+            .into()
+        });
+        let mut result = outcome(if done { "done" } else { "unverified" }, reason, steps);
+        if let Some(visible) = typed_visible {
+            result["typed_text_visible"] = json!(visible);
         }
         Ok(result)
     }
@@ -945,7 +1845,10 @@ impl Session {
             return Ok(json!({"status": "unavailable", "steps": []}));
         };
         let goal = goal.to_owned();
-        let hint = hint.to_owned();
+        let hint = plain_label_as_quoted(
+            hint,
+            self.context.latest_observation.lock().clone().as_ref(),
+        );
         let done_when = done_when.to_owned();
         // The default is target matching only: one operation family keeps
         // the router out of the weak "which operation" planning choice.
@@ -970,6 +1873,8 @@ impl Session {
                 operation,
                 FastOperation::Click
                     | FastOperation::DoubleClick
+                    | FastOperation::RightClick
+                    | FastOperation::Hover
                     | FastOperation::Scroll
                     | FastOperation::ActivateWindow
             )
@@ -1012,6 +1917,11 @@ impl Session {
         // a click that leaves it unchanged proves nothing.
         let mut node_start_evidence: Option<String> = None;
         let mut last_step_evidence: Option<String> = None;
+        // Dialogs on screen when the node started, and a new one found since.
+        let mut popup_baseline: Option<PopupBaseline> = None;
+        // Whether this node already took a fresh look for the input guard.
+        let mut regrounded = false;
+        let mut popup: Option<Value> = None;
 
         for step in 0..=max_steps {
             let mut deferred_completion = false;
@@ -1019,6 +1929,9 @@ impl Session {
             // step's target pick, with the rule index behind each option.
             let mut deferred_interrupt: Option<(PendingFastCondition, Vec<usize>)> = None;
             let observation = self.context.latest_observation.lock().clone();
+            let baseline = popup_baseline
+                .get_or_insert_with(|| PopupBaseline::of(observation.as_ref()))
+                .clone();
             let browser_state = if browser_allowed {
                 crate::browser::decision_state(&self.context).await
             } else {
@@ -1204,6 +2117,10 @@ impl Session {
             // A pending interrupt action is handled before judging completion.
             let grounded = if interrupt_hint.is_some() {
                 Some(false)
+            } else if self.skill_replay_active && steps.is_empty() {
+                // A replayed step is a recorded action: perform it, then judge
+                // its condition (its end state may already show beforehand).
+                Some(false)
             } else if (steps.is_empty() || unchanged_since_start)
                 && crate::decision::condition_quotes_only_target(&done_when, &hint)
                 && crate::decision::grounded_condition(
@@ -1304,6 +2221,33 @@ impl Session {
                     break;
                 }
             }
+            // A dialog opened that the plan did not mention (an error, a
+            // warning, a question): read it and hand it back, rather than
+            // acting behind it or stalling on a screen it covers.
+            if interrupt_hint.is_none()
+                && let Some(found) = observation.as_ref().and_then(|observation| {
+                    unexpected_popup(
+                        observation,
+                        &baseline,
+                        &format!("{goal} {hint} {done_when}"),
+                    )
+                })
+            {
+                settle_completion!();
+                let found = self.look_closer(found).await.value();
+                increment_metric(metrics, "fast_actions_popups", 1);
+                self.log(
+                    "fast_actions_popup",
+                    json!({"turn": turn, "step": step, "popup": found}),
+                )?;
+                status = "popup";
+                reason = Some(
+                    "a dialog opened that the plan did not expect; its title, text, and buttons are in popup"
+                        .into(),
+                );
+                popup = Some(found);
+                break;
+            }
             if step == max_steps {
                 settle_interrupt!();
                 settle_completion!();
@@ -1376,13 +2320,23 @@ impl Session {
             // A quoted target may be any reliably grounded control (a button,
             // for example), not only the navigation controls offered above.
             if !elevated
-                && (allowed.contains(&FastOperation::Click)
-                    || allowed.contains(&FastOperation::DoubleClick))
+                && allowed.iter().any(|operation| {
+                    matches!(
+                        operation,
+                        FastOperation::Click
+                            | FastOperation::DoubleClick
+                            | FastOperation::RightClick
+                            | FastOperation::Hover
+                    )
+                })
                 && let Some(observation) = observation.as_ref()
             {
+                // Without a target hint, a label the goal quotes names the
+                // target ("open the \"Table\" menu").
+                let named = if hint.trim().is_empty() { &goal } else { &hint };
                 candidates.extend(crate::decision::exact_label_candidates(
                     observation,
-                    &crate::decision::quoted_labels(&hint),
+                    &crate::decision::quoted_labels(named),
                 ));
             }
             // With double_click allowed, desktop clicks open their target
@@ -1391,6 +2345,28 @@ impl Session {
                 for candidate in &mut candidates {
                     if candidate.tool == "click_target" {
                         candidate.arguments["double_click"] = json!(true);
+                    }
+                }
+            }
+            // A node's pointer action applies to whichever target is chosen:
+            // a right-click opens its context menu, a hover rests on it.
+            if allowed.contains(&FastOperation::RightClick) {
+                for candidate in &mut candidates {
+                    if candidate.tool == "click_target" {
+                        candidate.arguments["button"] = json!("right");
+                    }
+                }
+            } else if allowed.contains(&FastOperation::Hover)
+                && !allowed.contains(&FastOperation::Click)
+                && !allowed.contains(&FastOperation::DoubleClick)
+            {
+                for candidate in &mut candidates {
+                    if candidate.tool == "click_target"
+                        && let Some(arguments) = candidate.arguments.as_object_mut()
+                    {
+                        candidate.tool = "hover_target".into();
+                        arguments.remove("button");
+                        arguments.remove("double_click");
                     }
                 }
             }
@@ -1518,14 +2494,24 @@ impl Session {
                     }),
                 )?;
                 matched.clone()
-            } else if candidates.len() == 1 {
+            } else if candidates.len() == 1 && !self.skill_replay_active {
                 settle_interrupt!();
                 settle_completion!();
                 increment_metric(metrics, "fast_actions_structural_bypass", 1);
+                // The only candidate may be exactly the label the planner
+                // named; then it is the named target, as on any other path.
+                picked_named_target =
+                    crate::decision::exact_quoted_match(&candidates, &format!("{hint} {goal}"))
+                        .is_some();
                 candidates[0].clone()
             } else if let Some(matched) =
-                crate::decision::exact_quoted_match(&candidates, &format!("{hint} {goal}"))
-                    .or_else(|| unambiguous_label_match(&candidates))
+                crate::decision::exact_quoted_match(&candidates, &format!("{hint} {goal}")).or_else(
+                    || {
+                        (!self.skill_replay_active)
+                            .then(|| unambiguous_label_match(&candidates))
+                            .flatten()
+                    },
+                )
             {
                 settle_interrupt!();
                 settle_completion!();
@@ -1577,11 +2563,13 @@ impl Session {
                 // Without a trusted model, continue down the page: a
                 // read-only step that reveals more of it.
                 default.clone()
-            } else if !config.model_targets_trusted() {
+            } else if !config.model_targets_trusted() || self.skill_replay_active {
                 settle_interrupt!();
                 settle_completion!();
                 // Grounding could not decide and this backend is not trusted
-                // to pick targets: hand the choice back with the local ranking.
+                // to pick targets (or a skill is being replayed, which acts
+                // only on the labels it saved): hand the choice back with the
+                // local ranking.
                 status = "uncertain";
                 reason =
                     Some("no visible label matches the hint exactly; choose one yourself".into());
@@ -1890,23 +2878,59 @@ impl Session {
                 name: candidate.tool.clone(),
                 arguments: candidate.arguments.clone(),
             };
-            let (signature, prior_attempts) =
-                match self
-                    .continuity
-                    .before_call(&call.name, &call.arguments, observation.as_ref())
-                {
-                    PreCallDecision::Execute {
+            let (signature, prior_attempts) = match self.continuity.before_call(
+                &call.name,
+                &call.arguments,
+                observation.as_ref(),
+            ) {
+                PreCallDecision::Execute {
+                    signature,
+                    prior_attempts,
+                } => (signature, prior_attempts),
+                PreCallDecision::Suppress { reason: why, .. } => {
+                    self.log(
+                        "fast_actions_step_suppressed",
+                        json!({"turn": turn, "tool": call.name, "reason": why}),
+                    )?;
+                    if regrounded {
+                        status = "stalled";
+                        reason = Some(crate::decision::bounded_text(&why, 300));
+                        break;
+                    }
+                    // The repeat-input guard asks for a fresh look before
+                    // more input: System 1 takes one, then decides again
+                    // from the new screen.
+                    regrounded = true;
+                    attempted.remove(&fingerprint);
+                    let look = CompletedToolCall {
+                        id: format!("fast-actions-{}", Uuid::new_v4()),
+                        name: "capture_screen".into(),
+                        arguments: json!({}),
+                    };
+                    if let PreCallDecision::Execute {
                         signature,
                         prior_attempts,
-                    } => (signature, prior_attempts),
-                    PreCallDecision::Suppress { reason: why, .. } => {
-                        self.log(
-                            "fast_actions_step_suppressed",
-                            json!({"turn": turn, "tool": call.name, "reason": why}),
-                        )?;
-                        continue;
+                    } = self.continuity.before_call(
+                        &look.name,
+                        &look.arguments,
+                        observation.as_ref(),
+                    ) {
+                        let captured = tokio::select! {
+                            () = self.context.cancellation.cancelled() => return Err(PokError::Cancelled),
+                            captured = self.tools.call(&look.name, look.arguments.clone(), &self.context) => captured,
+                        };
+                        self.continuity.after_call(
+                            &look.name,
+                            &look.arguments,
+                            &signature,
+                            prior_attempts,
+                            &captured,
+                        );
+                        increment_metric(metrics, "fast_actions_regrounds", 1);
                     }
-                };
+                    continue;
+                }
+            };
             self.emit(AgentEvent::ToolStarted {
                 call_id: call.id.clone(),
                 name: call.name.clone(),
@@ -1916,6 +2940,7 @@ impl Session {
                 () = self.context.cancellation.cancelled() => return Err(PokError::Cancelled),
                 result = self.tools.call(&call.name, call.arguments.clone(), &self.context) => result,
             };
+            self.record_motor(&call.name, &call.arguments, &result);
             let feedback = self.continuity.after_call(
                 &call.name,
                 &call.arguments,
@@ -2041,6 +3066,9 @@ impl Session {
         }
         if !alternatives.is_empty() {
             result["alternatives"] = json!(alternatives);
+        }
+        if let Some(popup) = popup {
+            result["popup"] = popup;
         }
         Ok(result)
     }

@@ -681,6 +681,7 @@ pub fn tool_group(name: &str) -> &'static str {
         | "activate_window"
         | "browser_navigate"
         | "query_screen_text"
+        | "read_clipboard"
         | "query_window_tree"
         | "click_target"
         | "locate_visual_target"

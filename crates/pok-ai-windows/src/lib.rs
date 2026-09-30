@@ -31,6 +31,27 @@ impl WindowsDesktop {
     }
 }
 
+/// The one-at-a-time UI Automation permit. A walk that outlasted an earlier
+/// capture's time limit still holds it; waiting briefly for it to finish
+/// keeps the next capture's structure instead of dropping to OCR at once.
+#[cfg(windows)]
+async fn uia_permit(
+    gate: &std::sync::Arc<tokio::sync::Semaphore>,
+) -> pok_ai_core::Result<tokio::sync::OwnedSemaphorePermit> {
+    match tokio::time::timeout(
+        std::time::Duration::from_millis(1_000),
+        gate.clone().acquire_owned(),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => Ok(permit),
+        _ => Err(pok_ai_core::PokError::Tool(
+            "UI Automation enrichment is still recovering from a prior slow provider; using screenshot/OCR fallback"
+                .into(),
+        )),
+    }
+}
+
 /// The desktop platform for an agent session. With `background_work`, the
 /// agent works in its own window while the user keeps using another one
 /// (see [`pok_ai_core::agent_window`]).
@@ -479,12 +500,7 @@ mod native {
         }
 
         async fn query_ui_tree(&self) -> Result<Vec<UiElement>> {
-            let permit = self.uia_gate.clone().try_acquire_owned().map_err(|_| {
-                PokError::Tool(
-                    "UI Automation enrichment is still recovering from a prior slow provider; using screenshot/OCR fallback"
-                        .into(),
-                )
-            })?;
+            let permit = super::uia_permit(&self.uia_gate).await?;
             tokio::task::spawn_blocking(move || {
                 let _permit = permit;
                 ui_tree()
@@ -495,12 +511,7 @@ mod native {
 
         async fn query_ui_tree_target(&self, request: &CaptureRequest) -> Result<Vec<UiElement>> {
             let request = request.clone();
-            let permit = self.uia_gate.clone().try_acquire_owned().map_err(|_| {
-                PokError::Tool(
-                    "UI Automation enrichment is still recovering from a prior slow provider; using screenshot/OCR fallback"
-                        .into(),
-                )
-            })?;
+            let permit = super::uia_permit(&self.uia_gate).await?;
             tokio::task::spawn_blocking(move || {
                 let _permit = permit;
                 ui_tree_target(&request, 1_000)
@@ -515,12 +526,7 @@ mod native {
             limit: usize,
         ) -> Result<Vec<UiElement>> {
             let request = request.clone();
-            let permit = self.uia_gate.clone().try_acquire_owned().map_err(|_| {
-                PokError::Tool(
-                    "UI Automation enrichment is still recovering from a prior slow provider; using screenshot/OCR fallback"
-                        .into(),
-                )
-            })?;
+            let permit = super::uia_permit(&self.uia_gate).await?;
             tokio::task::spawn_blocking(move || {
                 let _permit = permit;
                 ui_tree_target(&request, limit)
@@ -1931,11 +1937,28 @@ mod native {
         ) {
             let walker = automation.get_control_view_walker().map_err(tool_error)?;
             let desktop = automation.get_root_element().map_err(tool_error)?;
-            walker
-                .get_children(&desktop)
-                .unwrap_or_default()
-                .into_iter()
-                .find(|element| element_id(element).as_deref() == Some(target.id.as_str()))
+            let top_level = walker.get_children(&desktop).unwrap_or_default();
+            let matches =
+                |element: &UIElement| element_id(element).as_deref() == Some(target.id.as_str());
+            let target_pid = target
+                .id
+                .split(':')
+                .next()
+                .and_then(|pid| pid.parse::<u32>().ok());
+            top_level
+                .iter()
+                .find(|element| matches(element))
+                .cloned()
+                // A dialog owned by an application window (LibreOffice's, for
+                // one) sits under that window in the UI Automation tree, not
+                // at the top level.
+                .or_else(|| {
+                    top_level
+                        .iter()
+                        .filter(|window| window.get_process_id().ok() == target_pid)
+                        .flat_map(|window| walker.get_children(window).unwrap_or_default())
+                        .find(|element| matches(element))
+                })
                 .ok_or_else(|| {
                     PokError::Tool(format!(
                         "capture target {:?} no longer has a top-level UI Automation element",
@@ -2085,17 +2108,38 @@ mod native {
         let condition = automation
             .create_property_condition(UIProperty::IsOffscreen, false.into(), None)
             .map_err(tool_error)?;
-        let elements = root
-            .find_all_build_cache(TreeScope::Descendants, &condition, &cache)
-            .map_err(tool_error)?;
-        Ok(elements
-            .into_iter()
-            .filter_map(|element| cached_element(&element))
-            .filter(|element| {
-                target_bounds.is_none_or(|bounds| overlaps_rect(&element.bounds, bounds))
-            })
-            .take(limit)
-            .collect())
+        // Walk one level at a time instead of asking for every descendant at
+        // once, and never enter a table or data grid: a spreadsheet exposes
+        // its whole sheet as one table, and enumerating it hangs the
+        // application (cells are reached through its cell-reference box).
+        let mut elements = Vec::new();
+        let mut pending = std::collections::VecDeque::from([root.clone()]);
+        let mut visited = 0_usize;
+        while let Some(parent) = pending.pop_front() {
+            if elements.len() >= limit || visited >= limit.saturating_mul(4).max(64) {
+                break;
+            }
+            visited += 1;
+            let children = parent
+                .find_all_build_cache(TreeScope::Children, &condition, &cache)
+                .unwrap_or_default();
+            for child in children {
+                let grid = child
+                    .get_cached_localized_control_type()
+                    .map(|kind| kind.to_ascii_lowercase())
+                    .is_ok_and(|kind| matches!(kind.as_str(), "table" | "data grid" | "datagrid"));
+                if let Some(element) = cached_element(&child)
+                    && target_bounds.is_none_or(|bounds| overlaps_rect(&element.bounds, bounds))
+                {
+                    elements.push(element);
+                }
+                if !grid {
+                    pending.push_back(child);
+                }
+            }
+        }
+        elements.truncate(limit);
+        Ok(elements)
     }
 
     fn overlaps_rect(left: &Rect, right: &Rect) -> bool {
@@ -2410,6 +2454,15 @@ mod native {
         let automation = UIAutomation::new().map_err(tool_error)?;
         let element = automation.get_focused_element().map_err(tool_error)?;
         if element.is_password().unwrap_or(false) {
+            return Ok(None);
+        }
+        // A spreadsheet's focused sheet is a table: its "text" is every cell,
+        // and building it hangs the application. Only a field is read.
+        if element
+            .get_localized_control_type()
+            .map(|kind| kind.to_ascii_lowercase())
+            .is_ok_and(|kind| matches!(kind.as_str(), "table" | "data grid" | "datagrid"))
+        {
             return Ok(None);
         }
         if let Ok(value) = element

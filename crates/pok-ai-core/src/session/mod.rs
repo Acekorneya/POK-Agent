@@ -58,7 +58,9 @@ mod events;
 mod fast_actions;
 mod intent;
 mod model_output;
+mod motor_program;
 mod run_loop;
+mod skill_replay;
 mod tool_results;
 
 use context_window::*;
@@ -70,6 +72,8 @@ use events::*;
 use fast_actions::*;
 use intent::*;
 use model_output::*;
+use motor_program::*;
+use skill_replay::*;
 use tool_results::*;
 
 pub use events::{AgentEvent, SessionObserver};
@@ -77,15 +81,24 @@ pub use events::{AgentEvent, SessionObserver};
 const CURRENT_VISUAL_PAIR_IMAGES: usize = 2;
 const IMAGE_PAYLOAD_BUDGET_BYTES: usize = 20 * 1024 * 1024;
 
+/// How to handle missing information when the user can answer questions.
+const INTERACTIVE_QUESTIONS: &str = "When missing information, ambiguity, or a user preference materially changes the next action, call ask_user_question rather than ending the run with a plain-text questionnaire. Group all currently known related questions in one call, ask additional rounds when genuinely needed, and offer concise choices with the recommended option first when practical. Do not ask for information already available from context or tools, and do not repeat answered or dismissed questions.";
+
+/// The same, when no one can answer during the run (the CLI or an
+/// unattended run): asking would only end the run with nothing done.
+const UNATTENDED_QUESTIONS: &str = "No one can answer questions during this run. When details are ambiguous, act on the most reasonable reading of the request and the visible state, and state what you assumed in your final answer. Do not stop to ask; stop without acting only when every reasonable reading would be unsafe or impossible.";
+
 const SYSTEM_PROMPT: &str = r#"You are POK-Ai, a Windows computer-use and coding agent.
 Use only the supplied tools. Observe the desktop before input. Desktop tools use the latest observation;
 copy the short observation_id only when needed and never invent or repair an id.
-When missing information, ambiguity, or a user preference materially changes the next action, call ask_user_question rather than ending the run with a plain-text questionnaire. Group all currently known related questions in one call, ask additional rounds when genuinely needed, and offer concise choices with the recommended option first when practical. Do not ask for information already available from context or tools, and do not repeat answered or dismissed questions.
+{QUESTIONS}
 Capture returns numbered interaction targets fused from UI Automation, OCR, and vision. The clean image
 shows the unobscured desktop and the annotated image uses the same ids as action_targets. Prefer the
 task-ranked relevant_targets shortlist. For click_target, provide both the listed target_id and the visible
 expected_label you intend to activate; the runtime will execute only a matching or uniquely corrected fresh
 target. Inspect an ambiguous target instead of guessing. Never use simulate_input for coordinate clicks.
+A text target (role "text", often a menu item or label read by OCR) that is marked actionable can be clicked with
+click_target and its exact label; use that before locating it visually.
 For an unlabeled visible control, call locate_visual_target with its labeled bounding box. Inspect the enlarged
 confirmation crop, then call click_localized with the returned one-use localization_id; never guess or directly
 click raw coordinates. UIA/OCR may corroborate the model box but are not required for games or canvases.
@@ -122,6 +135,19 @@ Use desktop tools for browser/GUI-only work and whenever the user explicitly req
 application. In that case the requested application must still be opened and the final result verified there,
 but deterministic bulk content or save operations may use documented application APIs instead of slow manual
 keystrokes and dialogs. Commands may act only within the current policy's authorized filesystem scope.
+Before working around a request, check that the requested feature, file, setting, or state actually exists here.
+If it does not, or the request cannot be done in this environment, say so plainly instead of substituting something different.
+When the user asks for help with a document, spreadsheet, or other file without naming a different one, they mean the
+file they have open, even when its current content looks unrelated: do the work in that file, keep its name and format,
+and do not start a new file unless they ask for one. Likewise, a setting or preference they describe without naming an
+application belongs to the application they have open in front, not to Windows or another program.
+When a document is open in an application, change it in that application, or close it without saving before editing its
+file with a command or file tool, then reopen it to verify; otherwise the application's open copy can overwrite the edit.
+In spreadsheets and other grids, move with the cell-reference (Name) box and the keyboard instead of clicking cells: type a
+cell or range such as B2 or A1:C1 into the Name Box (Ctrl+Shift+F5 in LibreOffice Calc; Ctrl+G or F5 in Excel), then type
+values or formulas and use Tab, Enter, and arrows. To check cell contents after a change, select the range, press Ctrl+C,
+and call read_clipboard, which returns the copied cells as rows. For bulk content changes, a script or the application's
+automation interface is usually faster than cell-by-cell input; verify the result in the application afterwards.
 Distinguish requests for information from requests to act. A question such as "is there a way" should be
 answered with options and should not trigger probing, scanning, configuration, or other external actions unless
 the user also asks you to investigate, set up, or perform them.
@@ -194,6 +220,9 @@ pub struct Session {
     schema_references_unsupported: bool,
     temporal_anchor: TemporalAnchor,
     curation_cancellation: CancellationToken,
+    /// Maximum planner turns that act on the computer (a `fast_actions` plan
+    /// is one step, however many actions System 1 runs); `None` is unlimited.
+    action_step_budget: Option<u32>,
     /// Background learning and curation started after verified runs.
     curation_tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     manual_compaction_requested: bool,
@@ -234,6 +263,21 @@ pub struct Session {
     /// Delegated mode withholds raw navigation tools until a `fast_actions`
     /// run hands control back without completing its subgoal.
     raw_navigation_unlocked: u8,
+    /// A step System 1 handed back, waiting for the primary model's
+    /// resolving action to become a training label (see `record_handback`).
+    pending_handback: Option<Value>,
+    /// Set while System 1 replays a skill: only exact quoted labels are
+    /// clicked, and any other screen hands back instead of a model pick.
+    skill_replay_active: bool,
+    /// The motor steps (clicks by label, keys, text) this run performed, in
+    /// order; a verified run saves them on its skill as a program.
+    motor_tape: Vec<Value>,
+    /// A skill whose stored program was replayed this run and stopped before
+    /// its end: the program this run records replaces it.
+    stale_program: Option<Uuid>,
+    /// Whether this run's completion was clean (no result check had to be
+    /// retried, no warnings accepted): only such a run leaves a program.
+    clean_completion: bool,
     /// Reused judge verdicts: candidate fingerprint + task + current_step ->
     /// the last verdict the judge returned for that exact input. A repeated
     /// candidate across re-observations (the same window re-proposed after a
@@ -322,7 +366,16 @@ impl Session {
             .append(true)
             .open(context.artifact_dir.join("trace.jsonl"))?;
         let temporal_anchor = current_temporal_anchor();
-        let mut system_prompt = format!("{SYSTEM_PROMPT}\n\n{}", temporal_anchor.context);
+        let questions = if context.questions.is_some() {
+            INTERACTIVE_QUESTIONS
+        } else {
+            UNATTENDED_QUESTIONS
+        };
+        let mut system_prompt = format!(
+            "{}\n\n{}",
+            SYSTEM_PROMPT.replace("{QUESTIONS}", questions),
+            temporal_anchor.context
+        );
         system_prompt.push_str("\n\n");
         system_prompt.push_str(authorization_context(&context.policy.mode));
         system_prompt.push_str(
@@ -396,6 +449,7 @@ impl Session {
             schema_references_unsupported: false,
             temporal_anchor,
             curation_cancellation: CancellationToken::new(),
+            action_step_budget: None,
             curation_tasks: Mutex::default(),
             manual_compaction_requested: false,
             last_prompt_tokens: None,
@@ -434,6 +488,11 @@ impl Session {
             decision_router_refinement: DecisionRefinementState::default(),
             decision_router_launched_applications: HashSet::new(),
             raw_navigation_unlocked: 0,
+            pending_handback: None,
+            skill_replay_active: false,
+            motor_tape: Vec::new(),
+            stale_program: None,
+            clean_completion: false,
             decision_router_judge_verdicts: std::collections::BTreeMap::new(),
             decision_activity: Vec::new(),
             environment_revision: 0,
@@ -580,6 +639,27 @@ impl Session {
             }));
         self.observer = Some(observer);
         self.install_user_activity_listener();
+        self
+    }
+
+    /// Limit the planner turns that act on the computer. Benchmarks such as
+    /// Windows Agent Arena cap agents at a fixed number of steps; the planner
+    /// sees the steps it has left and must finish within them.
+    pub fn with_action_step_budget(mut self, budget: Option<u32>) -> Self {
+        self.action_step_budget = budget.filter(|steps| *steps > 0);
+        self
+    }
+
+    /// Standing instructions appended to the system prompt (for example a
+    /// benchmark's convention for reporting an impossible task).
+    pub fn with_standing_instructions(mut self, instructions: Option<&str>) -> Self {
+        if let Some(text) = instructions.map(str::trim).filter(|text| !text.is_empty())
+            && let Some(first) = self.messages.first_mut()
+        {
+            first.content.push(MessageContent::Text {
+                text: format!("\n\nStanding instructions:\n{text}"),
+            });
+        }
         self
     }
 

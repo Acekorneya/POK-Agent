@@ -4,6 +4,11 @@ default_provider = "lm_studio"
 default_model = "google/gemma-4-26b-a4b-qat"
 max_turns = 128
 command_timeout_seconds = 120
+# Maximum planner turns that act on the computer in one run (a fast_actions
+# plan counts as one step). Unset = unlimited; Windows Agent Arena uses 30.
+# action_step_budget = 30
+# Extra standing instructions appended to the agent's system prompt.
+# standing_instructions = ""
 # Delay between oversized native text-input batches; ordinary text is sent in one batch.
 input_text_inter_key_pause_ms = 50
 # Use a number from 0 to 2, or "server_default" to omit temperature from API requests.
@@ -59,9 +64,11 @@ min_completion_probability = 0.80
 # right, to <data_dir>/router-training/<session>.jsonl for training a System 1
 # model (combine with scripts/build_router_dataset.py). Files stay on this
 # machine; windows whose title or process contains an excluded word, and any
-# question with an email address or a long number, are never recorded.
+# question with an email address or a long number, are never recorded. Words for
+# this machine's own sensitive applications go in training-exclude.txt in the
+# data folder (one per line), which stays on the machine.
 # training_log = false
-# training_exclude = ["password", "1password", "bitwarden", "keepass", "lastpass", "bank", "mail", "outlook", "discord", "example_pos", "examplepos"]
+# training_exclude = ["password", "1password", "bitwarden", "keepass", "lastpass", "bank", "mail", "outlook", "discord"]
 
 [decision_router.laya]
 endpoint = "http://127.0.0.1:43127/v1/systemone"

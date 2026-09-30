@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 250" role="img" aria-label="Tasks passed">
+<style>
+  .bg { fill: #ffffff; }
+  .ink { fill: #1f2328; }
+  .muted { fill: #59636e; }
+  .grid { stroke: #d1d9e0; }
+  .accent { fill: #2a78d6; }
+  .base { fill: #9aa4ae; }
+  text { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  @media (prefers-color-scheme: dark) {
+    .bg { fill: #0d1117; }
+    .ink { fill: #e6edf3; }
+    .muted { fill: #9198a1; }
+    .grid { stroke: #30363d; }
+    .accent { fill: #4493f8; }
+    .base { fill: #6b7580; }
+  }
+</style>
+<rect class="bg" width="640" height="250" rx="8"/>
+<text class="ink" x="16" y="26" font-size="16" font-weight="600">Tasks passed</text>
+<text class="muted" x="16" y="46" font-size="12">Windows Agent Arena, 154 tasks per pass; stealth planner with JEV as System 1</text>
+<line class="grid" x1="250.0" x2="250.0" y1="58" y2="238" stroke-width="1"/>
+<line class="grid" x1="350.0" x2="350.0" y1="58" y2="238" stroke-width="1"/>
+<line class="grid" x1="450.0" x2="450.0" y1="58" y2="238" stroke-width="1"/>
+<line class="grid" x1="550.0" x2="550.0" y1="58" y2="238" stroke-width="1"/>
+<text class="ink" x="140" y="77" font-size="13" text-anchor="end">Baseline</text>
+<text class="muted" x="140" y="90" font-size="10" text-anchor="end">no step cap</text>
+<rect class="base" x="150" y="66" width="243.6" height="20" rx="3"/>
+<text class="ink" x="401.6" y="81" font-size="12" font-weight="600">60.9%</text>
+<text class="ink" x="140" y="111" font-size="13" text-anchor="end">v2</text>
+<text class="muted" x="140" y="124" font-size="10" text-anchor="end">skills as advice</text>
+<rect class="base" x="150" y="100" width="233.0" height="20" rx="3"/>
+<text class="ink" x="391.0" y="115" font-size="12" font-weight="600">58.2%</text>
+<text class="ink" x="140" y="145" font-size="13" text-anchor="end">v4</text>
+<text class="muted" x="140" y="158" font-size="10" text-anchor="end">skill replay</text>
+<rect class="base" x="150" y="134" width="230.4" height="20" rx="3"/>
+<text class="ink" x="388.4" y="149" font-size="12" font-weight="600">57.6%</text>
+<text class="ink" x="140" y="179" font-size="13" text-anchor="end">v5 · 1st</text>
+<text class="muted" x="140" y="192" font-size="10" text-anchor="end">first look, System 1 plans</text>
+<rect class="base" x="150" y="168" width="228.1" height="20" rx="3"/>
+<text class="ink" x="386.1" y="183" font-size="12" font-weight="600">57.0%</text>
+<text class="ink" x="140" y="213" font-size="13" text-anchor="end">v5 · 2nd</text>
+<text class="muted" x="140" y="226" font-size="10" text-anchor="end">muscle memory</text>
+<rect class="accent" x="150" y="202" width="230.4" height="20" rx="3"/>
+<text class="ink" x="388.4" y="217" font-size="12" font-weight="600">57.6%</text>
+</svg>

@@ -2330,6 +2330,36 @@ fn normalized_words(value: &str) -> String {
         .join(" ")
 }
 
+/// A normalized label without a trailing keyboard shortcut, as UI
+/// Automation names often carry one ("Extensions (Ctrl+Shift+X)", "Tools
+/// Alt+s"): the planner's "Extensions" names the same control. Only a tail of
+/// modifiers followed by one key is removed, never the whole label.
+pub fn label_key(normalized: &str) -> String {
+    let words = normalized.split_whitespace().collect::<Vec<_>>();
+    let modifier =
+        |word: &str| matches!(word, "ctrl" | "control" | "alt" | "shift" | "win" | "cmd");
+    let key = |word: &str| {
+        word.chars().count() <= 3
+            || matches!(
+                word,
+                "enter" | "escape" | "esc" | "tab" | "delete" | "home" | "end" | "space"
+            )
+    };
+    if words.len() >= 3
+        && let Some(last) = words.last()
+        && key(last)
+    {
+        let mut start = words.len() - 1;
+        while start > 1 && modifier(words[start - 1]) {
+            start -= 1;
+        }
+        if start < words.len() - 1 {
+            return words[..start].join(" ");
+        }
+    }
+    words.join(" ")
+}
+
 /// Quoted spans (straight or curly double quotes) in planner text,
 /// normalized. A planner that quotes a label names the exact target it wants.
 pub fn quoted_labels(text: &str) -> Vec<String> {
@@ -2381,7 +2411,10 @@ pub fn exact_quoted_match<'a>(
     candidates: &'a [DecisionCandidate],
     planner_text: &str,
 ) -> Option<&'a DecisionCandidate> {
-    let quoted = quoted_labels(planner_text);
+    let quoted = quoted_labels(planner_text)
+        .iter()
+        .map(|label| label_key(label))
+        .collect::<Vec<_>>();
     if quoted.is_empty() {
         return None;
     }
@@ -2389,7 +2422,7 @@ pub fn exact_quoted_match<'a>(
         .iter()
         .filter(|candidate| candidate.kind == DecisionCandidateKind::Action)
         .filter_map(|candidate| {
-            let label = normalized_words(&candidate_label(candidate));
+            let label = label_key(&normalized_words(&candidate_label(candidate)));
             quoted.contains(&label).then_some((label, candidate))
         })
         .collect::<Vec<_>>();
@@ -2409,7 +2442,68 @@ pub fn observation_evidence_text(observation: &Observation) -> String {
     }
     parts.extend(observation.targets.iter().map(|target| target.name.clone()));
     parts.extend(observation.ocr.iter().map(|block| block.text.clone()));
+    // What fields and boxes contain (a Name Box, a search field), which a
+    // label list alone does not show.
+    parts.extend(
+        observation
+            .ui_elements
+            .iter()
+            .filter(|element| !element.password && !element.offscreen)
+            .filter_map(|element| element.value.clone()),
+    );
     normalized_words(&parts.join(" \n "))
+}
+
+/// Whether text just typed now shows on screen (in the field, a formula bar,
+/// or the cell) when it did not before: the glance a person gives after
+/// typing, for applications whose fields do not expose their text to UI
+/// Automation. `None` when the text is too short to tell or was already
+/// visible. OCR misreads a few characters, so a small number of
+/// differences is allowed.
+pub fn typed_text_visible(before: &str, after: &str, typed: &str) -> Option<bool> {
+    let squeeze = |text: &str| -> Vec<char> {
+        normalized_words(text)
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect()
+    };
+    let typed = squeeze(typed);
+    if typed.len() < 3 {
+        return None;
+    }
+    // The end of a long entry is what the field shows last.
+    let needle = &typed[typed.len().saturating_sub(60)..];
+    let allowed = needle.len() / 8;
+    if approximately_contains(&squeeze(before), needle, allowed) {
+        return None;
+    }
+    Some(approximately_contains(&squeeze(after), needle, allowed))
+}
+
+/// Whether `needle` occurs in `haystack` with at most `allowed` character
+/// edits (Sellers' approximate substring search).
+fn approximately_contains(haystack: &[char], needle: &[char], allowed: usize) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let mut column: Vec<usize> = (0..=needle.len()).collect();
+    for &ch in haystack {
+        let mut diagonal = 0;
+        for (index, &expected) in needle.iter().enumerate() {
+            let above = column[index + 1];
+            column[index + 1] = if expected == ch {
+                diagonal
+            } else {
+                1 + diagonal.min(above).min(column[index])
+            };
+            diagonal = above;
+        }
+        column[0] = 0;
+        if column[needle.len()] <= allowed {
+            return true;
+        }
+    }
+    false
 }
 
 /// Normalized title evidence: the foreground window title and the managed
@@ -2551,15 +2645,36 @@ pub fn exact_label_candidates(
     if labels.is_empty() {
         return Vec::new();
     }
+    let labels = labels
+        .iter()
+        .map(|label| label_key(label))
+        .collect::<Vec<_>>();
     let observation_id = crate::builtins::observation_id_for(observation);
+    // Text read by OCR only (applications that expose little to UI
+    // Automation, such as LibreOffice menus) counts when the planner quoted
+    // it and it appears exactly once, so it cannot be text elsewhere on the
+    // screen. It is the same click the planner would make with click_target.
+    let ocr_matches = |label: &str| {
+        observation
+            .targets
+            .iter()
+            .filter(|target| {
+                matches!(target.source, crate::types::TargetSource::Ocr)
+                    && label_key(&normalized_words(&target.name)) == label
+            })
+            .count()
+    };
     observation
         .targets
         .iter()
         .filter(|target| {
+            let label = label_key(&normalized_words(&target.name));
             target.enabled
-                && target.actionable
-                && grounding_quality(target) != "low"
-                && labels.contains(&normalized_words(&target.name))
+                && labels.contains(&label)
+                && ((target.actionable && grounding_quality(target) != "low")
+                    || (matches!(target.source, crate::types::TargetSource::Ocr)
+                        && !target.id.is_empty()
+                        && ocr_matches(&label) == 1))
         })
         .enumerate()
         .map(|(index, target)| DecisionCandidate {
@@ -2572,8 +2687,14 @@ pub fn exact_label_candidates(
                 "button": "left",
             }),
             description: format!(
-                "{:?} ({}, enabled, exact planner label)",
-                target.name, target.control_type
+                "{:?} ({}, enabled, exact planner label{})",
+                target.name,
+                target.control_type,
+                if target.actionable {
+                    ""
+                } else {
+                    ", read by OCR"
+                }
             ),
             kind: DecisionCandidateKind::Action,
             local_score: 1.0,
@@ -2995,6 +3116,23 @@ mod tests {
                 .unwrap()
                 .starts_with("4.1. What is Ownership?")
         );
+    }
+
+    #[test]
+    fn label_keys_drop_a_keyboard_shortcut_suffix() {
+        for (name, key) in [
+            ("Extensions (Ctrl+Shift+X)", "extensions"),
+            ("Tools Alt+s", "tools"),
+            (
+                "Toggle Primary Side Bar (Ctrl+B)",
+                "toggle primary side bar",
+            ),
+            ("Save As", "save as"),
+            ("Page 1 of 2", "page 1 of 2"),
+            ("Alt text", "alt text"),
+        ] {
+            assert_eq!(label_key(&normalized_words(name)), key, "{name}");
+        }
     }
 
     #[test]

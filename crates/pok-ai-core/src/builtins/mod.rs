@@ -57,8 +57,8 @@ use windows::*;
 pub(crate) use action_batch::normalized_batch_kind;
 pub(crate) use capture::model_observation_value;
 pub use fast_actions_tool::{
-    FastActionsArgs, FastBranch, FastInterrupt, FastLeaf, FastLeafBranch, FastOperation,
-    FastSubgoal,
+    FastActionsArgs, FastBranch, FastInputStep, FastInterrupt, FastLeaf, FastLeafBranch,
+    FastOperation, FastSubgoal,
 };
 pub(crate) use input::observation_id_for;
 
@@ -77,6 +77,7 @@ pub fn register_desktop_tools(registry: &mut ToolRegistry) {
     registry.register(ActivateWindowTool);
     registry.register(BrowserNavigateTool);
     registry.register(QueryScreenTextTool);
+    registry.register(ReadClipboardTool);
     registry.register(QueryWindowTreeTool);
     registry.register(ClickTargetTool);
     registry.register(LocateVisualTargetTool);
@@ -84,6 +85,7 @@ pub fn register_desktop_tools(registry: &mut ToolRegistry) {
     registry.register(MovePointerTool);
     registry.register(DragPointerTool);
     registry.register(DragTargetTool);
+    registry.register(HoverTargetTool);
     registry.register(ScrollViewTool);
     registry.register(ScrollUntilTextTool);
     registry.register(TypeTextTool);

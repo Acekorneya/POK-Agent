@@ -2592,3 +2592,174 @@ fn repair_and_recovery_states_are_not_clean_verification() {
     assert!(verification_issue_text("Report.xlsx - Excel").is_none());
     assert!(verification_issue_text("Auto repair shop inventory").is_none());
 }
+
+#[test]
+fn a_copied_grid_range_reads_back_as_rows() {
+    let rows =
+        super::capture::clipboard_rows("Date\tFirst Name\tSales\n2024-01-02\tAda\t120\n").unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0], ["Date", "First Name", "Sales"]);
+    assert_eq!(rows[1][2], "120");
+    assert!(super::capture::clipboard_rows("plain text, no cells").is_none());
+}
+
+#[tokio::test]
+async fn a_command_ending_in_an_ellipsis_waits_for_its_dialog() {
+    let mut observation = scroll_observation(&[], "calc");
+    let window = observation.target.as_ref().unwrap().bounds.clone();
+    let mut command = selection_target("Paragraph...", false, false);
+    command.control_type = "menu item".into();
+    command.click_point = Some((window.x + 60, window.y + 40));
+    observation.targets = vec![command];
+    let main = observation
+        .foreground_window
+        .clone()
+        .expect("foreground window");
+    let platform = crate::platform::MockDesktop::new(observation.clone());
+    let mut dialog = main.clone();
+    dialog.id = "dialog".into();
+    dialog.title = "Paragraph".into();
+    dialog.bounds.width = 300;
+    dialog.bounds.height = 200;
+    platform.add_windows(vec![dialog]);
+    let temp = tempfile::tempdir().unwrap();
+    let context = mock_input_context(platform.clone(), &temp);
+    // The application opens the dialog a moment after the click, later than
+    // the ordinary settle checks look.
+    let opener = platform.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(1_100)).await;
+        opener.switch_foreground("dialog");
+    });
+    execute_input(
+        InputAction::Click {
+            x: window.x + 60,
+            y: window.y + 40,
+            button: MouseButton::Left,
+        },
+        observation,
+        &context,
+        json!({"kind": "click_target", "label": "Paragraph...", "expected_label": "Paragraph..."}),
+    )
+    .await
+    .unwrap();
+    let latest = context.latest_observation.lock().clone().unwrap();
+    assert_eq!(latest.foreground_window.unwrap().id, "dialog");
+}
+
+#[tokio::test]
+async fn replacing_text_never_selects_everything_in_a_control_without_readable_text() {
+    // A spreadsheet grid does not expose its text: Ctrl+A there selects the
+    // whole sheet, and Delete would erase every cell.
+    let observation = scroll_observation(&[], "calc");
+    let platform = crate::platform::MockDesktop::new(observation.clone());
+    let temp = tempfile::tempdir().unwrap();
+    let context = mock_input_context(platform.clone(), &temp);
+    let _ = execute_input(
+        InputAction::TypeText {
+            text: "=TEXT(C1;\"0.00\")".into(),
+            replace_existing: true,
+        },
+        observation,
+        &context,
+        json!({"kind": "type_text"}),
+    )
+    .await;
+    let actions = platform.actions();
+    assert!(
+        !actions
+            .iter()
+            .any(|action| matches!(action, InputAction::Key { key } if key.eq_ignore_ascii_case("ctrl+a"))),
+        "{actions:?}"
+    );
+    assert!(
+        actions
+            .iter()
+            .any(|action| matches!(action, InputAction::TypeText { .. }))
+    );
+}
+
+fn ocr_label(id: &str, name: &str, x: i32, y: i32) -> InteractionTarget {
+    let mut target = selection_target(name, false, false);
+    target.id = id.into();
+    target.control_type = "text".into();
+    target.source = TargetSource::Ocr;
+    target.actionable = false;
+    target.bounds = Rect {
+        x,
+        y,
+        width: 40,
+        height: 12,
+    };
+    target.click_point = None;
+    target
+}
+
+#[tokio::test]
+async fn click_target_clicks_ocr_text_named_exactly_and_shown_once() {
+    let mut observation = scroll_observation(&[], "calc");
+    let window = observation.target.as_ref().unwrap().bounds.clone();
+    observation.targets = vec![
+        ocr_label("15", "Format", window.x + 160, window.y + 30),
+        ocr_label("17", "Sheet", window.x + 260, window.y + 30),
+        ocr_label("42", "Sheet", window.x + 60, window.y + 500),
+    ];
+    let platform = crate::platform::MockDesktop::new(observation.clone());
+    let temp = tempfile::tempdir().unwrap();
+    let context = mock_input_context(platform.clone(), &temp);
+    *context.latest_observation.lock() = Some(observation.clone());
+    let id = observation_id_for(&observation);
+    ClickTargetTool
+        .execute(
+            json!({"observation_id": id, "target_id": "15", "expected_label": "Format"}),
+            &context,
+        )
+        .await
+        .unwrap();
+    assert!(
+        platform
+            .actions()
+            .iter()
+            .any(|action| matches!(action, InputAction::Click { .. })),
+        "{:?}",
+        platform.actions()
+    );
+
+    // Text shown twice could be anything on the screen: no click.
+    let platform = crate::platform::MockDesktop::new(observation.clone());
+    let context = mock_input_context(platform.clone(), &temp);
+    *context.latest_observation.lock() = Some(observation.clone());
+    let _ = ClickTargetTool
+        .execute(
+            json!({"observation_id": id, "target_id": "17", "expected_label": "Sheet"}),
+            &context,
+        )
+        .await;
+    assert!(
+        !platform
+            .actions()
+            .iter()
+            .any(|action| matches!(action, InputAction::Click { .. }))
+    );
+}
+
+#[test]
+fn the_planner_sees_unique_ocr_labels_as_clickable() {
+    let mut observation = scroll_observation(&[], "calc");
+    let window = observation.target.as_ref().unwrap().bounds.clone();
+    observation.targets = vec![
+        ocr_label("15", "Format", window.x + 160, window.y + 30),
+        ocr_label("17", "Sheet", window.x + 260, window.y + 30),
+        ocr_label("42", "Sheet", window.x + 60, window.y + 500),
+    ];
+    let value = model_observation_value(&observation, false).unwrap();
+    let shown = value["action_targets"].as_array().unwrap();
+    let format = shown
+        .iter()
+        .find(|target| target["id"] == "15")
+        .unwrap_or_else(|| panic!("Format missing: {value}"));
+    assert_eq!(format["actionable"], true);
+    assert_eq!(format["grounding_quality"], "medium");
+    // Text shown twice cannot be clicked by its label, so it is not offered.
+    assert!(!shown.iter().any(|target| target["label"] == "Sheet"));
+}

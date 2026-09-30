@@ -482,6 +482,7 @@ pub(super) fn resolve_batch_target<'a>(
     if let Some(expected) = expected {
         if crate::grounding::grounding_quality(requested) != "low"
             && label_match_score(expected, &requested.name) >= 2
+            || unique_exact_ocr_text(observation, requested, expected)
         {
             return Ok(requested);
         }
