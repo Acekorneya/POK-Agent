@@ -1488,6 +1488,31 @@ async fn resume_conversation(
     })
 }
 
+/// A saved observation frame for the dashboard's agent view, as a data URL.
+/// Only `observation-*.png` files inside the diagnostics folder are served.
+#[tauri::command]
+fn read_observation_frame(
+    path: String,
+    runtime: State<'_, AppRuntime>,
+) -> std::result::Result<String, String> {
+    use base64::Engine as _;
+    let diagnostics = runtime.config.lock().diagnostics_dir.clone();
+    let root = dunce::canonicalize(&diagnostics).map_err(|error| error.to_string())?;
+    let file = dunce::canonicalize(&path).map_err(|_| "frame not found".to_string())?;
+    let name = file
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    if !file.starts_with(&root) || !name.starts_with("observation-") || !name.ends_with(".png") {
+        return Err("not an observation frame".into());
+    }
+    let bytes = std::fs::read(&file).map_err(|error| error.to_string())?;
+    Ok(format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
 #[tauri::command]
 fn load_conversation_history(
     session_id: Uuid,
@@ -3121,6 +3146,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_status,
+            read_observation_frame,
             update_provider_endpoint,
             get_local_model_status,
             load_model,

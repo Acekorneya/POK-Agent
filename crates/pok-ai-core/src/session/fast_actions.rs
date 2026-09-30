@@ -1235,6 +1235,7 @@ impl Session {
             result = self.tools.call("drag_target", arguments.clone(), &self.context) => result,
         };
         self.record_motor("drag_target", &arguments, &result);
+        self.show_latest_observation();
         let error = result
             .as_ref()
             .err()
@@ -1503,6 +1504,7 @@ impl Session {
             result = self.tools.call("execute_action_batch", json!({"steps": batch.clone()}), &self.context) => result,
         };
         self.record_motor("execute_action_batch", &json!({"steps": batch}), &result);
+        self.show_latest_observation();
         if let Ok(value) = &result
             && qualifies_as_fresh_evidence("execute_action_batch", value, true)
         {
@@ -2941,6 +2943,7 @@ impl Session {
                 result = self.tools.call(&call.name, call.arguments.clone(), &self.context) => result,
             };
             self.record_motor(&call.name, &call.arguments, &result);
+            self.show_latest_observation();
             let feedback = self.continuity.after_call(
                 &call.name,
                 &call.arguments,

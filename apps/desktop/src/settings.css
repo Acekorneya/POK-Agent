@@ -1,0 +1,201 @@
+/* Settings window, composer layout, and brand. Loaded after workspace.css;
+   selectors are scoped under .app-shell so they win over the legacy drawer. */
+
+/* ---------- Settings window ---------- */
+.app-shell .grid.settings-open .settings-panel {
+  position: fixed; z-index: 31; inset: 50% auto auto 50%; transform: translate(-50%, -50%);
+  display: grid; grid-template-columns: 232px minmax(0, 1fr);
+  width: min(980px, calc(100vw - 32px)); height: min(720px, calc(100dvh - 32px)); max-height: none;
+  padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 16px;
+  background: var(--canvas); box-shadow: 0 30px 80px #0008;
+}
+.app-shell .grid.settings-closed .settings-panel { display: none; }
+.app-shell .settings-open .settings-backdrop { display: block; position: fixed; inset: 0; z-index: 30; width: 100%; height: 100%;
+  background: #0009; backdrop-filter: blur(3px); border: 0; border-radius: 0; opacity: 1; pointer-events: auto; }
+
+.settings-nav { display: flex; flex-direction: column; gap: 2px; padding: 22px 12px; background: var(--sidebar); border-right: 1px solid var(--border); overflow-y: auto; }
+.settings-nav h2 { margin: 0 10px 14px; font-size: 15px; font-weight: 650; letter-spacing: -.2px; color: var(--text); text-transform: none; }
+.settings-nav button { display: grid; gap: 2px; width: 100%; padding: 10px 12px; text-align: left; background: transparent; border: 1px solid transparent; border-radius: 10px; }
+.settings-nav button strong { font-size: 13px; font-weight: 550; color: var(--text); }
+.settings-nav button small { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.settings-nav button:hover:not(:disabled) { background: var(--surface); border-color: transparent; }
+.settings-nav button.active { background: var(--raised); border-color: var(--border); }
+.settings-nav button.active strong { color: var(--accent); }
+
+.settings-page { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.settings-page-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 22px 28px 14px; border-bottom: 1px solid var(--border); }
+.settings-page-heading h3 { margin: 0; font-size: 19px; font-weight: 650; letter-spacing: -.3px; color: var(--text); }
+.settings-page-heading p { margin: 3px 0 0; font-size: 12px; color: var(--muted); }
+.app-shell .settings-close { display: grid; place-items: center; width: 32px; height: 32px; padding: 0; font-size: 20px; line-height: 1; border-radius: 8px; background: transparent; border-color: transparent; color: var(--muted); }
+.app-shell .settings-close:hover:not(:disabled) { background: var(--surface); color: var(--text); }
+.settings-page-body { flex: 1; min-height: 0; overflow-y: auto; padding: 20px 28px 28px; display: grid; align-content: start; gap: 16px; }
+
+.settings-card { display: grid; gap: 12px; padding: 18px 20px; background: var(--surface); border: 1px solid var(--border); border-radius: 14px; }
+.settings-card > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.settings-card-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.settings-card h4 { margin: 0; font-size: 14px; font-weight: 600; color: var(--text); }
+.settings-card-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.settings-card-actions button, .setting-row-control button, .inline-field button { padding: 7px 12px; font-size: 12px; border-radius: 8px; white-space: nowrap; }
+.settings-card-description { margin: -4px 0 0; font-size: 12px; line-height: 1.55; color: var(--muted); }
+.settings-card-body { display: grid; gap: 10px; }
+.settings-note { margin: 0; font-size: 11px; line-height: 1.5; color: var(--muted); overflow-wrap: anywhere; }
+.settings-value { font-size: 12px; color: var(--text); overflow-wrap: anywhere; }
+.settings-card .error-text { margin: 0; padding: 8px 10px; border-radius: 8px; font-size: 12px; }
+
+.setting-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 10px 0; border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.settings-card-body > .setting-row:first-child { border-top: 0; padding-top: 0; }
+.setting-row-text { display: grid; gap: 2px; min-width: 0; }
+.setting-row-text span { font-size: 13px; color: var(--text); }
+.setting-row-text small { font-size: 11px; line-height: 1.45; color: var(--muted); }
+.setting-row-control { flex: none; display: flex; justify-content: flex-end; min-width: 0; max-width: 60%; }
+.app-shell .settings-card :is(select, input:not([type="checkbox"]):not([type="range"])) {
+  width: 100%; min-width: 180px; padding: 8px 10px; font-size: 13px; color: var(--text);
+  background: var(--canvas); border: 1px solid var(--border); border-radius: 8px; margin: 0;
+}
+.app-shell .settings-card :is(select, input):focus { border-color: var(--accent); outline: none; }
+.app-shell .settings-card input[type="range"] { width: 200px; accent-color: var(--accent); padding: 0; }
+.app-shell .settings-card .settings-input { min-width: 0; }
+.inline-field { display: flex; gap: 8px; width: 100%; min-width: 0; }
+.inline-field input { flex: 1; min-width: 0; }
+.setting-row-control .inline-field { width: min(420px, 100%); }
+
+.status-pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; font-size: 11px; font-weight: 550; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); white-space: nowrap; }
+.status-pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+.status-pill.status-ok { color: var(--success); border-color: color-mix(in srgb, var(--success) 40%, var(--border)); background: color-mix(in srgb, var(--success) 10%, transparent); }
+.status-pill.status-warn { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 40%, var(--border)); }
+.status-pill.status-error { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); background: var(--danger-bg); }
+
+.switch { position: relative; display: inline-flex; margin: 0; cursor: pointer; }
+.switch input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: inherit; }
+.switch-track { width: 38px; height: 22px; padding: 2px; border-radius: 999px; background: var(--raised); border: 1px solid var(--border); transition: background .15s; }
+.switch-thumb { display: block; width: 16px; height: 16px; border-radius: 50%; background: var(--muted); transition: transform .15s, background .15s; }
+.switch input:checked + .switch-track { background: var(--accent); border-color: var(--accent); }
+.switch input:checked + .switch-track .switch-thumb { transform: translateX(16px); background: var(--accent-ink); }
+.switch input:disabled + .switch-track { opacity: .45; }
+.switch input:focus-visible + .switch-track { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.choice-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 10px; }
+.choice-cards button { display: grid; gap: 4px; padding: 12px 14px; text-align: left; border-radius: 12px; background: var(--canvas); border: 1px solid var(--border); }
+.choice-cards button strong { font-size: 13px; color: var(--text); }
+.choice-cards button small { font-size: 11px; line-height: 1.4; color: var(--muted); }
+.choice-cards button.selected { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--canvas)); box-shadow: 0 0 0 1px var(--accent) inset; }
+.choice-cards button:disabled { opacity: .5; }
+
+.segmented { display: inline-flex; gap: 2px; padding: 3px; background: var(--canvas); border: 1px solid var(--border); border-radius: 10px; justify-self: start; }
+.segmented button { padding: 6px 14px; font-size: 12px; border: 0; border-radius: 7px; background: transparent; }
+.segmented button span { margin-left: 4px; font-size: 11px; color: var(--muted); }
+.segmented button.active { background: var(--raised); color: var(--text); }
+.settings-card .memory-list-container { max-height: none; overflow: visible; display: grid; gap: 10px; }
+.settings-card .memory, .settings-card .generated-tool { border-radius: 12px; background: var(--canvas); border: 1px solid var(--border); padding: 14px; display: grid; gap: 6px; }
+.settings-card .memory strong { font-size: 13px; color: var(--text); }
+.settings-card .memory p { margin: 0; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.settings-card .memory small { font-size: 11px; color: var(--muted); }
+.settings-card .memory-actions button { padding: 5px 10px; font-size: 11px; border-radius: 7px; }
+
+.capability-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.capability-chip { padding: 3px 10px; font-size: 11px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+.capability-chip.yes { color: var(--success); border-color: color-mix(in srgb, var(--success) 35%, var(--border)); }
+.settings-card .model-search-results { max-height: 260px; overflow-y: auto; display: grid; gap: 2px; padding: 4px; border-radius: 10px; }
+.settings-card .model-search-results button { text-align: left; padding: 7px 10px; font-size: 12px; border: 0; border-radius: 7px; background: transparent; }
+
+.theme-picker { margin: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.theme-picker legend { display: none; }
+.theme-picker button { padding: 14px 6px; border-radius: 12px; font-size: 12px; background: var(--canvas); }
+.theme-picker button[aria-pressed="true"] { box-shadow: 0 0 0 1px var(--accent) inset; }
+
+/* API key dialog */
+.key-dialog { width: min(460px, calc(100vw - 32px)); padding: 24px; border-radius: 16px; display: grid; gap: 14px; }
+.key-dialog h2 { margin: 0; font-size: 17px; color: var(--text); text-transform: none; letter-spacing: -.2px; }
+.key-dialog p { margin: 0; font-size: 12px; line-height: 1.55; color: var(--muted); }
+.key-dialog .key-link { justify-self: start; font-size: 12px; font-weight: 550; color: var(--accent); text-decoration: none; }
+.key-dialog .key-link:hover { text-decoration: underline; }
+.key-dialog input { width: 100%; padding: 10px 12px; font-size: 13px; border-radius: 9px; background: var(--canvas); border: 1px solid var(--border); color: var(--text); }
+.key-dialog .actions { display: flex; justify-content: flex-end; gap: 8px; margin: 4px 0 0; }
+.key-dialog .actions button { padding: 8px 16px; border-radius: 9px; }
+
+/* ---------- Composer ---------- */
+.app-shell .composer { container-type: inline-size; }
+.app-shell .composer .actions { display: flex; flex-wrap: nowrap; align-items: center; justify-content: space-between; gap: 10px; margin: 6px 0 2px; }
+.composer-options { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; flex: 1 1 auto; }
+.composer-options > * { min-width: 0; }
+.app-shell .composer .composer-options :is(select, .composer-model) { width: auto; max-width: 190px; min-width: 96px; text-overflow: ellipsis; }
+.app-shell .composer .composer-options .model-picker { max-width: 200px; min-width: 110px; flex: 0 1 200px; }
+.app-shell .composer .composer-options .composer-model { width: 100%; max-width: none; }
+.composer-send { display: flex; align-items: center; gap: 6px; flex: none; margin-left: auto; }
+.app-shell .composer .composer-send button { height: 32px; padding: 0 12px; font-size: 12px; border-radius: 9px; white-space: nowrap; }
+.app-shell .composer .composer-send .primary { margin: 0; padding: 0 16px; font-weight: 600; }
+.app-shell .composer button.stop { display: inline-flex; align-items: center; gap: 7px; margin: 0; }
+.stop-icon { width: 9px; height: 9px; border-radius: 2px; background: currentColor; }
+@container (max-width: 560px) {
+  .app-shell .composer .actions { flex-wrap: wrap; }
+  .composer-send { width: 100%; justify-content: flex-end; }
+  .app-shell .composer .composer-options :is(select, .composer-model) { max-width: 150px; }
+  .app-shell .composer .composer-options .model-picker { flex-basis: 150px; }
+}
+@container (max-width: 380px) {
+  .stop-label { display: none; }
+  .app-shell .composer button.stop { padding: 0 11px; }
+  .app-shell .composer .composer-options :is(select, .composer-model) { max-width: none; flex: 1 1 130px; }
+  .app-shell .composer .composer-options .model-picker { flex: 1 1 100%; max-width: none; }
+}
+
+/* ---------- Brand ---------- */
+.brand-logo { height: 22px; width: auto; display: block; }
+.sidebar-brand strong { font-size: 14px; font-weight: 600; color: var(--muted); letter-spacing: .2px; }
+.welcome-logo { width: min(220px, 50vw); height: auto; margin-bottom: 18px; filter: drop-shadow(0 8px 30px color-mix(in srgb, var(--accent) 25%, transparent)); }
+:root[data-theme="light"] .welcome-logo { filter: none; }
+@media (max-height: 600px) { .welcome-logo { width: 120px; margin-bottom: 8px; } }
+
+/* ---------- Narrow windows ---------- */
+@media (max-width: 760px) {
+  .app-shell .grid.settings-open .settings-panel { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); width: calc(100vw - 16px); height: calc(100dvh - 16px); }
+  .settings-nav { flex-direction: row; gap: 4px; padding: 10px; border-right: 0; border-bottom: 1px solid var(--border); overflow-x: auto; overflow-y: hidden; }
+  .settings-nav h2 { display: none; }
+  .settings-nav button { width: auto; flex: none; padding: 7px 12px; }
+  .settings-nav button small { display: none; }
+  .settings-page-heading { padding: 14px 16px 10px; }
+  .settings-page-body { padding: 14px 16px 20px; }
+  .setting-row { flex-direction: column; align-items: stretch; gap: 8px; }
+  .setting-row-control { max-width: none; justify-content: flex-start; }
+  .app-shell .settings-card input[type="range"] { width: 100%; }
+}
+
+/* Legacy globals (uppercase headings, header margins) do not apply here. */
+.app-shell .settings-panel :is(h2, h3, h4) { text-transform: none; letter-spacing: -.2px; }
+.app-shell .settings-panel header { margin: 0; }
+.app-shell .settings-card > header { margin: 0; min-height: 30px; }
+.app-shell .settings-card-description { margin: -6px 0 0; }
+.settings-nav button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.settings-nav button:focus:not(:focus-visible) { outline: none; }
+
+/* ---------- Agent view: the frames the agent saw ---------- */
+.app-shell .agent-view-toggle { display: inline-flex; align-items: center; gap: 7px; flex: none; padding: 8px 12px; }
+.app-shell .agent-view-toggle.active { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.agent-view-eye { width: 12px; height: 8px; border: 1.5px solid currentColor; border-radius: 50% / 60%; position: relative; }
+.agent-view-eye::after { content: ""; position: absolute; inset: 1.5px 3.5px; border-radius: 50%; background: currentColor; }
+.agent-view { position: absolute; z-index: 5; top: 44px; right: 20px; width: min(380px, calc(100% - 40px)); display: grid; grid-template-rows: auto auto auto;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 14px; box-shadow: 0 16px 40px #0006; overflow: hidden; }
+.agent-view.large { width: min(760px, calc(100% - 40px)); }
+.app-shell .agent-view header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 0; padding: 9px 10px 9px 14px; border-bottom: 1px solid var(--border); }
+.agent-view-title { display: grid; min-width: 0; }
+.agent-view-title strong { font-size: 12px; color: var(--text); }
+.agent-view-title small { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent-view-actions { display: flex; gap: 4px; flex: none; }
+.app-shell .agent-view button { padding: 4px 9px; font-size: 11px; border-radius: 7px; line-height: 1.4; }
+.app-shell .agent-view button[aria-pressed="true"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.agent-view-frame { background: var(--code); min-height: 120px; display: grid; place-items: center; }
+.agent-view-canvas { position: relative; width: 100%; line-height: 0; }
+.agent-view-canvas img { width: 100%; height: auto; display: block; }
+.agent-view-target { position: absolute; border: 1.5px solid color-mix(in srgb, var(--accent) 80%, transparent); border-radius: 3px; background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.agent-view-target.source-ocr { border-style: dashed; border-color: #e7c577cc; background: #e7c5770f; }
+.agent-view-target span { position: absolute; top: -1px; left: -1px; padding: 0 3px; font: 600 9px/13px ui-monospace, monospace; color: var(--accent-ink); background: var(--accent); border-radius: 3px 0 3px 0; }
+.agent-view-target.source-ocr span { background: #e7c577; color: #2a2208; }
+.agent-view-target.hovered { border-width: 2px; background: color-mix(in srgb, var(--accent) 22%, transparent); z-index: 1; }
+.agent-view-empty { margin: 0; padding: 22px 16px; font-size: 12px; line-height: 1.5; color: var(--muted); text-align: center; }
+.app-shell .agent-view footer { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); }
+.agent-view footer small { margin-left: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+@media (max-width: 760px) {
+  .agent-view, .agent-view.large { left: 12px; right: 12px; width: auto; top: 40px; }
+  .app-shell .agent-view-toggle { padding: 7px 9px; }
+}
+@media (max-width: 520px) { .agent-view-toggle { font-size: 0; gap: 0; } }

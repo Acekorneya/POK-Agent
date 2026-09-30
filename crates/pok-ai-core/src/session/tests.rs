@@ -7043,3 +7043,64 @@ fn a_program_replays_for_the_same_or_a_reworded_request_only() {
     ));
     assert!(!same_task("", "anything"));
 }
+
+#[test]
+fn the_agent_view_gets_the_saved_frame_and_its_targets_as_fractions() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut observation = launch_observation(Some(("Settings", "SystemSettings.exe")));
+    observation.screenshots = vec![crate::types::Screenshot {
+        monitor: crate::types::MonitorInfo {
+            id: "window:0x1".into(),
+            bounds: crate::types::Rect {
+                x: 100,
+                y: 50,
+                width: 800,
+                height: 400,
+            },
+            scale_factor: 1.0,
+            primary: true,
+        },
+        png_base64: String::new(),
+        source_png_base64: None,
+        model_width: 800,
+        model_height: 400,
+        captured_at: chrono::Utc::now(),
+    }];
+    let target = |id: &str, x: i32| -> crate::types::InteractionTarget {
+        serde_json::from_value(json!({
+            "id": id, "name": format!("Button {id}"), "control_type": "Button",
+            "bounds": {"x": x, "y": 150, "width": 80, "height": 40},
+            "source": "uia_ocr", "confidence": null, "enabled": true, "actionable": true, "click_point": null
+        }))
+        .unwrap()
+    };
+    // One target on the frame, one entirely to its left (another monitor).
+    observation.targets = vec![target("1", 500), target("2", -300)];
+
+    // No saved frame yet: nothing to show.
+    assert!(observation_frame(&observation, dir.path()).is_none());
+    std::fs::write(
+        dir.path().join(format!(
+            "observation-{}-monitor-window_0x1.png",
+            observation.version
+        )),
+        b"png",
+    )
+    .unwrap();
+    let Some(AgentEvent::ObservationCaptured {
+        window_title,
+        targets,
+        image_path,
+        ..
+    }) = observation_frame(&observation, dir.path())
+    else {
+        panic!("expected a frame event");
+    };
+    assert_eq!(window_title.as_deref(), Some("Settings"));
+    assert!(image_path.ends_with("-monitor-window_0x1.png"));
+    assert_eq!(targets.len(), 1);
+    assert_eq!(targets[0].id, "1");
+    assert_eq!(targets[0].source, "uia_ocr");
+    assert!((targets[0].x - 0.5).abs() < 1e-6 && (targets[0].y - 0.25).abs() < 1e-6);
+    assert!((targets[0].width - 0.1).abs() < 1e-6 && (targets[0].height - 0.1).abs() < 1e-6);
+}

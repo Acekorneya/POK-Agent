@@ -272,6 +272,8 @@ pub struct Session {
     /// The motor steps (clicks by label, keys, text) this run performed, in
     /// order; a verified run saves them on its skill as a program.
     motor_tape: Vec<Value>,
+    /// The last observation shown in the dashboard's agent view.
+    shown_observation: Option<Uuid>,
     /// A skill whose stored program was replayed this run and stopped before
     /// its end: the program this run records replaces it.
     stale_program: Option<Uuid>,
@@ -491,6 +493,7 @@ impl Session {
             pending_handback: None,
             skill_replay_active: false,
             motor_tape: Vec::new(),
+            shown_observation: None,
             stale_program: None,
             clean_completion: false,
             decision_router_judge_verdicts: std::collections::BTreeMap::new(),
@@ -772,6 +775,20 @@ impl Session {
         trace.write_all(b"\n")?;
         trace.flush()?;
         Ok(())
+    }
+
+    /// Show the newest observation in the dashboard's agent view, once.
+    fn show_latest_observation(&mut self) {
+        let Some(observation) = self.context.latest_observation.lock().clone() else {
+            return;
+        };
+        if self.shown_observation == Some(observation.version) {
+            return;
+        }
+        if let Some(event) = observation_frame(&observation, &self.context.artifact_dir) {
+            self.shown_observation = Some(observation.version);
+            self.emit(event);
+        }
     }
 
     fn emit(&self, event: AgentEvent) {

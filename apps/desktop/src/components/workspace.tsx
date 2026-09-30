@@ -28,7 +28,7 @@ export function ConversationSidebar({ conversations, activeId, disabled, onSelec
     groups.set(group, [...(groups.get(group) || []), c]);
   });
   return <aside className="conversation-sidebar" aria-label="Conversations">
-    <div className="sidebar-brand"><span className="brand-mark">P</span><strong>POK-Agent</strong><button aria-label="Close navigation" onClick={onClose}>‹</button></div>
+    <div className="sidebar-brand"><img className="brand-logo" src="/pok-logo.png" alt="POK" /><strong>Agent</strong><button aria-label="Close navigation" onClick={onClose}>‹</button></div>
     <button className="new-conversation" disabled={disabled} onClick={onNew}>＋ New conversation</button>
     <input aria-label="Search recent conversations" placeholder="Search conversations…" value={query} onChange={e => setQuery(e.target.value)} />
     <div className="conversation-list">{[...groups].map(([workspace, items]) => <section key={workspace}>
@@ -92,7 +92,7 @@ export function useDialogFocus(dependency: unknown) {
     const previous = document.activeElement as HTMLElement | null;
     const focusable = () => [...dialog.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled), select:not(:disabled), textarea:not(:disabled), a[href], [tabindex="0"]')].filter(el => el.getClientRects().length > 0);
     dialog.setAttribute("role", "dialog"); dialog.setAttribute("aria-modal", "true");
-    focusable()[0]?.focus();
+    (dialog.querySelector<HTMLElement>('[aria-current="page"]') ?? focusable()[0])?.focus({ focusVisible: false } as FocusOptions);
     const handle = (event: KeyboardEvent) => {
       if (event.key !== "Tab") return;
       const items = focusable(); const first = items[0]; const last = items[items.length - 1];

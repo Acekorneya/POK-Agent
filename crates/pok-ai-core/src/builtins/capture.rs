@@ -1748,7 +1748,7 @@ pub(super) fn overlaps(left: &Rect, right: &Rect) -> bool {
         && i64::from(left.y) + i64::from(left.height) > i64::from(right.y)
 }
 
-pub(super) fn safe_filename(value: &str) -> String {
+pub(crate) fn safe_filename(value: &str) -> String {
     value
         .chars()
         .map(|character| {

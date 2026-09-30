@@ -35,7 +35,7 @@ touches one focused file. Child modules share their parent's imports
 | --- | --- |
 | `mod.rs` | `Session` state, construction, conversation persistence, `run`, logging and event emission, system prompt |
 | `run_loop.rs` | One user turn: model streaming, tool execution, guards, completion checks (`run_inner`) |
-| `events.rs` | `AgentEvent` and `SessionObserver`, the dashboard/CLI event interface |
+| `events.rs` | `AgentEvent` and `SessionObserver`, the dashboard/CLI event interface; `observation_frame` builds the agent view's frame event (saved screenshot path plus up to 60 targets, never the image) |
 | `continuity.rs` | Verified state after each action, the action ledger, goal and commit tracking |
 | `decision_router.rs` | Router-first (System 1) decisions: intent and context routing, next-action picks, refinement, judge review, training-log hookup |
 | `fast_actions.rs` | Delegated `fast_actions` plan trees: steps, branches, interrupts, reads, grounding and fast-model checks |

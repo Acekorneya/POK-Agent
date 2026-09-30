@@ -387,14 +387,23 @@ The chat feed tells you who is acting, in plain language:
   VRAM — with a one-line status of what is happening.
 - **Searchable model picker.** The model control next to the composer is a search box: type to
   filter, Enter picks the top match, Esc closes.
+- **Agent view.** A floating panel shows each still frame the agent looked at, with the numbered
+  targets it could act on (solid boxes from UI Automation, dashed from OCR). Step back through
+  recent frames, enlarge it, turn the target boxes off, or hide it with **Agent view** in the
+  header; the choice is remembered. Frames are read from the session's diagnostics folder on this
+  computer and never leave it.
+- **Settings** open as one window with a page per area: General (appearance, workspace,
+  permissions), Model (provider, API key, request tuning, context budget), System 1 (router, JEV,
+  Laya, judge, training data), Memory & skills, and Generated tools.
 
 These are user-facing summaries; every decision is recorded with its full payload in the session
 `trace.jsonl` (`decision_router_judge_attempt` events include per-question votes) and replayed
 offline with `scripts/replay_live_judge_payloads.py`.
 
-Saved conversations reopen from SQLite in chronological pages. The newest page appears immediately;
-scrolling upward loads older user messages, tool activity, and assistant responses in their original
-sequence without moving prior actions to the bottom of the chat.
+Saved conversations reopen from SQLite in chronological pages, looking as they did live: the text
+the model wrote before a step comes before that step, and steps use the same labels. The newest
+page appears immediately; scrolling upward loads older messages, tool activity, and responses in
+their original sequence while the view stays on what you were reading.
 
 Workspace retrieval uses a lazy persistent index under the application data directory. It combines
 FTS5 BM25 content/path ranking with symbol-aware ranking and reciprocal-rank fusion, then builds

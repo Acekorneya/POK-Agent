@@ -45,6 +45,7 @@ mod windows;
 
 use action_batch::*;
 use browser_navigation::*;
+pub(crate) use capture::safe_filename;
 use capture::*;
 use fast_actions_tool::*;
 use input::*;

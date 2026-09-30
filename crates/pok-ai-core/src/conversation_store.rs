@@ -456,22 +456,6 @@ fn display_events_for_message(
     sequence: u64,
     message: &BrainMessage,
 ) -> Vec<ConversationDisplayMessage> {
-    if message.origin == MessageOrigin::Assistant && !message.tool_calls.is_empty() {
-        return message
-            .tool_calls
-            .iter()
-            .enumerate()
-            .map(|(index, call)| ConversationDisplayMessage {
-                sequence,
-                subsequence: u32::try_from(index).unwrap_or(u32::MAX),
-                sender: "system".into(),
-                kind: "activity".into(),
-                text: format!("Running {}", call.name),
-                tool: Some(call.name.clone()),
-                arguments: Some(call.arguments.clone()),
-            })
-            .collect();
-    }
     let (sender, kind) = match message.origin {
         MessageOrigin::UserInput => ("user", "prompt"),
         MessageOrigin::UserGuidance => ("user", "guidance"),
@@ -487,18 +471,35 @@ fn display_events_for_message(
         })
         .collect::<Vec<_>>()
         .join("\n");
-    if text.trim().is_empty() {
-        return Vec::new();
+    // Text the model wrote alongside its tool calls came first when the turn
+    // was streamed, so it comes first when the conversation is restored.
+    let mut events = Vec::new();
+    if !text.trim().is_empty() {
+        events.push(ConversationDisplayMessage {
+            sequence,
+            subsequence: 0,
+            sender: sender.into(),
+            kind: kind.into(),
+            text,
+            tool: None,
+            arguments: None,
+        });
     }
-    vec![ConversationDisplayMessage {
-        sequence,
-        subsequence: 0,
-        sender: sender.into(),
-        kind: kind.into(),
-        text,
-        tool: None,
-        arguments: None,
-    }]
+    if message.origin == MessageOrigin::Assistant {
+        let offset = events.len();
+        events.extend(message.tool_calls.iter().enumerate().map(|(index, call)| {
+            ConversationDisplayMessage {
+                sequence,
+                subsequence: u32::try_from(offset + index).unwrap_or(u32::MAX),
+                sender: "system".into(),
+                kind: "activity".into(),
+                text: format!("Running {}", call.name),
+                tool: Some(call.name.clone()),
+                arguments: Some(call.arguments.clone()),
+            }
+        }));
+    }
+    events
 }
 
 type SummaryRow = (
@@ -664,6 +665,49 @@ mod tests {
                 .messages
                 .windows(2)
                 .all(|pair| pair[0].sequence <= pair[1].sequence)
+        );
+    }
+
+    #[test]
+    fn restored_turns_keep_the_text_written_before_their_tool_calls() {
+        let message = BrainMessage {
+            role: "assistant".into(),
+            content: vec![MessageContent::Text {
+                text: "Opening Settings first.".into(),
+            }],
+            origin: MessageOrigin::Assistant,
+            tool_call_id: None,
+            tool_calls: vec![
+                CompletedToolCall {
+                    id: "call-1".into(),
+                    name: "open_application".into(),
+                    arguments: json!({"name": "Settings"}),
+                },
+                CompletedToolCall {
+                    id: "call-2".into(),
+                    name: "capture_screen".into(),
+                    arguments: json!({}),
+                },
+            ],
+        };
+        let events = display_events_for_message(7, &message);
+        let shape = events
+            .iter()
+            .map(|event| {
+                (
+                    event.subsequence,
+                    event.kind.as_str(),
+                    event.tool.as_deref(),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            shape,
+            [
+                (0, "response", None),
+                (1, "activity", Some("open_application")),
+                (2, "activity", Some("capture_screen")),
+            ]
         );
     }
 }

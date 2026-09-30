@@ -2,9 +2,11 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./styles.css";
-import { Composer, ConversationSidebar, useDialogFocus } from "./components/workspace";
-import { SettingsDrawer } from "./components/settings-drawer";
+import { Appearance, Composer, ConversationSidebar, useDialogFocus } from "./components/workspace";
+import { AGENT_VIEW_FRAMES, AgentView, type FrameTarget, type ObservationFrame } from "./components/agent-view";
+import { SettingsCard, SettingRow, SettingsDrawer, StatusPill, Switch, type SettingsSection } from "./components/settings-drawer";
 import "./workspace.css";
+import "./settings.css";
 import { appendStreamDelta, type ChatMessage } from "./session-display";
 import { asRecord, formatElapsed } from "./display-utils";
 import { ConversationMessage } from "./components/conversation";
@@ -160,6 +162,10 @@ type ConversationHistoryPage = {
 };
 type AgentEvent = {
   type: string;
+  observation_id?: string;
+  image_path?: string;
+  window_title?: string | null;
+  targets?: FrameTarget[];
   waiting?: boolean;
   text?: string;
   turn?: number;
@@ -279,17 +285,19 @@ type SubagentState = {
   steps: string[];
 };
 
+/** A saved conversation entry, shown with the same labels the live feed used. */
 function restoredChatMessage(message: ConversationHistoryMessage, timestamp: string): ChatMessage {
   const type = message.kind ?? (message.sender === "user" ? "prompt" : "response");
+  const described = message.tool ? describeTool(message.tool, message.arguments) : undefined;
   return {
     id: `restored-${message.sequence}-${message.subsequence ?? 0}`,
-    sender: message.sender,
+    sender: message.tool ? "agent" : message.sender,
     type,
-    text: message.text,
+    text: described?.label ?? message.text,
     timestamp: new Date(timestamp),
     activityTool: message.tool,
-    activityLabel: message.tool ? `Ran ${message.tool}` : undefined,
-    activityDetail: message.tool ? "Restored from conversation history" : undefined,
+    activityLabel: described?.label,
+    activityDetail: described?.detail,
     activityStatus: message.tool ? "done" : undefined,
     activityArgs: message.arguments,
   };
@@ -555,6 +563,14 @@ function ModelPicker({ models, value, onChange, disabled }: {
   );
 }
 
+const PROVIDER_LABELS: Record<string, string> = {
+  lm_studio: "LM Studio", ollama: "Ollama", openai: "OpenAI", anthropic: "Anthropic", gemini: "Google Gemini",
+  openrouter: "OpenRouter", groq: "Groq", xai: "xAI",
+};
+function providerLabel(provider: string) {
+  return PROVIDER_LABELS[provider.toLowerCase()] ?? provider.replaceAll("_", " ");
+}
+
 function InstallProgress({ label, detail }: { label: string; detail?: string }) {
   return (
     <div className="install-progress" role="status" aria-live="polite">
@@ -781,18 +797,25 @@ export function App() {
   const [modelRuntime, setModelRuntime] = useState<LocalModelRuntimeStatus | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [agentFrames, setAgentFrames] = useState<ObservationFrame[]>([]);
+  // Shown by default; hiding it is remembered.
+  const [agentViewOpen, setAgentViewOpen] = useState(() => {
+    try { return localStorage.getItem("pok_agent_view") !== "hidden"; } catch { return true; }
+  });
+  const toggleAgentView = (open: boolean) => {
+    setAgentViewOpen(open);
+    try { localStorage.setItem("pok_agent_view", open ? "shown" : "hidden"); } catch { /* Storage can be disabled. */ }
+  };
   const [navigationOpen, setNavigationOpen] = useState(() => window.innerWidth >= 900);
   const [showJump, setShowJump] = useState(false);
   const jevSelectedTool = useRef<string | null>(null);
   const [activeConversationId, setActiveConversationId] = useState("");
   const activeConversationIdRef = useRef("");
   useDialogFocus(`${settingsOpen}:${showCloudModal}:${approval?.id ?? ""}:${questionRequest?.id ?? ""}`);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const openSettings = (section = "settings-heading") => {
+    setSettingsSection(section === "memory-library" ? "memory" : section === "generated-tools" ? "tools" : section === "system1" ? "system1" : "general");
     setSettingsOpen(true);
-    requestAnimationFrame(() => {
-      if (section === "settings-heading") document.getElementById("settings-panel")?.scrollTo({ top: 0 });
-      else document.getElementById(section)?.scrollIntoView({ block: "start" });
-    });
   };
 
   const consoleRef = useRef<HTMLDivElement>(null);
@@ -993,12 +1016,12 @@ export function App() {
   const handleRouterBackendChange = async (backend: DecisionRouterBackend) => {
     if (busy || backend === decisionRouterBackend) return;
     if (backend === "jev" && !decisionRouter?.has_api_key) {
-      setSettingsOpen(true);
+      openSettings("system1");
       setDecisionRouterError("Save a TypeSafe API key before selecting JEV.");
       return;
     }
     if (backend === "laya" && !decisionRouter?.laya.installed) {
-      setSettingsOpen(true);
+      openSettings("system1");
       setDecisionRouterError("Install Laya in Settings before selecting it.");
       return;
     }
@@ -1015,7 +1038,7 @@ export function App() {
       setJevWarning(null);
     } catch (error) {
       setDecisionRouterError(compactValue(String(error), 300) ?? "Decision router could not be prepared");
-      setSettingsOpen(true);
+      openSettings("system1");
     }
   };
 
@@ -1254,9 +1277,15 @@ export function App() {
       .catch(() => undefined);
   }, [busy, model, modelRuntime, selectedProvider]);
 
+  // Earlier history is inserted above what the user is reading: keep the same
+  // message under the viewport instead of jumping.
+  const historyAnchor = useRef<number | null>(null);
   useLayoutEffect(() => {
     const console = consoleRef.current;
-    if (console && followOutput.current) {
+    if (console && historyAnchor.current != null) {
+      console.scrollTop += console.scrollHeight - historyAnchor.current;
+      historyAnchor.current = null;
+    } else if (console && followOutput.current) {
       console.scrollTop = console.scrollHeight;
     }
   }, [messages, busy]);
@@ -1767,6 +1796,18 @@ export function App() {
           ]);
           break;
         }
+        case "observation_captured":
+          if (payload.image_path) {
+            const frame: ObservationFrame = {
+              id: payload.observation_id ?? payload.image_path,
+              imagePath: payload.image_path,
+              windowTitle: payload.window_title ?? undefined,
+              targets: payload.targets ?? [],
+              capturedAt: Date.now(),
+            };
+            setAgentFrames((frames) => [...frames.filter((item) => item.id !== frame.id), frame].slice(-AGENT_VIEW_FRAMES));
+          }
+          break;
         case "tool_delayed": {
           const stage = payload.stage ?? "tool_execution";
           const label = stage === "desktop_capture_or_accessibility_enrichment"
@@ -2392,6 +2433,7 @@ export function App() {
     followOutput.current = true;
     setShowJump(false);
     setMessages([]);
+    setAgentFrames([]);
     setHistoryBeforeSequence(null);
     setHistoryHasMore(false);
     setTaskProgress(null);
@@ -2477,9 +2519,7 @@ export function App() {
       setHistoryBeforeSequence(page.next_before_sequence ?? null);
       setHistoryHasMore(page.has_more);
       followOutput.current = false;
-      requestAnimationFrame(() => {
-        if (console) console.scrollTop += console.scrollHeight - previousHeight;
-      });
+      historyAnchor.current = previousHeight;
     } finally {
       setHistoryLoading(false);
     }
@@ -2516,6 +2556,10 @@ export function App() {
         >
           <span aria-hidden="true">☰</span> Settings
         </button>
+        <button type="button" className={`agent-view-toggle ${agentViewOpen ? "active" : ""}`} aria-pressed={agentViewOpen}
+          title={agentViewOpen ? "Hide what the agent sees" : "Show what the agent sees"} onClick={() => toggleAgentView(!agentViewOpen)}>
+          <span className="agent-view-eye" aria-hidden="true" /> Agent view
+        </button>
         <ModelStatusBanner
           status={apiStatus}
           model={model}
@@ -2532,335 +2576,282 @@ export function App() {
       </div>
     </header>
     <section className={`grid ${settingsOpen ? "settings-open" : "settings-closed"}`}>
-      <SettingsDrawer open={settingsOpen} onClose={closeSettings}>
-        <h2>Model & connection</h2>
-        <label>Provider
-          <select disabled={busy || modelTransitioning} value={selectedProvider} onChange={(event) => void handleProviderChange(event.target.value)}>
-            {providers.map((p) => <option key={p} value={p}>{p.toUpperCase()}</option>)}
-          </select>
-        </label>
-        <div className="provider-boundary" title={status?.data_boundary === "external_service"
-          ? "Full task context is sent only after confirmation for this conversation."
-          : "Model requests stay on the configured local provider boundary."}>
-          {status?.data_boundary === "external_service" ? "☁ External service · confirmation required" : "⌂ Local device · full-fidelity context"}
-        </div>
-        <button 
-          style={{ marginTop: "6px", fontSize: "11px", padding: "4px 8px" }} 
-          onClick={() => setShowCloudModal(true)}
-        >
-          🔑 Connect Provider API Key
-        </button>
-        <label style={{ marginTop: "10px" }}>
-          <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "8px" }}>
-            <span>Model ({models.length} Available)</span>
-            {(selectedProvider === "lm_studio" || selectedProvider === "ollama") && (
-              <button
-                type="button"
-                title="Refresh models added or removed from the local server"
-                disabled={busy || modelTransitioning || refreshingModels}
-                onClick={(event) => {
-                  event.preventDefault();
-                  void refreshLocalModels();
-                }}
-                style={{ padding: "2px 8px", fontSize: "10px", width: "auto" }}
-              >
-                {refreshingModels ? "Refreshing…" : "↻ Refresh"}
-              </button>
-            )}
-          </span>
-          <input
-            type="text"
-            placeholder="🔍 Search / filter models..."
-            value={modelSearch}
-            onChange={(e) => setModelSearch(e.target.value)}
-            style={{ width: "100%", padding: "4px 8px", margin: "4px 0 6px 0", fontSize: "11px", background: "var(--surface)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: "4px" }}
-          />
-          {modelSearch.trim() ? (
-            <div className="model-search-results" role="listbox" aria-label="Filtered models">
-              {models.filter((item) => item.toLowerCase().includes(modelSearch.toLowerCase())).slice(0, 100).map((item) => (
-                <button
-                  type="button"
-                  role="option"
-                  aria-selected={item === model}
-                  className={item === model ? "selected" : ""}
-                  key={item}
-                  disabled={busy || modelTransitioning}
-                  onClick={() => { void handleModelChange(item); setModelSearch(""); }}
-                >{item}</button>
-              ))}
-              {models.every((item) => !item.toLowerCase().includes(modelSearch.toLowerCase())) && <div className="model-search-empty">No matching models</div>}
+      <SettingsDrawer open={settingsOpen} section={settingsSection} onSection={setSettingsSection} onClose={closeSettings}>
+        {settingsSection === "general" && <>
+          <SettingsCard title="Appearance">
+            <Appearance />
+          </SettingsCard>
+          <SettingsCard title="Workspace" description="The folder the agent reads and writes code in. Leave blank to use the folder the app was started from.">
+            <input className="settings-input" aria-label="Workspace folder" disabled={busy} value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="Current directory" />
+          </SettingsCard>
+          <SettingsCard title="Permissions" description="How much the agent may do without asking. Safety checks (passwords, admin prompts, calls) apply in both modes.">
+            <div className="choice-cards" role="radiogroup" aria-label="Policy mode">
+              {([
+                ["interactive", "Interactive", "Asks before running commands and other risky actions."],
+                ["autonomous", "Autonomous", "Broad access with guardrails; asks only for high-risk actions."],
+              ] as const).map(([value, title, text]) => <button key={value} type="button" role="radio" aria-checked={policyMode === value}
+                className={policyMode === value ? "selected" : ""} disabled={busy} onClick={() => setPolicyMode(value)}>
+                <strong>{title}</strong><small>{text}</small>
+              </button>)}
             </div>
-          ) : (
-            <select disabled={busy || modelTransitioning} value={model} onChange={(event) => void handleModelChange(event.target.value)}>
-              <option value="">-- Select a Model --</option>
-              {models.map((item) => <option key={item} value={item}>{item}</option>)}
-            </select>
-          )}
-        </label>
-        <h2>Agent & permissions</h2>
-        <label style={{ marginTop: "10px" }}>Policy Mode
-          <select disabled={busy} value={policyMode} onChange={(event) => setPolicyMode(event.target.value as "interactive" | "autonomous")}>
-            <option value="interactive">Interactive (Ask for Commands)</option>
-            <option value="autonomous">Autonomous — Broad Access with Guardrails</option>
-          </select>
-        </label>
-        <div className="context-settings" id="jev-settings">
-          <div className="context-settings-body">
-            <strong>Fast decision router</strong>
-            <small>
-              JEV is the hosted router; Laya is the local open-source router. Both use the same bounded candidates and safety checks.
-            </small>
-            <label>Default for new conversations
-              <select disabled={busy || installingLaya} value={decisionRouterBackend} onChange={(event) => void handleRouterBackendChange(event.target.value as DecisionRouterBackend)}>
-                <option value="off">Off — primary LLM handles every decision</option>
-                <option value="jev" disabled={!decisionRouter?.has_api_key}>JEV — hosted TypeSafe router</option>
-                <option value="laya" disabled={!decisionRouter?.laya.installed}>Laya — local open-source router</option>
+            {sessionApprovals.length > 0 && <SettingRow label="Allowed this session"><span className="settings-value">{sessionApprovals.join(", ")}</span></SettingRow>}
+          </SettingsCard>
+          <SettingsCard title="About">
+            <SettingRow label="Platform"><span className="settings-value">{status?.platform ?? "…"}</span></SettingRow>
+          </SettingsCard>
+        </>}
+
+        {settingsSection === "model" && <>
+          <SettingsCard title="Provider"
+            status={status?.requires_api_key
+              ? status?.has_api_key ? <StatusPill tone="ok">Connected</StatusPill> : <StatusPill tone="error">API key needed</StatusPill>
+              : <StatusPill tone="ok">Local</StatusPill>}
+            description={status?.data_boundary === "external_service"
+              ? "External service. Full task context is sent only after you confirm it for a conversation."
+              : "Runs on this device. Requests stay on the configured local provider."}>
+            <SettingRow label="Provider">
+              <select aria-label="Provider" disabled={busy || modelTransitioning} value={selectedProvider} onChange={(event) => void handleProviderChange(event.target.value)}>
+                {providers.map((p) => <option key={p} value={p}>{providerLabel(p)}</option>)}
               </select>
-            </label>
-            <small>{decisionRouter?.has_api_key ? "API key connected — JEV can now be enabled" : "Save a TypeSafe API key before JEV can be enabled"}</small>
-            <div style={{ display: "flex", gap: "6px" }}>
-              <input
-                type="password"
-                value={decisionRouterKey}
-                onChange={(event) => setDecisionRouterKey(event.target.value)}
-                placeholder="TypeSafe API key"
-              />
-              <button disabled={!decisionRouterKey.trim()} onClick={handleSaveDecisionRouterKey}>Save key</button>
-            </div>
-            <div style={{ display: "flex", gap: "8px", alignItems: "center", marginTop: "8px" }}>
-              <button disabled={installingLaya || decisionRouter?.laya.installed} onClick={() => void handleInstallLaya(false)}>
-                {installingLaya ? "Installing Laya…" : decisionRouter?.laya.installed ? "Laya installed" : "Install Laya locally"}
-              </button>
-              {decisionRouter?.laya.installed && <button disabled={installingLaya || busy} onClick={() => void handleInstallLaya(true)}>Repair/update GPU runtime</button>}
-              <label>Laya device
-                <select disabled={busy || installingLaya || !decisionRouter?.laya.installed} value={layaDevice} onChange={(event) => void handleLayaDeviceChange(event.target.value as LayaDevicePreference)}>
-                  <option value="auto">Auto — GPU when suitable</option>
-                  <option value="gpu">GPU — request CUDA</option>
-                  <option value="cpu">CPU</option>
-                </select>
-              </label>
-            </div>
-            <small role="status">
-              {decisionRouter?.laya.running ? `✓ Laya ready on ${decisionRouter.laya.device ?? "local device"}. ${decisionRouter.laya.device_reason ?? ""}` : decisionRouter?.laya.detail}
-            </small>
-            {install?.label.includes("Laya") && <InstallProgress label={install.label} detail={install.detail} />}
-            <hr />
-            <strong>Cross-model judge (Laya only)</strong>
-            <small>
-              When Laya's own confidence gate can't resolve a decision, a second local model (zeiger)
-              double-checks that specific pick before falling back to the primary LLM. Testing found
-              this beats both Laya and JEV judging themselves, with zero dangerous false positives —
-              see docs/decision-router-backends.md.
-            </small>
-            <div style={{ display: "flex", gap: "8px", alignItems: "center", marginTop: "8px" }}>
-              <button disabled={installingJudge || decisionRouter?.judge.installed} onClick={() => void handleInstallJudge(false)}>
-                {installingJudge ? "Installing judge model…" : decisionRouter?.judge.installed ? "Judge model installed" : "Install judge model locally"}
-              </button>
-              {decisionRouter?.judge.installed && <button disabled={installingJudge || busy} onClick={() => void handleInstallJudge(true)}>Repair/update</button>}
-              <label style={{ display: "flex", alignItems: "center", gap: "4px" }}>
-                <input
-                  type="checkbox"
-                  disabled={busy || installingJudge || togglingJudge || !decisionRouter?.judge.installed || decisionRouterBackend !== "laya"}
-                  checked={decisionRouter?.judge.enabled ?? false}
-                  onChange={(event) => void handleJudgeEnabledChange(event.target.checked)}
-                />
-                Enable cross-model judge
-              </label>
-            </div>
-            {decisionRouterBackend !== "laya" && (
-              <small>Select Laya as the active router above to use the cross-model judge.</small>
+            </SettingRow>
+            {status?.requires_api_key && <SettingRow label="API key" help="Stored in Windows Credential Manager, never in files.">
+              <button type="button" className={status?.has_api_key ? "" : "primary"} onClick={() => setShowCloudModal(true)}>{status?.has_api_key ? "Replace key" : "Connect key"}</button>
+            </SettingRow>}
+            <SettingRow label="Endpoint" help="Only change this for a custom or self-hosted server.">
+              <div className="inline-field">
+                <input aria-label="Endpoint URL" type="text" value={customEndpoint} onChange={(e) => setCustomEndpoint(e.target.value)}
+                  placeholder="http://127.0.0.1:1234/v1" onKeyDown={(e) => { if (e.key === "Enter") handleSaveEndpoint(); }} />
+                <button type="button" onClick={handleSaveEndpoint}>Save</button>
+              </div>
+            </SettingRow>
+          </SettingsCard>
+
+          <SettingsCard title="Model" description={`${models.length} available`}
+            actions={(selectedProvider === "lm_studio" || selectedProvider === "ollama") && <button type="button" title="Refresh models added or removed from the local server"
+              disabled={busy || modelTransitioning || refreshingModels} onClick={() => void refreshLocalModels()}>{refreshingModels ? "Refreshing…" : "Refresh"}</button>}>
+            <input className="settings-input" type="search" aria-label="Filter models" placeholder="Search models" value={modelSearch} onChange={(e) => setModelSearch(e.target.value)} />
+            {modelSearch.trim() ? (
+              <div className="model-search-results" role="listbox" aria-label="Filtered models">
+                {models.filter((item) => item.toLowerCase().includes(modelSearch.toLowerCase())).slice(0, 100).map((item) => (
+                  <button type="button" role="option" aria-selected={item === model} className={item === model ? "selected" : ""} key={item}
+                    disabled={busy || modelTransitioning} onClick={() => { void handleModelChange(item); setModelSearch(""); }}>{item}</button>
+                ))}
+                {models.every((item) => !item.toLowerCase().includes(modelSearch.toLowerCase())) && <div className="model-search-empty">No matching models</div>}
+              </div>
+            ) : (
+              <select aria-label="Selected model" disabled={busy || modelTransitioning} value={model} onChange={(event) => void handleModelChange(event.target.value)}>
+                <option value="">Select a model</option>
+                {models.map((item) => <option key={item} value={item}>{item}</option>)}
+              </select>
             )}
-            <small role="status">
-              {decisionRouter?.judge.running ? `✓ Judge ready on ${decisionRouter.judge.device ?? "local device"}. ${decisionRouter.judge.device_reason ?? ""}` : decisionRouter?.judge.detail}
-            </small>
-            {install?.label.includes("judge") && <InstallProgress label={install.label} detail={install.detail} />}
-            <hr />
-            <strong>Training data (opt-in)</strong>
-            <small>
-              Save each on-screen question the router is asked, with the answer that later proved right, to build a
-              training set for a System 1 model. Files stay on this computer. Password managers, banking, mail, Discord,
-              and any application listed in training-exclude.txt in the data folder are never recorded, nor are emails or
-              long numbers.
-            </small>
-            <label style={{ display: "flex", alignItems: "center", gap: "6px", marginTop: "8px" }}>
-              <input
-                type="checkbox"
-                aria-label="Save router questions for training"
-                checked={decisionRouter?.training_log ?? false}
-                onChange={(event) => void handleRouterTrainingChange(event.target.checked)}
-              />
-              Save router questions for training
-            </label>
-            {decisionRouter?.training_log && decisionRouter.training_dir && (
-              <small role="status">Saving to {decisionRouter.training_dir} (one file per conversation). Combine them with scripts/build_router_dataset.py.</small>
-            )}
-            {decisionRouterError && <p className="error-text">{decisionRouterError}</p>}
-          </div>
-        </div>
-        {sessionApprovals.length > 0 && (
-          <div className="session-approvals" role="status">
-            <strong>✓ Allowed this session</strong>
-            <span>{sessionApprovals.join(", ")}</span>
-          </div>
-        )}
-        <details className="advanced-settings"><summary>Advanced settings</summary>
-        <div className="context-settings">
-          <button className="context-settings-toggle" onClick={() => setContextExpanded(!contextExpanded)}>
-            Context budget {contextExpanded ? "▲" : "▼"}
-          </button>
-          {contextExpanded && (
-            <div className="context-settings-body">
-              <label>Compact at {contextThreshold}%
-                <input type="range" min="50" max="95" value={contextThreshold} onChange={(event) => setContextThreshold(Number(event.target.value))} />
-              </label>
-              <label>Loaded context tokens (optional)
-                <input value={contextWindowOverride} onChange={(event) => setContextWindowOverride(event.target.value.replace(/\D/g, ""))} placeholder="Use provider/catalog metadata" />
-              </label>
-              {(selectedProvider === "lm_studio") && <small>When set, POK-Agent requests this context length when loading the model.</small>}
-              <button disabled={!model} onClick={saveContextOverride}>Save for this model</button>
+            <div className="capability-chips" aria-label="Model capabilities">
+              {([["Vision", modelCapabilities?.vision], ["Tools", modelCapabilities?.tool_use], ["Reasoning", modelCapabilities?.reasoning]] as const).map(([name, value]) =>
+                <span key={name} className={`capability-chip ${value === undefined ? "unknown" : value ? "yes" : "no"}`}>{value === undefined ? "?" : value ? "✓" : "–"} {name}</span>)}
             </div>
-          )}
-        </div>
-        <div className="context-settings">
-          <div className="context-settings-body">
-            <strong>Model capabilities</strong>
-            <small>
-              Vision {modelCapabilities?.vision === undefined ? "unknown" : modelCapabilities.vision ? "available" : "unavailable"}
-              {" · "}tools {modelCapabilities?.tool_use === undefined ? "unknown" : modelCapabilities.tool_use ? "available" : "unavailable"}
-              {" · "}reasoning {modelCapabilities?.reasoning === undefined ? "unknown" : modelCapabilities.reasoning ? "available" : "unavailable"}
-            </small>
-            <label>Vision input
+          </SettingsCard>
+
+          <SettingsCard title="Request tuning" description="Leave these on Auto unless a model needs something specific."
+            actions={<button type="button" className="primary" disabled={!model} onClick={saveModelRequestSettings}>Save</button>}>
+            <SettingRow label="Vision input">
               <select value={visionMode} onChange={(event) => setVisionMode(event.target.value as "auto" | "on" | "off")}>
-                <option value="auto">Auto (provider metadata)</option>
+                <option value="auto">Auto</option>
                 <option value="off">Off</option>
                 <option value="on" disabled={modelCapabilities?.vision !== true && !manualCapabilityOverride}>On</option>
               </select>
-            </label>
-            <label>Reasoning effort
+            </SettingRow>
+            <SettingRow label="Reasoning effort">
               <select value={reasoningEffort} onChange={(event) => setReasoningEffort(event.target.value)}>
-                <option value="auto">Auto / provider default{modelCapabilities?.reasoning_default ? ` (${reasoningLabel(modelCapabilities.reasoning_default)})` : ""}</option>
+                <option value="auto">Auto{modelCapabilities?.reasoning_default ? ` (${reasoningLabel(modelCapabilities.reasoning_default)})` : ""}</option>
                 {(modelCapabilities?.reasoning_efforts ?? []).map((effort) => <option key={effort} value={effort}>{reasoningLabel(effort)}</option>)}
                 {manualCapabilityOverride && ["off", "on", "none", "minimal", "low", "medium", "high", "xhigh", "max"].filter((effort) => !(modelCapabilities?.reasoning_efforts ?? []).includes(effort)).map((effort) => <option key={effort} value={effort}>{reasoningLabel(effort)} (override)</option>)}
               </select>
-            </label>
-            <label>Temperature (blank = auto)
-              <input disabled={!manualCapabilityOverride && !modelCapabilities?.supported_parameters.includes("temperature")} type="number" min="0" max="2" step="0.05" value={requestTemperature} onChange={(event) => setRequestTemperature(event.target.value)} />
-            </label>
-            <label>Maximum output tokens (blank = auto)
-              <input disabled={!manualCapabilityOverride && !modelCapabilities?.supported_parameters.some((item) => ["max_tokens", "max_output_tokens"].includes(item))} inputMode="numeric" value={requestMaxOutput} onChange={(event) => setRequestMaxOutput(event.target.value.replace(/\D/g, ""))} />
-            </label>
-            <label>Seed (blank = provider default)
-              <input disabled={!manualCapabilityOverride && !modelCapabilities?.supported_parameters.includes("seed")} inputMode="numeric" value={requestSeed} onChange={(event) => setRequestSeed(event.target.value.replace(/\D/g, ""))} />
-            </label>
-            <label><input type="checkbox" checked={manualCapabilityOverride} onChange={(event) => setManualCapabilityOverride(event.target.checked)} /> Advanced manual override for unknown or misreported capabilities</label>
-            <label><input type="checkbox" checked={fullContext} onChange={(event) => setFullContext(event.target.checked)} /> Full Context (send retained history up to the compaction threshold)</label>
-            <button disabled={!model} onClick={saveModelRequestSettings}>Save request settings</button>
-          </div>
-        </div>
-        <label style={{ marginTop: "10px" }}>Endpoint URL ({selectedProvider.toUpperCase()})
-          <div style={{ display: "flex", gap: "6px", alignItems: "center", marginTop: "4px" }}>
-            <input
-              type="text"
-              value={customEndpoint}
-              onChange={(e) => setCustomEndpoint(e.target.value)}
-              placeholder="e.g. http://127.0.0.1:1234/v1"
-              onKeyDown={(e) => { if (e.key === "Enter") handleSaveEndpoint(); }}
-              style={{ width: "100%", padding: "6px 8px", fontSize: "11px", background: "var(--surface)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: "6px" }}
-            />
-            <button
-              type="button"
-              style={{ padding: "6px 10px", fontSize: "11px", flex: "none" }}
-              onClick={handleSaveEndpoint}
-            >
-              Save
-            </button>
-          </div>
-        </label>
-        <dl style={{ marginTop: "8px" }}><dt>Platform</dt><dd>{status?.platform ?? "…"}</dd></dl>
-        </details>
-        <h2>Workspace</h2><input disabled={busy} value={workspace} onChange={(event) => setWorkspace(event.target.value)} placeholder="Leave blank for current directory" />
-        <div className="memory-library-heading">
-          <h2 id="memory-library">Memory library</h2>
-          <div className="memory-heading-actions">
-            {lastMemoryMerge && <button onClick={() => void undoMemoryMerge()}>Undo merge</button>}
-            <button disabled={memoryCleanupBusy} onClick={() => void scanMemoryDuplicates()}>{memoryCleanupBusy ? "Scanning…" : "Scan duplicates"}</button>
-            <button onClick={refreshMemoryLibrary}>Refresh</button>
-          </div>
-        </div>
-        <div className="memory-tabs" role="tablist">
-          <button className={memoryTab === "facts" ? "active" : ""} onClick={() => setMemoryTab("facts")}>Facts</button>
-          <button className={memoryTab === "skills" ? "active" : ""} onClick={() => setMemoryTab("skills")}>Skills</button>
-        </div>
-        <div className="memory-list-container">
-          {memoryTab === "facts" && memoryDuplicateGroups.map((group) => (
-            <div className="memory duplicate-group" key={group.id}>
-              <strong>Possible duplicates · {Math.round(group.similarity * 100)}% local similarity</strong>
-              <small>Select the record to keep. Nothing changes until you confirm.</small>
-              {group.records.map((record) => (
-                <div className="duplicate-choice" key={record.id}>
-                  <span>{record.text}</span>
-                  <button onClick={() => void mergeMemoryGroup(group, record)}>Keep this one</button>
+            </SettingRow>
+            <SettingRow label="Temperature" help="Blank for Auto.">
+              <input aria-label="Temperature" disabled={!manualCapabilityOverride && !modelCapabilities?.supported_parameters.includes("temperature")} type="number" min="0" max="2" step="0.05" value={requestTemperature} onChange={(event) => setRequestTemperature(event.target.value)} placeholder="Auto" />
+            </SettingRow>
+            <SettingRow label="Max output tokens" help="Blank for Auto.">
+              <input aria-label="Maximum output tokens" disabled={!manualCapabilityOverride && !modelCapabilities?.supported_parameters.some((item) => ["max_tokens", "max_output_tokens"].includes(item))} inputMode="numeric" value={requestMaxOutput} onChange={(event) => setRequestMaxOutput(event.target.value.replace(/\D/g, ""))} placeholder="Auto" />
+            </SettingRow>
+            <SettingRow label="Seed" help="Blank for the provider default.">
+              <input aria-label="Seed" disabled={!manualCapabilityOverride && !modelCapabilities?.supported_parameters.includes("seed")} inputMode="numeric" value={requestSeed} onChange={(event) => setRequestSeed(event.target.value.replace(/\D/g, ""))} placeholder="Default" />
+            </SettingRow>
+            <SettingRow label="Full context" help="Send retained history up to the compaction threshold.">
+              <Switch label="Full context" checked={fullContext} onChange={setFullContext} />
+            </SettingRow>
+            <SettingRow label="Manual capability override" help="For models that report their capabilities wrongly.">
+              <Switch label="Manual capability override" checked={manualCapabilityOverride} onChange={setManualCapabilityOverride} />
+            </SettingRow>
+          </SettingsCard>
+
+          <SettingsCard title="Context budget" description="When the conversation fills this share of the model's context, older turns are summarized."
+            actions={<button type="button" disabled={!model} onClick={saveContextOverride}>Save for this model</button>}>
+            <SettingRow label={`Compact at ${contextThreshold}%`}>
+              <input aria-label="Compaction threshold" type="range" min="50" max="95" value={contextThreshold} onChange={(event) => setContextThreshold(Number(event.target.value))} />
+            </SettingRow>
+            <SettingRow label="Context length" help={selectedProvider === "lm_studio" ? "Requested when LM Studio loads the model." : "Blank uses the provider's reported size."}>
+              <input aria-label="Loaded context tokens" value={contextWindowOverride} onChange={(event) => setContextWindowOverride(event.target.value.replace(/\D/g, ""))} placeholder="Auto" />
+            </SettingRow>
+          </SettingsCard>
+        </>}
+
+        {settingsSection === "system1" && <>
+          <SettingsCard title="Decision router"
+            status={decisionRouterBackend === "off" ? <StatusPill tone="off">Off</StatusPill> : <StatusPill tone="ok">{decisionRouterBackend === "jev" ? "JEV" : "Laya"}</StatusPill>}
+            description="A small, fast model that carries out the planner's steps on screen, so the main model is called less often. Off is the default: the main model then handles every decision itself.">
+            <div className="choice-cards three" role="radiogroup" aria-label="Router for new conversations">
+              {([
+                ["off", "Off", "Main model does everything", true],
+                ["jev", "JEV", decisionRouter?.has_api_key ? "Hosted by TypeSafe" : "Needs a TypeSafe key", decisionRouter?.has_api_key],
+                ["laya", "Laya", decisionRouter?.laya.installed ? "Local, open source" : "Install below first", decisionRouter?.laya.installed],
+              ] as const).map(([value, title, text, available]) => <button key={value} type="button" role="radio" aria-checked={decisionRouterBackend === value}
+                className={decisionRouterBackend === value ? "selected" : ""} disabled={busy || installingLaya || !available}
+                onClick={() => void handleRouterBackendChange(value)}>
+                <strong>{title}</strong><small>{text}</small>
+              </button>)}
+            </div>
+            {decisionRouterError && <p className="error-text">{decisionRouterError}</p>}
+          </SettingsCard>
+
+          <SettingsCard title="JEV" status={decisionRouter?.has_api_key ? <StatusPill tone="ok">Key saved</StatusPill> : <StatusPill tone="off">No key</StatusPill>}
+            description="TypeSafe's hosted decision model. Compact task and screen metadata is sent to TypeSafe.">
+            <div className="inline-field">
+              <input type="password" aria-label="TypeSafe API key" value={decisionRouterKey} onChange={(event) => setDecisionRouterKey(event.target.value)}
+                placeholder={decisionRouter?.has_api_key ? "Paste a new key to replace it" : "TypeSafe API key"} />
+              <button type="button" className="primary" disabled={!decisionRouterKey.trim()} onClick={handleSaveDecisionRouterKey}>Save key</button>
+            </div>
+          </SettingsCard>
+
+          <SettingsCard title="Laya"
+            status={decisionRouter?.laya.running ? <StatusPill tone="ok">Ready · {decisionRouter.laya.device ?? "local"}</StatusPill>
+              : decisionRouter?.laya.installed ? <StatusPill tone="off">Installed</StatusPill> : <StatusPill tone="off">Not installed</StatusPill>}
+            description="Open-source decision model that runs on this computer. Nothing leaves the device."
+            actions={decisionRouter?.laya.installed
+              ? <button type="button" disabled={installingLaya || busy} onClick={() => void handleInstallLaya(true)}>Repair</button>
+              : <button type="button" className="primary" disabled={installingLaya} onClick={() => void handleInstallLaya(false)}>{installingLaya ? "Installing…" : "Install"}</button>}>
+            <SettingRow label="Device" help={decisionRouter?.laya.device_reason || undefined}>
+              <select aria-label="Laya device" disabled={busy || installingLaya || !decisionRouter?.laya.installed} value={layaDevice} onChange={(event) => void handleLayaDeviceChange(event.target.value as LayaDevicePreference)}>
+                <option value="auto">Auto</option>
+                <option value="gpu">GPU (CUDA)</option>
+                <option value="cpu">CPU</option>
+              </select>
+            </SettingRow>
+            {!decisionRouter?.laya.running && decisionRouter?.laya.detail && <p className="settings-note" role="status">{decisionRouter.laya.detail}</p>}
+            {install?.label.includes("Laya") && <InstallProgress label={install.label} detail={install.detail} />}
+          </SettingsCard>
+
+          <SettingsCard title="Cross-model judge"
+            status={decisionRouter?.judge.running ? <StatusPill tone="ok">Ready</StatusPill> : decisionRouter?.judge.installed ? <StatusPill tone="off">Installed</StatusPill> : <StatusPill tone="off">Not installed</StatusPill>}
+            description="With Laya, a second local model double-checks picks Laya is unsure of before the main model is asked."
+            actions={decisionRouter?.judge.installed
+              ? <button type="button" disabled={installingJudge || busy} onClick={() => void handleInstallJudge(true)}>Repair</button>
+              : <button type="button" disabled={installingJudge} onClick={() => void handleInstallJudge(false)}>{installingJudge ? "Installing…" : "Install"}</button>}>
+            <SettingRow label="Use the judge" help={decisionRouterBackend !== "laya" ? "Available when Laya is the router." : undefined}>
+              <Switch label="Enable cross-model judge" checked={decisionRouter?.judge.enabled ?? false}
+                disabled={busy || installingJudge || togglingJudge || !decisionRouter?.judge.installed || decisionRouterBackend !== "laya"}
+                onChange={(checked) => void handleJudgeEnabledChange(checked)} />
+            </SettingRow>
+            {!decisionRouter?.judge.running && decisionRouter?.judge.installed && decisionRouter?.judge.detail && <p className="settings-note" role="status">{decisionRouter.judge.detail}</p>}
+            {install?.label.includes("judge") && <InstallProgress label={install.label} detail={install.detail} />}
+          </SettingsCard>
+
+          <SettingsCard title="Training data" status={<StatusPill tone={decisionRouter?.training_log ? "ok" : "off"}>{decisionRouter?.training_log ? "On" : "Off"}</StatusPill>}
+            description="Saves each on-screen question with the answer that proved right, to train a local System 1 model. Files stay on this computer. Password managers, banking, mail, Discord, apps listed in training-exclude.txt, emails and long numbers are never recorded.">
+            <SettingRow label="Save router questions">
+              <Switch label="Save router questions for training" checked={decisionRouter?.training_log ?? false} onChange={(checked) => void handleRouterTrainingChange(checked)} />
+            </SettingRow>
+            {decisionRouter?.training_log && decisionRouter.training_dir && (
+              <p className="settings-note" role="status">Saving to {decisionRouter.training_dir} (one file per conversation). Combine them with scripts/build_router_dataset.py.</p>
+            )}
+          </SettingsCard>
+        </>}
+
+        {settingsSection === "memory" && <>
+          <SettingsCard title="Memory library" description="Facts the agent remembers and skills it learned from verified runs."
+            actions={<>
+              {lastMemoryMerge && <button type="button" onClick={() => void undoMemoryMerge()}>Undo merge</button>}
+              <button type="button" disabled={memoryCleanupBusy} onClick={() => void scanMemoryDuplicates()}>{memoryCleanupBusy ? "Scanning…" : "Find duplicates"}</button>
+              <button type="button" onClick={refreshMemoryLibrary}>Refresh</button>
+            </>}>
+            <div className="segmented" role="tablist" aria-label="Memory type">
+              <button type="button" role="tab" aria-selected={memoryTab === "facts"} className={memoryTab === "facts" ? "active" : ""} onClick={() => setMemoryTab("facts")}>Facts <span>{memoryLibrary.facts.length}</span></button>
+              <button type="button" role="tab" aria-selected={memoryTab === "skills"} className={memoryTab === "skills" ? "active" : ""} onClick={() => setMemoryTab("skills")}>Skills <span>{memoryLibrary.skills.length}</span></button>
+            </div>
+            <div className="memory-list-container" id="memory-library">
+              {memoryTab === "facts" && memoryDuplicateGroups.map((group) => (
+                <div className="memory duplicate-group" key={group.id}>
+                  <strong>Possible duplicates · {Math.round(group.similarity * 100)}% similar</strong>
+                  <small>Choose the one to keep. Nothing changes until you confirm.</small>
+                  {group.records.map((record) => (
+                    <div className="duplicate-choice" key={record.id}>
+                      <span>{record.text}</span>
+                      <button type="button" onClick={() => void mergeMemoryGroup(group, record)}>Keep this one</button>
+                    </div>
+                  ))}
+                  <button type="button" onClick={() => setMemoryDuplicateGroups((groups) => groups.filter((item) => item.id !== group.id))}>Not duplicates</button>
                 </div>
               ))}
-              <button onClick={() => setMemoryDuplicateGroups((groups) => groups.filter((item) => item.id !== group.id))}>Not duplicates</button>
+              {memoryTab === "facts" && (memoryLibrary.facts.length === 0 ? <p className="empty-memory-msg">No saved facts yet.</p> : memoryLibrary.facts.map((record) => (
+                <div className={`memory ${record.enabled ? "" : "disabled"}`} key={record.id}>
+                  <small>{record.approved ? record.source : `Draft · ${record.source}`} · reinforced {record.reinforcement_count ?? 1}×{record.review_status !== "independent" ? ` · ${record.review_status.replaceAll("_", " ")}` : ""}</small>
+                  <p>{record.text}</p>
+                  <div className="memory-actions">
+                    {!record.approved ? <>
+                      <button type="button" className="primary" onClick={() => approveDraft(record.id)}>Approve</button>
+                      <button type="button" className="reject" onClick={() => rejectDraft(record.id)}>Deny</button>
+                    </> : <>
+                      <button type="button" onClick={() => toggleMemory(record)}>{record.enabled ? "Disable" : "Enable"}</button>
+                      <button type="button" className="reject" onClick={() => removeMemory(record.id)}>Delete</button>
+                      <button type="button" className="reject" title="Stores normalized text locally to block similar inferred memories" onClick={() => void forgetMemory(record)}>Forget & block similar</button>
+                    </>}
+                  </div>
+                </div>
+              )))}
+              {memoryTab === "skills" && (memoryLibrary.skills.length === 0 ? <p className="empty-memory-msg">No verified skills learned yet.</p> : memoryLibrary.skills.map((record) => (
+                <div className={`memory procedure ${record.enabled ? "" : "disabled"}`} key={record.id}>
+                  <small>{record.success_count === 0 && record.evidence === "explicit_user_request" ? "Created by you · unverified" : `${record.success_count} verified successes`} · used {record.retrieval_count}×{record.applications.length ? ` · ${record.applications.join(", ")}` : ""}</small>
+                  <strong>{record.title}</strong>
+                  <p>{record.command_template ?? record.summary}</p>
+                  <div className="memory-actions">
+                    <button type="button" onClick={() => toggleProcedure(record)}>{record.enabled ? "Disable" : "Enable"}</button>
+                    <button type="button" className="reject" onClick={() => removeProcedure(record.id)}>Delete</button>
+                  </div>
+                </div>
+              )))}
             </div>
-          ))}
-          {memoryTab === "facts" && (memoryLibrary.facts.length === 0 ? <p className="empty-memory-msg">No saved facts or drafts.</p> : memoryLibrary.facts.map((record) => (
-            <div className={`memory ${record.enabled ? "" : "disabled"}`} key={record.id}>
-              <small>{record.approved ? record.source : `DRAFT · ${record.source}`} · reinforced {record.reinforcement_count ?? 1}×{record.review_status !== "independent" ? ` · ${record.review_status.replaceAll("_", " ")}` : ""}</small>
-              <p>{record.text}</p>
-              <div className="memory-actions">
-                {!record.approved ? <>
-                  <button className="primary" onClick={() => approveDraft(record.id)}>Approve</button>
-                  <button className="reject" onClick={() => rejectDraft(record.id)}>Deny</button>
-                </> : <>
-                  <button onClick={() => toggleMemory(record)}>{record.enabled ? "Disable" : "Enable"}</button>
-                  <button className="reject" onClick={() => removeMemory(record.id)}>Delete</button>
-                  <button className="reject" title="Stores normalized text locally to block similar inferred memories" onClick={() => void forgetMemory(record)}>Forget & block similar</button>
-                </>}
-              </div>
+          </SettingsCard>
+        </>}
+
+        {settingsSection === "tools" && <>
+          <SettingsCard title="Generated tools" description="Helpers the agent wrote and tested while working, promoted into reusable tools for this project."
+            actions={<button type="button" onClick={refreshGeneratedTools}>Refresh</button>}>
+            <div className="generated-tools-container" id="generated-tools">
+              {generatedToolCandidates.map((candidate) => (
+                <div className="generated-tool candidate" key={candidate.id}>
+                  <div><strong>Promotion candidate</strong><span>{candidate.runtime}</span></div>
+                  <p>{candidate.task}</p>
+                  <small>{candidate.helper_path} · tested successfully, not installed</small>
+                  <button type="button" className="reject" onClick={() => dismissToolCandidate(candidate.id)}>Dismiss</button>
+                </div>
+              ))}
+              {generatedTools.length === 0 ? <p className="empty-memory-msg">No project tools promoted yet.</p> : generatedTools.map((tool) => (
+                <div className="generated-tool" key={tool.name}>
+                  <div><strong>{tool.name}</strong><span>v{tool.version}</span></div>
+                  <p>{tool.description}</p>
+                  <small>
+                    {tool.runtime} · {tool.isolated_environment ? `isolated · ${tool.smoke_tests ?? 0} tests / ${tool.assertions ?? 0} checks` : "legacy runtime"} · {tool.capabilities.join(", ")} · {tool.successes} ok / {tool.failures} failed
+                  </small>
+                  <div className="generated-tool-actions">
+                    <button type="button" disabled={busy} onClick={() => toggleGeneratedTool(tool)}>{tool.enabled ? "Disable" : "Enable"}</button>
+                    <button type="button" disabled={busy} className="reject" onClick={() => removeGeneratedTool(tool)}>Delete</button>
+                  </div>
+                </div>
+              ))}
             </div>
-          )))}
-          {memoryTab === "skills" && (memoryLibrary.skills.length === 0 ? <p className="empty-memory-msg">No verified skills learned yet.</p> : memoryLibrary.skills.map((record) => (
-            <div className={`memory procedure ${record.enabled ? "" : "disabled"}`} key={record.id}>
-              <small>{record.success_count === 0 && record.evidence === "explicit_user_request" ? "USER-CREATED SKILL · unverified" : `SKILL · ${record.success_count} verified successes`} · {record.retrieval_count} activations</small>
-              <strong>{record.title}</strong>
-              <p>{record.command_template ?? record.summary}</p>
-              <span className="memory-evidence">{record.evidence}{record.applications.length ? ` · ${record.applications.join(", ")}` : ""}</span>
-              <div className="memory-actions">
-                <button onClick={() => toggleProcedure(record)}>{record.enabled ? "Disable" : "Enable"}</button>
-                <button className="reject" onClick={() => removeProcedure(record.id)}>Delete</button>
-              </div>
-            </div>
-          )))}
-        </div>
-        <h2 id="generated-tools">Generated tools</h2>
-        <button onClick={refreshGeneratedTools}>Refresh</button>
-        <div className="generated-tools-container">
-          {generatedToolCandidates.map((candidate) => (
-            <div className="generated-tool candidate" key={candidate.id}>
-              <div><strong>Promotion candidate</strong><span>{candidate.runtime}</span></div>
-              <p>{candidate.task}</p>
-              <small>{candidate.helper_path} · tested successfully, not installed</small>
-              <button className="reject" onClick={() => dismissToolCandidate(candidate.id)}>Dismiss</button>
-            </div>
-          ))}
-          {generatedTools.length === 0 ? <p className="empty-memory-msg">No project tools promoted yet.</p> : generatedTools.map((tool) => (
-            <div className="generated-tool" key={tool.name}>
-              <div><strong>{tool.name}</strong><span>v{tool.version}</span></div>
-              <p>{tool.description}</p>
-              <small>
-                {tool.runtime} · {tool.isolated_environment ? `isolated · ${tool.smoke_tests ?? 0} tests / ${tool.assertions ?? 0} checks` : "legacy runtime"} · {tool.capabilities.join(", ")} · {tool.successes} ok / {tool.failures} failed
-              </small>
-              <div className="generated-tool-actions">
-                <button disabled={busy} onClick={() => toggleGeneratedTool(tool)}>{tool.enabled ? "Disable" : "Enable"}</button>
-                <button disabled={busy} className="reject" onClick={() => removeGeneratedTool(tool)}>Delete</button>
-              </div>
-            </div>
-          ))}
-        </div>
+          </SettingsCard>
+        </>}
       </SettingsDrawer>
       <section className="panel agent">
+        {agentViewOpen && (agentFrames.length > 0 || busy) && <AgentView frames={agentFrames} onClose={() => toggleAgentView(false)} />}
         <details className="session-details"><summary>Session details <span>{model || "No model selected"} · {usage.totalCompletion.toLocaleString()} output tokens</span></summary>
         {jevEnabled && <div className="jev-scorecard" role="status" aria-label="Decision router performance diagnostics">
           <div><strong>{decisionRouterBackend.toUpperCase()} PERFORMANCE</strong><span>{jevMetrics.actions} actions · {jevMetrics.evidence} evidence · {jevMetrics.progress} verified progress</span></div>
@@ -2898,7 +2889,7 @@ export function App() {
             {messages.some(m => m.id.startsWith("restored-")) && <p className="session-notice">Conversation restored in chronological order{historyHasMore ? " · Scroll up to load earlier history" : ""}.</p>}
             {messages.length === 0 && !busy ? (
               <div className="console-empty">
-                <span className="welcome-mark">P</span>
+                <img className="welcome-logo" src="/pok-logo.png" alt="POK-Agent" />
                 <h2>What would you like to do?</h2>
                 <p>Build something, explore a project, or work across your desktop.</p>
                 <small>You’ll see each step as your agent works.</small>
@@ -2940,6 +2931,7 @@ export function App() {
         >
         
         <div className="actions">
+          <div className="composer-options">
           <ModelPicker models={models} value={model} onChange={(next) => void handleModelChange(next)} disabled={busy || modelTransitioning} />
           {(modelCapabilities?.reasoning_efforts.length ?? 0) > 0 && (
             <select
@@ -2969,69 +2961,53 @@ export function App() {
               ⚠ {jevWarning}
             </span>
           )}
-          <button className="primary" disabled={!prompt.trim() || !model || pauseState !== "running" || (!busy && modelTransitioning)} onClick={run}>
-            {busy ? "Send Guidance" : "Run task"}
-          </button>
-          <button
-            className={`pause-toggle pause-${pauseState}`}
-            disabled={!busy || pauseState === "requested"}
-            onClick={togglePause}
-          >
-            {pauseState === "paused" ? "Resume agent" : pauseState === "requested" ? "Pausing…" : "Pause agent"}
-          </button>
-          <button className="stop" onClick={() => invoke("emergency_stop")}>Emergency stop · Ctrl+Alt+Esc</button>
+          </div>
+          <div className="composer-send">
+            <button
+              className={`pause-toggle pause-${pauseState}`}
+              disabled={!busy || pauseState === "requested"}
+              onClick={togglePause}
+            >
+              {pauseState === "paused" ? "Resume agent" : pauseState === "requested" ? "Pausing…" : "Pause agent"}
+            </button>
+            <button className="stop" aria-label="Emergency stop · Ctrl+Alt+Esc" title="Emergency stop (Ctrl+Alt+Esc)" onClick={() => invoke("emergency_stop")}>
+              <span className="stop-icon" aria-hidden="true" /><span className="stop-label">Stop</span>
+            </button>
+            <button className="primary" disabled={!prompt.trim() || !model || pauseState !== "running" || (!busy && modelTransitioning)} onClick={run}>
+              {busy ? "Send Guidance" : "Run task"}
+            </button>
+          </div>
         </div>
         </Composer>
       </section>
     </section>
     {showCloudModal && (
       <div className="modal">
-        <div className="dialog">
-          <span className="eyebrow">CLOUD PROVIDER SETUP</span>
+        <div className="dialog key-dialog">
           <h2>Connect {selectedProvider.toUpperCase()} API Key</h2>
-          
+          <p>The key is stored in Windows Credential Manager on this computer and is only sent to {providerLabel(selectedProvider)}.</p>
           {PROVIDER_URLS[selectedProvider.toLowerCase()] && (
-            <div style={{ margin: "12px 0", padding: "12px 14px", background: "var(--raised)", borderRadius: "6px", border: "1px solid #3b82f6" }}>
-              <p style={{ margin: "0 0 6px 0", fontSize: "12px", color: "var(--text)" }}>
-                Create or copy an API key from the provider console.
-              </p>
-              <a 
-                href={PROVIDER_URLS[selectedProvider.toLowerCase()].url} 
-                target="_blank" 
-                rel="noreferrer"
-                style={{
-                  display: "inline-block",
-                  background: "var(--surface)",
-                  color: "var(--text)",
-                  padding: "6px 14px",
-                  borderRadius: "4px",
-                  textDecoration: "none",
-                  fontSize: "12px",
-                  fontWeight: 600
-                }}
-              >
-                🌐 Open {PROVIDER_URLS[selectedProvider.toLowerCase()].name} Page ↗
-              </a>
-            </div>
+            <a className="key-link" href={PROVIDER_URLS[selectedProvider.toLowerCase()].url} target="_blank" rel="noreferrer">
+              Get a key from {PROVIDER_URLS[selectedProvider.toLowerCase()].name} ↗
+            </a>
           )}
-
-          <p style={{ fontSize: "12px", color: "var(--muted)", marginTop: "12px" }}>Paste your API key for {selectedProvider}:</p>
-          <input 
-            type="password" 
-            value={cloudApiKey} 
+          <input
+            type="password"
+            aria-label={`${providerLabel(selectedProvider)} API key`}
+            value={cloudApiKey}
             onChange={(e) => {
               setCloudApiKey(e.target.value);
               setCloudKeyError("");
             }}
-            placeholder={`Enter ${selectedProvider.toUpperCase()} API key...`}
-            style={{ width: "100%", padding: "8px", margin: "8px 0 16px 0", background: "var(--surface)", color: "var(--text)", border: "1px solid var(--border)", borderRadius: "4px" }}
+            onKeyDown={(e) => { if (e.key === "Enter" && cloudApiKey.trim() && !savingCloudKey) void handleSaveCloudKey(); }}
+            placeholder="Paste your API key"
           />
           {cloudKeyError && <p className="error-text">Could not connect: {cloudKeyError}</p>}
           <div className="actions">
-            <button className="primary" onClick={handleSaveCloudKey} disabled={savingCloudKey}>
-              {savingCloudKey ? "Connecting..." : "Save & Connect"}
-            </button>
             <button onClick={() => setShowCloudModal(false)} disabled={savingCloudKey}>Cancel</button>
+            <button className="primary" onClick={handleSaveCloudKey} disabled={savingCloudKey}>
+              {savingCloudKey ? "Connecting…" : "Save & connect"}
+            </button>
           </div>
         </div>
       </div>

@@ -64,6 +64,23 @@ describe("workspace presentation", () => {
     expect(container.querySelector("table")).not.toBeNull(); expect(container.querySelector("pre")?.textContent).toContain("fn main");
     expect(container.querySelector("script, img, a[href^='javascript:']")).toBeNull();
   });
+  it("shows each frame the agent saw with its numbered targets, and can be hidden", async () => {
+    const previous = mock.invoke.getMockImplementation()!;
+    mock.invoke.mockImplementation((name, args) => name === "read_observation_frame"
+      ? Promise.resolve("data:image/png;base64,AAAA") : previous(name, args));
+    await renderApp();
+    emit({ type: "observation_captured", observation_id: "o1", image_path: "C:/diag/observation-o1-monitor-m.png", window_title: "Settings",
+      targets: [{ id: "7", label: "Personalization", source: "uia", x: 0.1, y: 0.2, width: 0.3, height: 0.05 }] });
+    const view = await screen.findByRole("complementary", { name: "Agent view" });
+    expect(await within(view).findByAltText("Frame of Settings")).not.toBeNull();
+    expect(within(view).getByTitle("7 · Personalization")).not.toBeNull();
+    expect(mock.invoke).toHaveBeenCalledWith("read_observation_frame", { path: "C:/diag/observation-o1-monitor-m.png" });
+    await userEvent.click(within(view).getByRole("button", { name: "Close agent view" }));
+    expect(screen.queryByRole("complementary", { name: "Agent view" })).toBeNull();
+    expect(localStorage.getItem("pok_agent_view")).toBe("hidden");
+    await userEvent.click(screen.getByRole("button", { name: /Agent view/ }));
+    expect(await screen.findByRole("complementary", { name: "Agent view" })).not.toBeNull();
+  });
   it("keeps streaming blocks ordered across reasoning and answers", () => {
     let messages = appendStreamDelta([], "reasoning", "Check ");
     messages = appendStreamDelta(messages, "reasoning", "the file");
@@ -92,7 +109,7 @@ describe("workspace presentation", () => {
     await renderApp();
     await userEvent.click(screen.getByRole("button", { name: /Explore the project/ }));
     const question = await screen.findByText("Earlier question");
-    const tool = await screen.findByText("Ran capture_screen");
+    const tool = await screen.findByText("Reading the screen");
     const answer = await screen.findByText("Earlier answer");
     expect(question.compareDocumentPosition(tool) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(tool.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -230,6 +247,8 @@ describe("workspace presentation", () => {
       ? previous("get_decision_router_status", {}).then((status: any) => ({ ...status, training_log: (args as any).enabled, training_dir: "C:/data/router-training" }))
       : previous(name, args));
     await renderApp();
+    await userEvent.click(screen.getByRole("button", { name: "Settings", expanded: false }));
+    await userEvent.click(within(screen.getByRole("navigation", { name: "Settings sections" })).getByRole("button", { name: /System 1/ }));
     const toggle = await screen.findByRole("checkbox", { name: "Save router questions for training" }) as HTMLInputElement;
     expect(toggle.checked).toBe(false);
     await userEvent.click(toggle);

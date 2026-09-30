@@ -481,6 +481,7 @@ impl Session {
         // The screen the first turn acts on (after any replay), without a
         // planner call spent looking.
         self.initial_look(send_images).await?;
+        self.show_latest_observation();
 
         'turns: loop {
             if let Some(budget) = self.action_step_budget
@@ -2715,6 +2716,7 @@ impl Session {
                     detail: tool_finished_detail(&call.name, &result),
                     result: tool_finished_event_result(&call.name, &result),
                 });
+                self.show_latest_observation();
                 *self.context.current_tool_call_id.lock() = None;
                 self.log(
                     "tool_result",
