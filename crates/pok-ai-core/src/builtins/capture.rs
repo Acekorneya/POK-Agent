@@ -228,6 +228,25 @@ impl Tool for CaptureScreenTool {
                 )
                 .await?
         };
+        // A browser page that is still loading (spinners) is given a few
+        // seconds to show its content, instead of the planner sleeping and
+        // capturing again.
+        let mut waited_for_page_ms = 0;
+        if include_ui_tree
+            && !cache_hit
+            && observation.target.as_ref().is_some_and(|target| {
+                matches!(
+                    target.process_name.to_ascii_lowercase().as_str(),
+                    "chrome.exe" | "msedge.exe" | "firefox.exe" | "brave.exe"
+                )
+            })
+            && browser_page_identity(&observation).busy
+        {
+            let (settled, waited) =
+                wait_while_page_busy(context, &request, observation, CAPTURE_BUSY_WAIT).await?;
+            observation = settled;
+            waited_for_page_ms = waited;
+        }
         let fusion_started = Instant::now();
         observation.targets = build_targets(
             &observation,
@@ -276,6 +295,16 @@ impl Tool for CaptureScreenTool {
         }
         if let Some(submission) = submission {
             value["submission"] = submission;
+        }
+        if waited_for_page_ms > 0 {
+            let still_busy = browser_page_identity(&observation).busy;
+            value["page_status"] = json!(if still_busy { "loading" } else { "loaded" });
+            value["waited_for_page_ms"] = json!(waited_for_page_ms);
+            if still_busy {
+                value["page_note"] = json!(
+                    "The page still shows a loading indicator. Capture again to keep waiting; do not sleep with a command."
+                );
+            }
         }
         if context.annotate_targets && !observation.targets.is_empty() {
             save_annotated_model_image(context, &observation, &value)?;

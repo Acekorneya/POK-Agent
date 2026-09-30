@@ -290,8 +290,11 @@ pub(super) fn compact_superseded_observations(messages: &mut [BrainMessage]) -> 
             let Ok(value) = serde_json::from_str::<Value>(text) else {
                 continue;
             };
+            let note = page_note(&value);
             *text = json!({
                 "observation_id": value.get("observation_id"),
+                "page": note.as_ref().map(|(page, _)| page),
+                "page_note": note.as_ref().map(|(_, text)| text),
                 "executed": value.get("executed"),
                 "success": value.get("success"),
                 "action": value.get("action"),
@@ -300,7 +303,7 @@ pub(super) fn compact_superseded_observations(messages: &mut [BrainMessage]) -> 
                 "state_change": value.get("state_change"),
                 "submission": value.get("submission"),
                 "_pok_continuity": value.get("_pok_continuity"),
-                "note": "Superseded observation compacted; use the newest grounded observation and fresh target ids."
+                "note": "Superseded observation compacted; page_note keeps the text that was on screen. Use the newest grounded observation and fresh target ids."
             })
             .to_string();
             compacted += 1;
@@ -701,6 +704,120 @@ pub(super) fn is_context_overflow_rejection(error: &PokError) -> bool {
 }
 
 pub(super) const RETAINED_TOOL_RESULTS: usize = 6;
+/// Text kept per page the agent has read, once its observation is compacted.
+pub(super) const PAGE_NOTE_CHARS: usize = 1_200;
+/// Pages whose latest text the continuity ledger carries forward.
+pub(super) const PAGE_NOTES_KEPT: usize = 6;
+pub(super) const PAGES_READ_HEADER: &str = "Pages already read (the latest text seen on each; do not reopen a page just to read it again unless it may have changed):";
+
+/// What a page (or window) said when it was observed: its address or title,
+/// and its readable text in reading order, bounded. Superseded observations
+/// keep this so the planner does not go back to re-read a page.
+pub(super) fn page_note(value: &Value) -> Option<(String, String)> {
+    if let (Some(page), Some(note)) = (
+        value.get("page").and_then(Value::as_str),
+        value.get("page_note").and_then(Value::as_str),
+    ) {
+        return Some((page.to_owned(), note.to_owned()));
+    }
+    let state = value
+        .get("_pok_continuity")
+        .and_then(|continuity| continuity.get("current_state"));
+    let page = value
+        .get("observed_url")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            state
+                .and_then(|state| state.get("observed_url"))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            value
+                .get("target")
+                .and_then(|target| target.get("title"))
+                .and_then(Value::as_str)
+        })
+        .filter(|page| !page.trim().is_empty())?
+        .trim()
+        .to_owned();
+    let mut seen = std::collections::HashSet::new();
+    let mut note = String::new();
+    for text in value
+        .get("ordered_content")?
+        .as_array()?
+        .iter()
+        .filter_map(|item| item.get("text").and_then(Value::as_str))
+        .map(str::trim)
+    {
+        // Skip icons, separators, and repeats; keep readable words.
+        if text
+            .chars()
+            .filter(|character| character.is_alphabetic())
+            .count()
+            < 3
+            || text.eq_ignore_ascii_case(&page)
+            || !seen.insert(text.to_lowercase())
+        {
+            continue;
+        }
+        if !note.is_empty() {
+            note.push_str(" | ");
+        }
+        note.push_str(text);
+        if note.chars().count() >= PAGE_NOTE_CHARS {
+            break;
+        }
+    }
+    (!note.is_empty()).then(|| (page, truncate_chars(&note, PAGE_NOTE_CHARS)))
+}
+
+/// Latest note per page, oldest first, with how often each was read.
+fn collect_page_notes(messages: &[BrainMessage], prior: &str) -> Vec<(String, usize, String)> {
+    let mut pages: Vec<(String, usize, String)> = Vec::new();
+    let mut remember = |page: String, visits: usize, note: String| {
+        if let Some(index) = pages.iter().position(|(known, _, _)| *known == page) {
+            let (_, count, _) = pages.remove(index);
+            pages.push((page, count + visits, note));
+        } else {
+            pages.push((page, visits, note));
+        }
+    };
+    // Carry the previous ledger's pages forward.
+    if let Some(block) = prior.split(PAGES_READ_HEADER).nth(1) {
+        for line in block.lines().take_while(|line| line.starts_with("- ")) {
+            let Some((head, note)) = line[2..].split_once(" :: ") else {
+                continue;
+            };
+            let (page, visits) = head
+                .rsplit_once(" (read ")
+                .and_then(|(page, rest)| {
+                    rest.trim_end_matches("×)")
+                        .parse::<usize>()
+                        .ok()
+                        .map(|count| (page, count))
+                })
+                .unwrap_or((head, 1));
+            remember(page.to_owned(), visits, note.to_owned());
+        }
+    }
+    for message in messages.iter().filter(|message| message.role == "tool") {
+        for part in &message.content {
+            let MessageContent::Text { text } = part else {
+                continue;
+            };
+            if let Some((page, note)) = serde_json::from_str::<Value>(text)
+                .ok()
+                .as_ref()
+                .and_then(page_note)
+            {
+                remember(page, 1, note);
+            }
+        }
+    }
+    let excess = pages.len().saturating_sub(PAGE_NOTES_KEPT);
+    pages.drain(..excess);
+    pages
+}
 pub(super) const TOOL_COMPACTION_TRIGGER: usize = 12;
 pub(super) const CONTINUITY_ACTIONS: usize = 24;
 
@@ -786,6 +903,26 @@ pub(super) fn continuity_summary(messages: &[BrainMessage]) -> String {
         .map(|(name, count)| format!("{name}×{count}"))
         .collect::<Vec<_>>()
         .join(", ");
+    let previous_ledger = messages
+        .iter()
+        .flat_map(|message| &message.content)
+        .filter_map(|part| match part {
+            MessageContent::Text { text } if text.contains(PAGES_READ_HEADER) => {
+                Some(text.as_str())
+            }
+            _ => None,
+        })
+        .next_back()
+        .unwrap_or_default();
+    let pages = collect_page_notes(messages, previous_ledger)
+        .into_iter()
+        .map(|(page, visits, note)| format!("- {page} (read {visits}×) :: {note}"))
+        .collect::<Vec<_>>();
+    let pages = if pages.is_empty() {
+        String::new()
+    } else {
+        format!("\n{PAGES_READ_HEADER}\n{}\n", pages.join("\n"))
+    };
     let actions = actions.into_iter().collect::<Vec<_>>().join("\n");
     let prior = messages
         .iter()
@@ -794,6 +931,20 @@ pub(super) fn continuity_summary(messages: &[BrainMessage]) -> String {
             MessageContent::Text { text }
                 if text.contains("[AUTOMATIC CONTEXT COMPACTION — CONTINUITY ONLY]") =>
             {
+                // Pages are carried forward on their own; keep them out of
+                // the prior checkpoint so they are not repeated.
+                let text = match text.split_once(PAGES_READ_HEADER) {
+                    Some((before, after)) => format!(
+                        "{before}{}",
+                        after
+                            .split_once("Most recent actions before the retained working set:")
+                            .map(|(_, actions)| format!(
+                                "Most recent actions before the retained working set:{actions}"
+                            ))
+                            .unwrap_or_default()
+                    ),
+                    None => text.clone(),
+                };
                 let mut tail = text.chars().rev().take(2_000).collect::<Vec<_>>();
                 tail.reverse();
                 Some(tail.into_iter().collect::<String>())
@@ -808,7 +959,7 @@ pub(super) fn continuity_summary(messages: &[BrainMessage]) -> String {
          The original user task remains active. Earlier execution history was compacted; do not \
          repeat actions solely because they appear below. Use the retained recent observations \
          and tool results as the current source of truth. Full details remain in diagnostics.\n\
-         Earlier tool totals: {}.\n\
+         Earlier tool totals: {}.\n{pages}\
          Most recent actions before the retained working set:\n{}",
         if prior.is_empty() { "- none" } else { &prior },
         if counts.is_empty() { "none" } else { &counts },

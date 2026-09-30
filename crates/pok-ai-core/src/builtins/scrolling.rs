@@ -170,11 +170,48 @@ pub(super) fn scroll_target_candidate(target: &InteractionTarget) -> bool {
     ) || target.actionable
 }
 
+/// The main document area (the web page in a browser), when the window has
+/// one covering a good part of it.
+pub(super) fn main_document_region(observation: &Observation) -> Option<Rect> {
+    let window = observation.target.as_ref()?.bounds.clone();
+    let window_area = f64::from(window.width) * f64::from(window.height);
+    observation
+        .ui_elements
+        .iter()
+        .filter(|element| {
+            !element.offscreen && element.control_type.eq_ignore_ascii_case("document")
+        })
+        .map(|element| element.bounds.clone())
+        .filter(|bounds| {
+            window_area > 0.0
+                && f64::from(bounds.width) * f64::from(bounds.height) >= window_area * 0.3
+        })
+        .max_by_key(|bounds| u64::from(bounds.width) * u64::from(bounds.height))
+}
+
+fn centre_inside(inner: &Rect, outer: &Rect) -> bool {
+    let x = i64::from(inner.x) + i64::from(inner.width) / 2;
+    let y = i64::from(inner.y) + i64::from(inner.height) / 2;
+    x >= i64::from(outer.x)
+        && y >= i64::from(outer.y)
+        && x < i64::from(outer.x) + i64::from(outer.width)
+        && y < i64::from(outer.y) + i64::from(outer.height)
+}
+
 pub(super) fn infer_scroll_target(observation: &Observation) -> Option<(TargetId, String)> {
+    // Never scroll over browser chrome (tabs, toolbar, bookmarks bar): a
+    // bookmark whose name shares a word with the task once received every
+    // wheel notch meant for the page.
+    let document = main_document_region(observation);
     let mut candidates = observation
         .targets
         .iter()
         .filter(|target| target.rank_score >= 10 && scroll_target_candidate(target))
+        .filter(|target| {
+            document
+                .as_ref()
+                .is_none_or(|region| centre_inside(&target.bounds, region))
+        })
         .collect::<Vec<_>>();
     candidates.sort_by_key(|target| std::cmp::Reverse(target.rank_score));
     let best = candidates.first()?;
@@ -380,10 +417,19 @@ pub(super) fn scroll_point(
         }
         return Ok((point, Some(target.name.clone())));
     }
+    // Untargeted: the middle of the page when there is one, else the window.
+    let area = main_document_region(observation)
+        .filter(|region| {
+            capture.bounds.contains(
+                region.x + i32::try_from(region.width / 2).unwrap_or(i32::MAX),
+                region.y + i32::try_from(region.height / 2).unwrap_or(i32::MAX),
+            )
+        })
+        .unwrap_or_else(|| capture.bounds.clone());
     Ok((
         (
-            capture.bounds.x + i32::try_from(capture.bounds.width / 2).unwrap_or(i32::MAX),
-            capture.bounds.y + i32::try_from(capture.bounds.height / 2).unwrap_or(i32::MAX),
+            area.x + i32::try_from(area.width / 2).unwrap_or(i32::MAX),
+            area.y + i32::try_from(area.height / 2).unwrap_or(i32::MAX),
         ),
         None,
     ))

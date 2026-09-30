@@ -7175,3 +7175,114 @@ fn attached_images_must_be_a_few_real_pngs() {
     assert!(validated_user_images(vec![jpeg]).is_err());
     assert!(validated_user_images(vec![TINY_PNG.into(); MAX_USER_IMAGES + 1]).is_err());
 }
+
+fn observation_cycle(index: usize, page: &str, lines: &[&str]) -> [BrainMessage; 2] {
+    let ordered: Vec<Value> = lines.iter().map(|text| json!({"text": text})).collect();
+    [
+        BrainMessage {
+            role: "assistant".into(),
+            content: Vec::new(),
+            origin: MessageOrigin::Assistant,
+            tool_call_id: None,
+            tool_calls: vec![CompletedToolCall {
+                id: format!("call-{index}"),
+                name: "click_target".into(),
+                arguments: json!({"target_id": "7"}),
+            }],
+        },
+        BrainMessage {
+            role: "tool".into(),
+            content: vec![MessageContent::Text {
+                text: json!({
+                    "observation_id": format!("obs_{index}"),
+                    "observed_url": page,
+                    "ordered_content": ordered,
+                    "targets": [],
+                })
+                .to_string(),
+            }],
+            origin: MessageOrigin::ToolResult,
+            tool_call_id: Some(format!("call-{index}")),
+            tool_calls: Vec::new(),
+        },
+    ]
+}
+
+#[test]
+fn pages_already_read_survive_compaction_so_the_planner_does_not_reread_them() {
+    // A long run alternating between two pages of an example social site,
+    // as when the planner forgot what the notifications page said.
+    let mut messages = vec![
+        BrainMessage::text("system", "system"),
+        BrainMessage::text("user", "check my example account for anything new today"),
+    ];
+    for index in 0..40 {
+        let cycle = if index % 2 == 0 {
+            observation_cycle(
+                index,
+                "social.example/notifications",
+                &[
+                    "Notifications",
+                    "Recent post from Example Author · 5h",
+                    "▸",
+                    "Deals Alerts turned on · 21h",
+                ],
+            )
+        } else {
+            observation_cycle(
+                index,
+                "social.example/home",
+                &["Home", "For you", "Example headline one · 2h"],
+            )
+        };
+        messages.extend(cycle);
+    }
+    let (bounded, _, actions) = bounded_context(&messages, 1, 400_000, 4_000, 1.0);
+    assert!(
+        actions
+            .iter()
+            .any(|action| action.starts_with("continuity_ledger:"))
+    );
+    let rendered = serde_json::to_string(&bounded).unwrap();
+    assert!(rendered.contains("Pages already read"));
+    assert!(rendered.contains("social.example/notifications (read "));
+    assert!(rendered.contains("Recent post from Example Author · 5h"));
+    assert!(rendered.contains("Example headline one · 2h"));
+    // Icons and one-character marks are not notes.
+    assert!(!rendered.contains("| ▸ |"));
+
+    // The next compaction carries the pages forward and keeps counting.
+    let mut longer = bounded.clone();
+    for index in 40..70 {
+        longer.extend(observation_cycle(
+            index,
+            "social.example/home",
+            &["Home", "Example headline two · 1h"],
+        ));
+    }
+    let (again, _, _) = bounded_context(&longer, 1, 400_000, 4_000, 1.0);
+    let rendered = serde_json::to_string(&again).unwrap();
+    assert!(
+        rendered.contains("Recent post from Example Author · 5h"),
+        "notifications text is still known"
+    );
+    assert_eq!(
+        rendered.matches(PAGES_READ_HEADER).count(),
+        1,
+        "one pages block, not repeated"
+    );
+}
+
+#[test]
+fn a_page_note_keeps_readable_text_in_order_without_repeats() {
+    let value = json!({
+        "observed_url": "social.example/notifications",
+        "ordered_content": [
+            {"text": "social.example/notifications"}, {"text": "@"}, {"text": "Notifications"},
+            {"text": "Notifications"}, {"text": "Recent post from Example Author"}
+        ]
+    });
+    let (page, note) = page_note(&value).unwrap();
+    assert_eq!(page, "social.example/notifications");
+    assert_eq!(note, "Notifications | Recent post from Example Author");
+}

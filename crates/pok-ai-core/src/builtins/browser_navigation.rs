@@ -12,7 +12,17 @@ pub(super) struct BrowserNavigateArgs {
 pub(super) struct BrowserNavigateTool;
 
 pub(super) const NAVIGATION_SETTLE_TIMEOUT: Duration = Duration::from_secs(6);
+/// A page that shows a loading indicator gets longer: single-page apps
+/// (feeds, dashboards) keep loading after the tab title changes.
+pub(super) const NAVIGATION_BUSY_TIMEOUT: Duration = Duration::from_secs(12);
 pub(super) const NAVIGATION_SETTLE_DELAYS_MS: [u64; 5] = [500, 400, 700, 1_100, 1_600];
+/// Sampling interval once the listed delays are used up.
+const NAVIGATION_SETTLE_REPEAT_MS: u64 = 800;
+/// Two samples whose page landmarks overlap this much show a settled page;
+/// timers and counters that tick are ignored when building landmarks.
+const SETTLED_LANDMARK_OVERLAP: f64 = 0.9;
+/// How long `capture_screen` waits for a visibly busy browser page.
+pub(super) const CAPTURE_BUSY_WAIT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -37,6 +47,11 @@ pub(super) struct BrowserPageIdentity {
     pub(super) title: String,
     pub(super) url: Option<String>,
     pub(super) content: String,
+    /// A visible loading indicator (progress bar, "Loading…") on the page.
+    pub(super) busy: bool,
+    /// Distinct element names on the page, without ticking numbers, for
+    /// telling a page that is still filling in from a settled one.
+    pub(super) landmarks: Vec<String>,
 }
 
 #[async_trait]
@@ -163,10 +178,13 @@ pub(super) async fn settle_browser_navigation(
     let started = Instant::now();
     let direct_url = looks_like_browser_url(destination);
     let mut attempts = 0_u8;
-    let mut latest = None;
     let mut previous_changed_content = None::<String>;
 
-    for delay_ms in NAVIGATION_SETTLE_DELAYS_MS {
+    let mut previous_landmarks = None::<Vec<String>>;
+    let mut deadline = timeout;
+    let mut delays = NAVIGATION_SETTLE_DELAYS_MS.into_iter();
+    loop {
+        let delay_ms = delays.next().unwrap_or(NAVIGATION_SETTLE_REPEAT_MS);
         tokio::select! {
             () = context.cancellation.cancelled() => return Err(PokError::Cancelled),
             () = tokio::time::sleep(Duration::from_millis(delay_ms)) => {}
@@ -183,7 +201,7 @@ pub(super) async fn settle_browser_navigation(
             )
             .await?;
         let identity = browser_page_identity(&observation);
-        let (ready, error_page, url_match, title_changed, content_changed) =
+        let (sample_ready, error_page, url_match, title_changed, content_changed) =
             navigation_sample_readiness(
                 before,
                 &identity,
@@ -192,6 +210,15 @@ pub(super) async fn settle_browser_navigation(
                 previous_changed_content.as_deref(),
                 attempts,
             );
+        // The page must also have stopped filling in: two samples in a row
+        // with the same landmarks.
+        let settled = previous_landmarks
+            .as_deref()
+            .is_some_and(|previous| landmarks_settled(previous, &identity.landmarks));
+        let ready = sample_ready && settled;
+        if identity.busy {
+            deadline = deadline.max(NAVIGATION_BUSY_TIMEOUT.max(timeout));
+        }
         let readiness = NavigationReadiness {
             status: if error_page {
                 NavigationReadinessStatus::ErrorPage
@@ -207,15 +234,13 @@ pub(super) async fn settle_browser_navigation(
             content_changed,
         };
         if content_changed {
-            previous_changed_content = Some(identity.content);
+            previous_changed_content = Some(identity.content.clone());
         }
-        latest = Some((observation, readiness.clone()));
-        if ready || error_page || started.elapsed() >= timeout {
-            break;
+        previous_landmarks = Some(identity.landmarks);
+        if ready || error_page || started.elapsed() >= deadline {
+            return Ok((observation, readiness));
         }
     }
-
-    latest.ok_or_else(|| PokError::Tool("browser readiness produced no observation".into()))
 }
 
 pub(super) fn navigation_sample_readiness(
@@ -232,7 +257,7 @@ pub(super) fn navigation_sample_readiness(
     let content_confirmed = content_changed
         && previous_changed_content.is_some_and(|previous| previous == identity.content);
     let error_page = looks_like_browser_error(identity);
-    let loading = looks_like_loading_page(identity);
+    let loading = identity.busy || looks_like_loading_page(identity);
     let same_destination = before
         .url
         .as_deref()
@@ -272,11 +297,97 @@ pub(super) fn browser_page_identity(observation: &Observation) -> BrowserPageIde
             .collect::<Vec<_>>()
             .join(" ");
     }
+    let page: Vec<&crate::types::UiElement> = observation
+        .ui_elements
+        .iter()
+        .filter(|element| !element.offscreen && overlaps(&element.bounds, &target.bounds))
+        .collect();
+    let busy = page.iter().any(|element| is_loading_indicator(element));
+    let mut landmarks: Vec<String> = page
+        .iter()
+        .filter(|element| !element.control_type.eq_ignore_ascii_case("edit"))
+        .map(|element| normalized_text(&element.name))
+        .filter(|name| is_landmark(name))
+        .collect();
+    landmarks.sort();
+    landmarks.dedup();
+    landmarks.truncate(400);
     BrowserPageIdentity {
         title: normalized_text(&target.title),
         url: browser_address_url(observation, target),
         content: normalized_text(&content),
+        busy,
+        landmarks,
     }
+}
+
+/// A spinner or progress bar the page shows while it loads.
+pub(super) fn is_loading_indicator(element: &crate::types::UiElement) -> bool {
+    if element.control_type.eq_ignore_ascii_case("progressbar") {
+        return true;
+    }
+    let name = element.name.trim().to_lowercase();
+    let name = name.trim_end_matches(['.', '…']);
+    matches!(
+        name,
+        "loading" | "loading content" | "loading more" | "please wait"
+    )
+}
+
+/// Names that identify page content; timers, counters, and bare numbers
+/// change on their own and would keep a page from ever looking settled.
+fn is_landmark(name: &str) -> bool {
+    name.chars()
+        .filter(|character| character.is_alphabetic())
+        .count()
+        >= 3
+        && !name
+            .split_whitespace()
+            .all(|word| word.chars().all(|character| !character.is_alphabetic()))
+}
+
+/// Whether two samples show the same page: their landmarks overlap almost
+/// entirely. An empty page is not settled.
+pub(super) fn landmarks_settled(previous: &[String], current: &[String]) -> bool {
+    if current.is_empty() {
+        return false;
+    }
+    let previous: std::collections::BTreeSet<&String> = previous.iter().collect();
+    let current: std::collections::BTreeSet<&String> = current.iter().collect();
+    let shared = previous.intersection(&current).count() as f64;
+    let total = previous.union(&current).count() as f64;
+    shared / total >= SETTLED_LANDMARK_OVERLAP
+}
+
+/// Re-observe a browser page while it shows a loading indicator, up to
+/// `limit`, so a capture shows content instead of spinners.
+pub(super) async fn wait_while_page_busy(
+    context: &ToolContext,
+    request: &CaptureRequest,
+    mut observation: Observation,
+    limit: Duration,
+) -> Result<(Observation, u64)> {
+    let started = Instant::now();
+    while browser_page_identity(&observation).busy && started.elapsed() < limit {
+        tokio::select! {
+            () = context.cancellation.cancelled() => return Err(PokError::Cancelled),
+            () = tokio::time::sleep(Duration::from_millis(600)) => {}
+        }
+        observation = context
+            .platform
+            .observe(
+                request,
+                true,
+                true,
+                context.uia_element_limit,
+                Duration::from_millis(context.desktop_enrichment_timeout_ms),
+            )
+            .await?;
+    }
+    Ok((
+        observation,
+        u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+    ))
 }
 
 pub(super) fn navigation_url_matches(

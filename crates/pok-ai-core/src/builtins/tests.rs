@@ -2510,11 +2510,13 @@ fn navigation_readiness_rejects_new_url_with_stale_page_identity() {
         title: "previous ticker".into(),
         url: Some("finance.example/previous".into()),
         content: "previous table".into(),
+        ..BrowserPageIdentity::default()
     };
     let stale = BrowserPageIdentity {
         title: "previous ticker".into(),
         url: Some("https://finance.example/current".into()),
         content: "previous table".into(),
+        ..BrowserPageIdentity::default()
     };
     let (ready, error, url_match, title_changed, content_changed) = navigation_sample_readiness(
         &before,
@@ -2534,6 +2536,7 @@ fn navigation_readiness_rejects_new_url_with_stale_page_identity() {
         title: "current ticker".into(),
         url: stale.url.clone(),
         content: "current table".into(),
+        ..BrowserPageIdentity::default()
     };
     assert!(
         navigation_sample_readiness(
@@ -2555,6 +2558,7 @@ fn navigation_readiness_reports_loading_and_error_pages() {
         title: "loading".into(),
         url: Some("example.test/report".into()),
         content: "please wait".into(),
+        ..BrowserPageIdentity::default()
     };
     assert!(
         !navigation_sample_readiness(
@@ -2762,4 +2766,181 @@ fn the_planner_sees_unique_ocr_labels_as_clickable() {
     assert_eq!(format["grounding_quality"], "medium");
     // Text shown twice cannot be clicked by its label, so it is not offered.
     assert!(!shown.iter().any(|target| target["label"] == "Sheet"));
+}
+
+fn page_element(name: &str, control_type: &str, bounds: Rect) -> UiElement {
+    UiElement {
+        name: name.into(),
+        control_type: control_type.into(),
+        automation_id: None,
+        value: None,
+        bounds,
+        enabled: true,
+        password: false,
+        offscreen: false,
+        keyboard_focusable: false,
+        clickable_point: None,
+        selected: None,
+        focused: false,
+        desktop_shell: false,
+    }
+}
+
+/// A browser window: toolbar and bookmarks bar across the top, the web page
+/// (a large Document) below.
+fn browser_observation() -> Observation {
+    let mut observation = scroll_observation(&[], "image");
+    let window = observation.target.as_ref().unwrap().bounds.clone();
+    let page = Rect {
+        x: window.x,
+        y: window.y + 120,
+        width: window.width,
+        height: window.height - 120,
+    };
+    observation.ui_elements = vec![page_element("Example feed", "Document", page)];
+    observation.targets = vec![InteractionTarget {
+        id: "31".into(),
+        name: "News Archives | Example".into(),
+        control_type: "button".into(),
+        bounds: Rect {
+            x: window.x + 300,
+            y: window.y + 80,
+            width: 180,
+            height: 28,
+        },
+        source: TargetSource::Uia,
+        confidence: None,
+        enabled: true,
+        actionable: true,
+        click_point: None,
+        selected: None,
+        focused: false,
+        desktop_shell: false,
+        grounding_variant: None,
+        rank_score: 14,
+        rank_reasons: vec!["task_match:1".into()],
+    }];
+    observation
+}
+
+#[test]
+fn an_untargeted_scroll_never_lands_on_the_bookmarks_bar() {
+    // The task mentions "news"; a bookmark named "News Archives" matches it
+    // but sits above the page, where the wheel does nothing.
+    let observation = browser_observation();
+    assert!(infer_scroll_target(&observation).is_none());
+    let document = main_document_region(&observation).unwrap();
+    let (point, label) = scroll_point(&observation, None).unwrap();
+    assert!(label.is_none());
+    assert!(
+        document.contains(point.0, point.1),
+        "scrolls the middle of the page"
+    );
+    assert!(point.1 > observation.target.as_ref().unwrap().bounds.y + 120);
+}
+
+#[test]
+fn a_page_with_a_spinner_is_not_ready_even_after_its_title_changes() {
+    let mut observation = browser_observation();
+    let window = observation.target.as_ref().unwrap().bounds.clone();
+    observation.ui_elements.push(page_element(
+        "",
+        "ProgressBar",
+        Rect {
+            x: window.x + 900,
+            y: window.y + 400,
+            width: 40,
+            height: 40,
+        },
+    ));
+    let identity = browser_page_identity(&observation);
+    assert!(identity.busy);
+    let before = BrowserPageIdentity {
+        title: "previous page".into(),
+        ..BrowserPageIdentity::default()
+    };
+    let loading = BrowserPageIdentity {
+        title: "home / example".into(),
+        url: Some("example.test/home".into()),
+        ..identity
+    };
+    let (ready, ..) = navigation_sample_readiness(
+        &before,
+        &loading,
+        "https://example.test/home",
+        true,
+        None,
+        3,
+    );
+    assert!(
+        !ready,
+        "the tab title changed but the feed is still loading"
+    );
+    let loaded = BrowserPageIdentity {
+        busy: false,
+        ..loading
+    };
+    assert!(
+        navigation_sample_readiness(&before, &loaded, "https://example.test/home", true, None, 3).0
+    );
+}
+
+#[test]
+fn a_settled_page_ignores_ticking_timers_but_not_new_content() {
+    let names = |extra: &[&str]| {
+        let mut landmarks: Vec<String> =
+            ["home", "for you", "following", "what is happening", "post"]
+                .iter()
+                .chain(extra)
+                .map(|name| name.to_string())
+                .filter(|name| {
+                    name.chars()
+                        .filter(|character| character.is_alphabetic())
+                        .count()
+                        >= 3
+                })
+                .collect();
+        landmarks.sort();
+        landmarks
+    };
+    // A video timer ("0:10" -> "0:11") is not a landmark, so it cannot keep
+    // the page from settling.
+    assert!(landmarks_settled(&names(&["0:10"]), &names(&["0:11"])));
+    // Posts still arriving change the landmarks.
+    assert!(!landmarks_settled(
+        &names(&[]),
+        &names(&[
+            "first post author",
+            "second post author",
+            "third post",
+            "fourth post"
+        ])
+    ));
+    // An empty page never counts as settled.
+    assert!(!landmarks_settled(&[], &[]));
+}
+
+#[test]
+fn loading_indicators_are_recognised_by_role_or_name() {
+    let rect = Rect {
+        x: 0,
+        y: 0,
+        width: 10,
+        height: 10,
+    };
+    assert!(is_loading_indicator(&page_element(
+        "",
+        "ProgressBar",
+        rect.clone()
+    )));
+    assert!(is_loading_indicator(&page_element(
+        "Loading…",
+        "Text",
+        rect.clone()
+    )));
+    assert!(!is_loading_indicator(&page_element(
+        "Loading dock photos",
+        "Link",
+        rect
+    )));
 }
