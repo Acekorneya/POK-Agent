@@ -28,6 +28,9 @@ pub(super) struct FastPlan {
 pub(super) struct FastRunContext {
     pub(super) interrupts: Vec<crate::builtins::FastInterrupt>,
     pub(super) interrupts_used: u8,
+    /// Titles of ambient popups System 1 already dismissed in this run; one
+    /// that comes back goes to the planner instead of being dismissed again.
+    pub(super) dismissed_popups: HashSet<String>,
 }
 
 /// A condition choice (branch or interrupt rule) that grounding could not
@@ -237,6 +240,182 @@ pub(super) fn unexpected_popup(
         return None;
     }
     Some(popup)
+}
+
+/// Buttons that only put a notice away, in order of preference. "OK" and
+/// "Cancel" are not here: in a dialog the plan did not expect they may
+/// confirm or abandon something, which is the planner's choice.
+const DISMISS_LABELS: &[&str] = &[
+    "not now",
+    "no thanks",
+    "no, thanks",
+    "maybe later",
+    "remind me later",
+    "later",
+    "skip",
+    "dismiss",
+    "got it",
+    "close",
+];
+
+/// Words that make a popup more than a notice: it asks about the user's data,
+/// money, access, or a failure. Matched at word starts ("fail" also matches
+/// "failed").
+const CONSEQUENTIAL_TERMS: &[&str] = &[
+    "save",
+    "unsaved",
+    "discard",
+    "delete",
+    "remove",
+    "overwrite",
+    "replace",
+    "send",
+    "submit",
+    "pay",
+    "purchase",
+    "buy",
+    "order",
+    "sign in",
+    "log in",
+    "password",
+    "permission",
+    "allow",
+    "administrator",
+    "error",
+    "fail",
+    "warning",
+    "unable",
+    "cannot",
+    "can't",
+    "sure",
+    "confirm",
+    "lose",
+    "lost",
+    "install",
+    "restart",
+    "shut down",
+];
+
+fn words_of(text: &str) -> String {
+    let words = text
+        .to_lowercase()
+        .chars()
+        .map(|c| {
+            if c.is_alphanumeric() || c == '\'' || c == '\u{2019}' {
+                c
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .replace('\u{2019}', "'");
+    format!(
+        " {} ",
+        words.split_whitespace().collect::<Vec<_>>().join(" ")
+    )
+}
+
+/// The button that dismisses an ambient notice (a tip, a rating prompt, an
+/// update reminder), when the popup is only that: a person closes those
+/// without thinking about the task. Anything that mentions data, money,
+/// access, or a failure returns `None` and goes to the planner.
+pub(super) fn ambient_dismissal(popup: &Popup) -> Option<String> {
+    let content = words_of(&format!("{} {}", popup.title, popup.text));
+    if content.trim().is_empty()
+        || CONSEQUENTIAL_TERMS
+            .iter()
+            .any(|term| content.contains(&format!(" {term}")))
+    {
+        return None;
+    }
+    DISMISS_LABELS.iter().find_map(|label| {
+        popup
+            .buttons
+            .iter()
+            .find(|button| words_of(button).trim() == *label)
+            .cloned()
+    })
+}
+
+/// What one action visibly did, in a line the planner can trust instead of
+/// capturing the screen again to check: the window or dialog it is in now,
+/// what got selected, what appeared, and what went away.
+pub(super) fn what_changed(result: &Value) -> Option<String> {
+    let change = result.get("state_change")?;
+    let quoted = |items: Vec<&str>| {
+        items
+            .into_iter()
+            .map(|item| format!("\"{}\"", crate::decision::bounded_text(item, 60)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let mut parts = Vec::new();
+    if let Some(title) = result
+        .pointer("/foreground_transition/title")
+        .and_then(Value::as_str)
+        .filter(|title| !title.trim().is_empty())
+    {
+        parts.push(format!(
+            "dialog \"{}\" opened",
+            crate::decision::bounded_text(title, 80)
+        ));
+    } else if change.get("focus_changed").and_then(Value::as_bool) == Some(true)
+        && let Some(title) = result
+            .pointer("/focus/title")
+            .and_then(Value::as_str)
+            .filter(|title| !title.trim().is_empty())
+    {
+        parts.push(format!(
+            "now in \"{}\"",
+            crate::decision::bounded_text(title, 80)
+        ));
+    }
+    match result.get("page_status").and_then(Value::as_str) {
+        Some("loading") => parts.push("page still loading".into()),
+        Some("error_page") => parts.push("page shows an error".into()),
+        _ => {}
+    }
+    let list = |key: &str, limit: usize| {
+        change
+            .get(key)
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .filter(|item| !item.trim().is_empty())
+                    .take(limit)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let selected = list("selected_changed", 3);
+    if !selected.is_empty() {
+        parts.push(format!("selected {}", quoted(selected)));
+    }
+    let added = list("added_text", 4);
+    if !added.is_empty() {
+        parts.push(format!("new on screen: {}", quoted(added)));
+    }
+    let removed = change
+        .get("removed_control_count")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if removed > 0 {
+        parts.push(format!("{removed} items closed or left the view"));
+    }
+    if parts.is_empty() {
+        let visual = change
+            .get("visual_change_ratio")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        parts.push(if visual >= 0.02 {
+            "the view changed but no new text appeared".into()
+        } else {
+            "nothing visible changed".into()
+        });
+    }
+    Some(crate::decision::bounded_text(&parts.join("; "), 320))
 }
 
 /// Delegated operations that only move the view.
@@ -947,6 +1126,7 @@ impl Session {
         let mut run = FastRunContext {
             interrupts: args.on_interrupt.clone(),
             interrupts_used: 0,
+            dismissed_popups: HashSet::new(),
         };
         let mut queue = std::collections::VecDeque::from(plan.chain);
         let mut root_branches = Some(plan.branches);
@@ -1048,6 +1228,16 @@ impl Session {
             RAW_NAVIGATION_UNLOCK_TURNS
         };
         let observation = self.context.latest_observation.lock().clone();
+        // The last action's effect, in one line, so the planner can trust it
+        // instead of capturing the screen again to check.
+        let last_change = results.iter().rev().find_map(|node| {
+            node.get("steps")?
+                .as_array()?
+                .iter()
+                .rev()
+                .find_map(|step| step.get("changed").and_then(Value::as_str))
+                .map(str::to_owned)
+        });
         let mut result = if nodes_run == 1 && results.len() == 1 {
             results.pop().unwrap_or_else(|| json!({}))
         } else {
@@ -1058,6 +1248,9 @@ impl Session {
                 "subgoals": results,
             })
         };
+        if let Some(change) = last_change {
+            result["what_changed"] = json!(change);
+        }
         if self.raw_navigation_unlocked > 0 {
             result["next"] = json!(
                 "raw navigation tools (click_target, scroll_view, activate_window, managed_browser_click, managed_browser_scroll) are available for two turns; finish this subgoal with them from the observation below, then return to fast_actions"
@@ -1924,6 +2117,8 @@ impl Session {
         // Whether this node already took a fresh look for the input guard.
         let mut regrounded = false;
         let mut popup: Option<Value> = None;
+        // Ambient notices System 1 put away itself, reported to the planner.
+        let mut dismissed: Vec<Value> = Vec::new();
 
         for step in 0..=max_steps {
             let mut deferred_completion = false;
@@ -2019,6 +2214,9 @@ impl Session {
             // Popup and dialog rules come first: a matching rule either
             // redirects this step to its quoted target or ends the run.
             let mut interrupt_hint: Option<String> = None;
+            // This step's action dismisses an ambient popup: it is not part
+            // of the task, so it is not recorded into the motor program.
+            let mut reflex_dismissal = false;
             // Each rule acts at most once per node: a popup still present after
             // its action means the action did not work, and repeating it loops.
             let open_rules = (0..run.interrupts.len())
@@ -2256,19 +2454,66 @@ impl Session {
                 })
             {
                 settle_completion!();
-                let found = self.look_closer(found).await.value();
-                increment_metric(metrics, "fast_actions_popups", 1);
-                self.log(
-                    "fast_actions_popup",
-                    json!({"turn": turn, "step": step, "popup": found}),
-                )?;
-                status = "popup";
-                reason = Some(
-                    "a dialog opened that the plan did not expect; its title, text, and buttons are in popup"
-                        .into(),
-                );
-                popup = Some(found);
-                break;
+                let found = self.look_closer(found).await;
+                // An ambient notice (a tip, a rating prompt, an update
+                // reminder) with a plain way to put it away is closed here,
+                // once, the way a person would, through the same exact-label
+                // path as an interrupt rule. Anything about data, money,
+                // access, or a failure still goes to the planner.
+                let title_key = found.title.trim().to_lowercase();
+                let elevated_window = observation.as_ref().is_some_and(|observation| {
+                    observation
+                        .foreground_window
+                        .as_ref()
+                        .is_some_and(|window| window.elevated)
+                });
+                let dismiss = ambient_dismissal(&found).filter(|button| {
+                    step < max_steps
+                        && !elevated_window
+                        && run.interrupts_used < FAST_MAX_INTERRUPT_ACTIONS
+                        && !run.dismissed_popups.contains(&title_key)
+                        && !avoid
+                            .iter()
+                            .any(|phrase| crate::decision::mentions_phrase(button, phrase))
+                        && observation.as_ref().is_some_and(|observation| {
+                            !crate::decision::exact_label_candidates(
+                                observation,
+                                &crate::decision::quoted_labels(&format!("\"{button}\"")),
+                            )
+                            .is_empty()
+                        })
+                });
+                if let Some(button) = dismiss {
+                    run.dismissed_popups.insert(title_key);
+                    run.interrupts_used += 1;
+                    increment_metric(metrics, "fast_actions_popups_dismissed", 1);
+                    let notice = json!({
+                        "title": found.title,
+                        "text": crate::decision::bounded_text(&found.text, 200),
+                        "button": button,
+                    });
+                    self.log(
+                        "fast_actions_popup_dismissed",
+                        json!({"turn": turn, "step": step, "popup": notice}),
+                    )?;
+                    dismissed.push(notice);
+                    interrupt_hint = Some(format!("\"{button}\""));
+                    reflex_dismissal = true;
+                } else {
+                    let found = found.value();
+                    increment_metric(metrics, "fast_actions_popups", 1);
+                    self.log(
+                        "fast_actions_popup",
+                        json!({"turn": turn, "step": step, "popup": found}),
+                    )?;
+                    status = "popup";
+                    reason = Some(
+                        "a dialog opened that the plan did not expect; its title, text, and buttons are in popup"
+                            .into(),
+                    );
+                    popup = Some(found);
+                    break;
+                }
             }
             if step == max_steps {
                 settle_interrupt!();
@@ -2963,7 +3208,9 @@ impl Session {
                 () = self.context.cancellation.cancelled() => return Err(PokError::Cancelled),
                 result = self.tools.call(&call.name, call.arguments.clone(), &self.context) => result,
             };
-            self.record_motor(&call.name, &call.arguments, &result);
+            if !reflex_dismissal {
+                self.record_motor(&call.name, &call.arguments, &result);
+            }
             self.show_latest_observation();
             let feedback = self.continuity.after_call(
                 &call.name,
@@ -3037,13 +3284,20 @@ impl Session {
             }
             increment_metric(metrics, "fast_actions_steps", 1);
             metrics.tool_calls = metrics.tool_calls.saturating_add(1);
-            steps.push(json!({
+            let mut step_record = json!({
                 "tool": call.name,
                 "target": crate::decision::bounded_text(&candidate.description, 160),
                 "outcome": feedback.outcome,
                 "ok": ok,
                 "error": result.as_ref().err().map(|error| crate::decision::bounded_text(&error.to_string(), 200)),
-            }));
+            });
+            if let Some(changed) = result.as_ref().ok().and_then(what_changed) {
+                step_record["changed"] = json!(changed);
+            }
+            if reflex_dismissal {
+                step_record["dismissed_popup"] = json!(true);
+            }
+            steps.push(step_record);
             self.log(
                 "fast_actions_step",
                 json!({
@@ -3094,6 +3348,9 @@ impl Session {
         }
         if let Some(popup) = popup {
             result["popup"] = popup;
+        }
+        if !dismissed.is_empty() {
+            result["dismissed_popups"] = json!(dismissed);
         }
         Ok(result)
     }

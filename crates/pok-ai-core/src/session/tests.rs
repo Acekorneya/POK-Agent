@@ -7397,3 +7397,235 @@ async fn an_attached_file_outside_the_workspace_can_be_read_by_the_file_tools() 
     };
     assert!(text.contains("<attached_files>") && text.contains("notes.txt"));
 }
+
+fn tip_popup(buttons: &[&str], text: &str) -> Popup {
+    Popup {
+        title: "Tip of the day".into(),
+        text: text.into(),
+        buttons: buttons.iter().map(|button| (*button).to_owned()).collect(),
+        window_id: None,
+    }
+}
+
+#[test]
+fn system_1_puts_away_an_ambient_notice_but_not_a_question_about_the_users_work() {
+    let tip = tip_popup(
+        &["Show me", "Not now"],
+        "Pin your favourite folders for quick access.",
+    );
+    assert_eq!(ambient_dismissal(&tip).as_deref(), Some("Not now"));
+    // The preferred dismissal wins over a later one in the list.
+    let reminder = tip_popup(&["Close", "Remind me later"], "A new version is ready.");
+    assert_eq!(
+        ambient_dismissal(&reminder).as_deref(),
+        Some("Remind me later")
+    );
+    // Anything about data, access, or a failure is the planner's call.
+    for text in [
+        "Do you want to save changes to Example.txt?",
+        "The file could not be opened because an error occurred.",
+        "Allow this app to use your location?",
+        "Are you sure you want to leave?",
+        "Restart now to finish updating.",
+    ] {
+        assert_eq!(
+            ambient_dismissal(&tip_popup(&["Not now"], text)),
+            None,
+            "{text}"
+        );
+    }
+    // OK and Cancel may confirm or abandon something: never a reflex.
+    assert_eq!(
+        ambient_dismissal(&tip_popup(&["OK", "Cancel"], "Pin your folders.")),
+        None
+    );
+    assert_eq!(
+        ambient_dismissal(&tip_popup(&[], "Pin your folders.")),
+        None
+    );
+}
+
+#[test]
+fn what_changed_says_in_one_line_what_an_action_did() {
+    let opened = json!({
+        "focus": {"title": "Settings", "app": "example.exe"},
+        "state_change": {
+            "added_text": ["Display", "Night light", "", "Scale", "Resolution", "Orientation"],
+            "removed_control_count": 3,
+            "focus_changed": true,
+            "selected_changed": ["System"],
+            "visual_change_ratio": 0.4,
+        },
+    });
+    assert_eq!(
+        what_changed(&opened).unwrap(),
+        "now in \"Settings\"; selected \"System\"; new on screen: \"Display\", \"Night light\", \"Scale\", \"Resolution\"; 3 items closed or left the view"
+    );
+    let dialog = json!({
+        "foreground_transition": {"title": "Print"},
+        "page_status": "loading",
+        "state_change": {"focus_changed": true},
+    });
+    assert_eq!(
+        what_changed(&dialog).unwrap(),
+        "dialog \"Print\" opened; page still loading"
+    );
+    let nothing = json!({"state_change": {"visual_change_ratio": 0.0}});
+    assert_eq!(what_changed(&nothing).unwrap(), "nothing visible changed");
+    let redraw = json!({"state_change": {"visual_change_ratio": 0.3}});
+    assert_eq!(
+        what_changed(&redraw).unwrap(),
+        "the view changed but no new text appeared"
+    );
+    assert_eq!(what_changed(&json!({"ok": true})), None);
+}
+
+/// A click that opens a "Tip of the day" notice in the mock window; clicking
+/// "Not now" closes it unless `sticky` keeps it on screen.
+struct TipRaisingClick {
+    calls: Arc<parking_lot::Mutex<Vec<Value>>>,
+    sticky: bool,
+}
+
+fn tip_elements() -> Vec<crate::types::UiElement> {
+    vec![
+        popup_ui("Tip of the day", "Window", 200, 200, 300, 150),
+        popup_ui(
+            "Pin your favourite folders for quick access.",
+            "Text",
+            220,
+            230,
+            200,
+            20,
+        ),
+        popup_ui("Show me", "Button", 230, 310, 60, 24),
+        popup_ui("Not now", "Button", 300, 310, 60, 24),
+    ]
+}
+
+#[async_trait]
+impl crate::tool::Tool for TipRaisingClick {
+    fn name(&self) -> &'static str {
+        "click_target"
+    }
+    fn description(&self) -> &'static str {
+        "test click"
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn risk(&self) -> crate::policy::RiskClass {
+        crate::policy::RiskClass::ReadOnly
+    }
+    async fn execute(&self, arguments: Value, context: &ToolContext) -> Result<Value> {
+        let dismissing = arguments["expected_label"] == "Not now";
+        self.calls.lock().push(arguments);
+        let mut guard = context.latest_observation.lock();
+        let observation = guard.as_mut().unwrap();
+        if dismissing {
+            if !self.sticky {
+                observation
+                    .ui_elements
+                    .retain(|element| !tip_elements().iter().any(|tip| tip.name == element.name));
+                observation
+                    .targets
+                    .retain(|target| target.name != "Not now");
+            }
+            return Ok(json!({
+                "state_change": {"removed_control_count": 4, "visual_change_ratio": 0.2},
+                "verification": {"effect": true},
+            }));
+        }
+        observation.ui_elements.extend(tip_elements());
+        let mut not_now = fast_link("90", "Not now");
+        not_now.control_type = "Button".into();
+        observation.targets.push(not_now);
+        Ok(json!({
+            "focus": {"title": "Files", "app": "example.exe"},
+            "state_change": {"added_text": ["Tip of the day"], "focus_changed": false},
+            "verification": {"effect": true},
+        }))
+    }
+}
+
+fn tip_harness(sticky: bool) -> (FastHarness, Arc<parking_lot::Mutex<Vec<Value>>>) {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        vec![fast_link("6", "Downloads")],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
+    let mut tools = ToolRegistry::default();
+    tools.register(TipRaisingClick {
+        calls: calls.clone(),
+        sticky,
+    });
+    harness.session.tools = Arc::new(tools);
+    (harness, calls)
+}
+
+#[tokio::test]
+async fn system_1_dismisses_an_ambient_tip_itself_and_keeps_it_out_of_muscle_memory() {
+    let (mut harness, calls) = tip_harness(false);
+    let (result, metrics) = run_plan(
+        &mut harness,
+        json!({
+            "goal": "open Downloads",
+            "target_hint": "\"Downloads\"",
+            "done_when": "\"Example report\" is visible",
+            "max_steps": 4,
+        }),
+    )
+    .await;
+    assert_ne!(result["status"], "popup", "{result}");
+    let labels = calls
+        .lock()
+        .iter()
+        .map(|call| {
+            call["expected_label"]
+                .as_str()
+                .unwrap_or_default()
+                .to_owned()
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(labels[..2], ["Downloads", "Not now"], "{labels:?}");
+    assert_eq!(
+        result["dismissed_popups"][0]["title"], "Tip of the day",
+        "{result}"
+    );
+    assert_eq!(result["dismissed_popups"][0]["button"], "Not now");
+    assert_eq!(metrics.extras["fast_actions_popups_dismissed"], 1);
+    let steps = result["steps"].as_array().unwrap();
+    assert_eq!(steps[0]["changed"], "new on screen: \"Tip of the day\"");
+    assert_eq!(steps[1]["dismissed_popup"], true);
+    assert!(result["what_changed"].is_string(), "{result}");
+    // The tip is not part of the task: replaying "Not now" without the tip
+    // on screen would break the replay.
+    let recorded = serde_json::to_string(&harness.session.motor_tape).unwrap();
+    assert!(recorded.contains("Downloads"), "{recorded}");
+    assert!(!recorded.contains("Not now"), "{recorded}");
+}
+
+#[tokio::test]
+async fn a_notice_that_comes_back_after_its_dismissal_goes_to_the_planner() {
+    let (mut harness, calls) = tip_harness(true);
+    let (result, metrics) = run_plan(
+        &mut harness,
+        json!({
+            "goal": "open Downloads",
+            "target_hint": "\"Downloads\"",
+            "done_when": "\"Example report\" is visible",
+            "max_steps": 4,
+        }),
+    )
+    .await;
+    assert_eq!(result["status"], "popup", "{result}");
+    assert_eq!(result["popup"]["title"], "Tip of the day");
+    let dismissals = calls
+        .lock()
+        .iter()
+        .filter(|call| call["expected_label"] == "Not now")
+        .count();
+    assert_eq!(dismissals, 1);
+    assert_eq!(metrics.extras["fast_actions_popups_dismissed"], 1);
+}

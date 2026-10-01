@@ -50,8 +50,26 @@ The primary model owns planning (which operation, in what order, what
    targets.
 
 The whole plan returns as one tool result with per-node status (`done`,
-`unverified`, `uncertain`, `stalled`, `no_candidates`, `budget_exhausted`),
-the executed steps, and the newest observation. When the router is enabled,
+`unverified`, `uncertain`, `stalled`, `no_candidates`, `popup`,
+`commit_required`, `budget_exhausted`), the executed steps, and the newest
+observation. Each step carries `changed`, one line built from the action's
+`state_change` (the window or dialog it is in now, what got selected, what
+appeared, what went away, or "nothing visible changed"), and the result's
+`what_changed` repeats the last one, so the planner can trust the outcome
+instead of capturing the screen again to check it.
+
+A dialog the plan did not expect is read from UI Automation (title, text,
+buttons). When it is only an ambient notice (a tip, a rating prompt, an
+update reminder) and offers a plain dismissal ("Not now", "No thanks",
+"Maybe later", "Remind me later", "Skip", "Dismiss", "Got it", "Close"),
+System 1 clicks that button itself through the same exact-label path as an
+`on_interrupt` rule, once per notice per run, within the interrupt budget,
+and lists it in `dismissed_popups` (`ambient_dismissal` in
+`session/fast_actions.rs`). The click is not recorded into the motor
+program, since the notice is not part of the task. A popup that mentions
+saving, deleting, sending, paying, signing in, permissions, errors, or a
+confirmation, offers only OK/Cancel, comes back after its dismissal, or sits
+in an elevated window is handed back as `popup` for the planner to decide. When the router is enabled,
 raw navigation tools (`click_target`, `scroll_view`, `activate_window`,
 `managed_browser_click`, `managed_browser_scroll`) are withheld until a node
 hands back without completing, and then only for two primary-model turns.
