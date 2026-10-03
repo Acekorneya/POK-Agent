@@ -65,7 +65,14 @@ pub fn is_call_control(label: &str) -> bool {
         "start meeting",
         "call duration",
     ];
+    // Status badges ("Example Guild, Voice call active", "Screenshare active")
+    // report that a call exists; activating the item that carries one opens a
+    // server or channel, it does not join.
+    const STATUS_PHRASES: &[&str] = &["call active", "call in progress", "call ongoing"];
     let label = label.to_lowercase();
+    let label = STATUS_PHRASES
+        .iter()
+        .fold(label, |label, status| label.replace(status, ""));
     CALL_PHRASES.iter().any(|phrase| label.contains(phrase))
 }
 
@@ -339,6 +346,12 @@ mod tests {
         assert!(is_call_control("Start a call"));
         assert!(!is_call_control("general (text channel), unread"));
         assert!(!is_call_control("Voice settings"));
+        // A status badge on a server icon reports a call; it does not join one.
+        assert!(!is_call_control("Example Guild, Voice call active"));
+        assert!(!is_call_control(
+            "Unread messages, Example Guild, Screenshare active Voice call active"
+        ));
+        assert!(is_call_control("Join voice, call active"));
         assert!(request_allows_calls("join the General voice channel"));
         assert!(request_allows_calls("can you call mom on Teams"));
         assert!(!request_allows_calls(
