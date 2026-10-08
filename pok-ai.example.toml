@@ -129,3 +129,32 @@ protocol = "anthropic_messages"
 base_url = "https://api.anthropic.com/v1"
 data_boundary = "external_service"
 api_key_env = "ANTHROPIC_API_KEY"
+
+# Local Model Context Protocol servers. Each configured server is spawned over
+# stdio, its tools are added to the `mcp` capability family, and the model sees
+# them after `discover_tools(["mcp"])`. The desktop app's Settings → MCP page
+# manages the same list without editing this file.
+[mcp]
+enabled = true
+# Seconds allowed for `initialize` and `tools/list` during a session build.
+startup_timeout_seconds = 30
+# Seconds allowed for one `tools/call`.
+call_timeout_seconds = 120
+
+# [[mcp.servers]]
+# name = "rea"
+# command = "npx"
+# args = ["-y", "rea-agents@4.1.0", "mcp"]
+# enabled = true
+# # Standard tool risk: process_execution asks for approval in Ask-permission
+# # mode and runs freely in Autonomous. Use "read_only" only for a server whose
+# # tools genuinely cannot change state.
+# risk = "process_execution"
+# # Trusted read-only servers skip the approval prompt entirely.
+# auto_approve = false
+# # Optional: restrict the server to these tool names.
+# tools = []
+# # Optional environment. An empty value passes the process environment
+# # variable of the same name through, so secrets stay out of this file.
+# [mcp.servers.env]
+# GITHUB_TOKEN = ""

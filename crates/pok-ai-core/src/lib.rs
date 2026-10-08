@@ -14,6 +14,7 @@ pub mod error;
 pub mod exam;
 pub mod generated_tools;
 pub mod grounding;
+pub mod mcp;
 pub mod memory;
 pub mod pause;
 pub mod platform;

@@ -52,7 +52,7 @@ export function TerminalExecutionCard({ msg }: { msg: ChatMessage }) {
   return (
     <div className={`rich-activity-card terminal-card ${failed ? "terminal-failed" : ""}`}>
       <div className="terminal-header">
-        <span><span className="terminal-status" aria-hidden="true">{failed ? "×" : running ? "●" : "✓"}</span> {running ? "Running" : "Ran"} <code className="terminal-cmd">{command}</code></span>
+        <span><code className="terminal-cmd" title={command}>{command}</code></span>
         <span className="terminal-meta">
           {taskId && <span title={taskId}>{taskId.slice(0, 8)}</span>}
           {totalBytes > 0 && <span>{totalBytes.toLocaleString()} B</span>}

@@ -200,6 +200,14 @@ pub enum AgentEvent {
         budget: crate::context::ContextBudget,
         prompt_tokens: u64,
         conversation_tokens: u64,
+        /// Estimated request cost that compaction cannot reduce: system
+        /// messages, tool schemas, and the active-task reminder.
+        fixed_prompt_tokens: u64,
+        /// The compactable transcript, `conversation_tokens - fixed_prompt_tokens`.
+        compactable_tokens: u64,
+        /// True when the compactable history is already a single summary, so no
+        /// further semantic compaction can reduce it.
+        compactable_at_minimum: bool,
         working_set_target_tokens: u64,
         remaining_tokens: u64,
         archived_entries: u64,

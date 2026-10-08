@@ -16,6 +16,7 @@ tauri-build = { version = "2.4", features = [] }
 [dependencies]
 async-trait.workspace = true
 base64.workspace = true
+chrono.workspace = true
 dunce.workspace = true
 parking_lot.workspace = true
 pok-ai-core = { path = "../../../crates/pok-ai-core" }

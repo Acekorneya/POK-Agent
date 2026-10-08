@@ -41,6 +41,88 @@ pub(super) fn tool_result_messages(
     messages
 }
 
+/// Tool-result ids the last projection actually sent to the model verbatim.
+/// The duplicate-read guard trusts only these: anything else was reduced to a
+/// ledger line or a stub and must be read again if it is needed.
+pub(super) fn retained_tool_result_ids(messages: &[BrainMessage]) -> BTreeSet<String> {
+    messages
+        .iter()
+        .filter(|message| message.role == "tool")
+        .filter_map(|message| {
+            let id = message.tool_call_id.clone()?;
+            let compacted = message.content.iter().any(|part| {
+                matches!(
+                    part,
+                    MessageContent::Text { text }
+                        if text == TOOL_RESULT_COMPACTED_STUB || text.starts_with("[older ")
+                )
+            });
+            (!compacted).then_some(id)
+        })
+        .collect()
+}
+
+/// If the model repeats a `read_file` whose unchanged page is still in the
+/// projected request (it is in `retained`), return a short stub instead of the
+/// same bytes again. This breaks the re-read loop a long compaction-heavy run
+/// can fall into, while a real file change produces a different sha256 and
+/// passes through untouched.
+pub(super) fn duplicate_read_stub(
+    call: &CompletedToolCall,
+    result: &Result<Value>,
+    messages: &[BrainMessage],
+    retained: &BTreeSet<String>,
+) -> Option<Value> {
+    if call.name != "read_file" {
+        return None;
+    }
+    let value = result.as_ref().ok()?;
+    let path = value.get("path")?.as_str()?;
+    let sha256 = value.get("sha256")?.as_str()?;
+    let content = value.get("content")?.as_str()?;
+    if content.is_empty() {
+        return None;
+    }
+    for message in messages.iter().rev() {
+        if message.role != "tool" {
+            continue;
+        }
+        if message
+            .tool_call_id
+            .as_ref()
+            .is_none_or(|id| !retained.contains(id))
+        {
+            continue;
+        }
+        let Some(text) = message.content.iter().find_map(|part| match part {
+            MessageContent::Text { text } => Some(text.as_str()),
+            MessageContent::ImagePng { .. } => None,
+        }) else {
+            continue;
+        };
+        let Ok(previous) = serde_json::from_str::<Value>(text) else {
+            continue;
+        };
+        if previous.get("path").and_then(Value::as_str) == Some(path)
+            && previous.get("sha256").and_then(Value::as_str) == Some(sha256)
+            && previous.get("content").and_then(Value::as_str) == Some(content)
+        {
+            return Some(json!({
+                "path": path,
+                "sha256": sha256,
+                "total_lines": value.get("total_lines"),
+                "start_line": value.get("start_line"),
+                "end_line": value.get("end_line"),
+                "unchanged": true,
+                "duplicate_read": true,
+                "content_omitted": true,
+                "note": "This exact page is already in the retained context above and the file has not changed (same sha256). Reuse that result and take the next concrete step instead of reading it again.",
+            }));
+        }
+    }
+    None
+}
+
 pub(super) const LIVE_COMMAND_STREAM_CHARS: usize = 32 * 1024;
 pub(super) const COMMAND_MODEL_OUTPUT_CHARS: usize = 12 * 1024;
 pub(super) const MODEL_TOOL_RESULT_CHARS: usize = 32 * 1024;

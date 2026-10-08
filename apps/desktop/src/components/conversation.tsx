@@ -12,6 +12,30 @@ const FRIENDLY_CANDIDATES: Record<string, string> = {
   get_current_time: "Get current time",
 };
 
+export type MessageActionKind = "copy" | "fork" | "revert";
+export type MessageActionHandler = (kind: MessageActionKind, message: ChatMessage) => void;
+
+const MessageActionContext = React.createContext<MessageActionHandler | null>(null);
+
+/** Supplies the copy/fork/revert handler to prompt and response rows. The
+ * value must be referentially stable (a ref-backed callback) so memoized
+ * history rows do not re-render on every session event. */
+export function MessageActionProvider({ onAction, children }: { onAction: MessageActionHandler; children: React.ReactNode }) {
+  return <MessageActionContext.Provider value={onAction}>{children}</MessageActionContext.Provider>;
+}
+
+function MessageTools({ msg }: { msg: ChatMessage }) {
+  const onAction = React.useContext(MessageActionContext);
+  if (!onAction) return null;
+  return (
+    <span className="message-tools" role="toolbar" aria-label="Message actions" onClick={(event) => event.stopPropagation()}>
+      <button type="button" aria-label="Copy message" onClick={() => onAction("copy", msg)}>Copy</button>
+      <button type="button" aria-label="Fork from this message" title="Continue in a new conversation from here" onClick={() => onAction("fork", msg)}>Fork</button>
+      <button type="button" aria-label="Revert to this message" title="Erase everything after this message" onClick={() => onAction("revert", msg)}>Revert</button>
+    </span>
+  );
+}
+
 function friendlyCandidate(id: string): string {
   if (FRIENDLY_CANDIDATES[id]) return FRIENDLY_CANDIDATES[id];
   if (id.startsWith("activate_window")) return "Activate window";
@@ -80,7 +104,7 @@ function JudgeCard({ msg }: { msg: ChatMessage }) {
   );
 }
 
-export function ConversationMessage({ message: msg }: { message: ChatMessage }) {
+function ConversationMessageView({ message: msg }: { message: ChatMessage }) {
   switch (msg.type) {
     case "prompt":
       return <div className="console-line line-prompt">
@@ -93,6 +117,7 @@ export function ConversationMessage({ message: msg }: { message: ChatMessage }) 
           </span>)}
         </div>}
         {msg.text}
+        <MessageTools msg={msg} />
       </div>;
     case "guidance":
       return <div className="console-line line-guidance"><small>Guidance</small>{msg.text}</div>;
@@ -119,8 +144,15 @@ export function ConversationMessage({ message: msg }: { message: ChatMessage }) 
       </ActivityRow>;
     }
     case "response":
-      return <div className="console-line line-response"><MarkdownMessage text={msg.text} /></div>;
+      return <div className="console-line line-response"><MarkdownMessage text={msg.text} /><MessageTools msg={msg} /></div>;
     case "error":
       return <div className="console-line line-error">{msg.text}</div>;
   }
 }
+
+/**
+ * Messages are immutable once appended (streaming replaces only the last one),
+ * so a keystroke in the composer must not re-parse markdown or re-stringify
+ * every historical tool payload in a long conversation.
+ */
+export const ConversationMessage = React.memo(ConversationMessageView);

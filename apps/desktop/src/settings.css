@@ -245,3 +245,42 @@
 .file-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .app-shell .file-chip button { width: 18px; height: 18px; padding: 0; display: grid; place-items: center; border: 0; border-radius: 50%; background: transparent; color: var(--muted); font-size: 13px; line-height: 1; }
 .prompt-files { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+
+/* --- MCP servers (Settings → MCP) --- */
+.mcp-banner { margin: 0 0 12px; padding: 9px 12px; border-radius: 10px; font-size: 12px; }
+.mcp-banner.error { color: var(--danger); background: var(--danger-bg); border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent); }
+.mcp-banner.notice { color: var(--muted); background: var(--surface); border: 1px solid var(--border); }
+.mcp-server-list { display: flex; flex-direction: column; gap: 10px; }
+.mcp-empty { padding: 16px; border: 1px dashed var(--border); border-radius: 12px; color: var(--muted); }
+.mcp-empty p { margin: 0 0 4px; color: var(--text); font-size: 13px; }
+.mcp-empty small { display: block; margin-bottom: 10px; }
+.mcp-empty pre { margin: 0; padding: 10px 12px; overflow-x: auto; border-radius: 8px; background: var(--code); color: var(--muted); font-size: 11px; line-height: 1.5; }
+.mcp-server { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.mcp-server-main { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.mcp-server-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.mcp-dot { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.mcp-dot.ok { background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent); }
+.mcp-dot.error { background: var(--danger); }
+.mcp-dot.off, .mcp-dot.idle { background: var(--border); }
+.mcp-badge { padding: 2px 7px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 10px; letter-spacing: .05em; text-transform: uppercase; }
+.mcp-badge.trusted { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.mcp-badge.quiet { opacity: .75; }
+.mcp-command { display: block; padding: 4px 8px; border-radius: 6px; background: var(--code); color: var(--muted); font-size: 11px; white-space: normal; overflow-wrap: anywhere; }
+.mcp-server small { color: var(--muted); font-size: 11px; }
+.mcp-server small.mcp-failure { color: var(--danger); }
+.mcp-server-actions { display: flex; align-items: center; flex: none; gap: 6px; }
+.mcp-form { display: flex; flex-direction: column; gap: 12px; }
+.mcp-form-mode { display: inline-flex; width: fit-content; gap: 4px; padding: 3px; border-radius: 999px; background: var(--code); }
+.mcp-form-mode button { padding: 4px 12px; border: 0; border-radius: 999px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }
+.mcp-form-mode button.active { background: var(--raised); color: var(--text); }
+.mcp-json { width: 100%; min-height: 150px; resize: vertical; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--code); color: var(--text); font-family: ui-monospace, "Cascadia Code", monospace; font-size: 12px; line-height: 1.55; }
+.mcp-json:focus { border-color: var(--accent); outline: none; }
+.mcp-form-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.mcp-form-actions button.primary { background: var(--accent); border-color: transparent; color: var(--accent-ink); }
+.mcp-advanced summary { margin-bottom: 8px; color: var(--muted); font-size: 12px; cursor: pointer; }
+.mcp-env { display: flex; flex-direction: column; gap: 6px; padding: 8px 0; border-top: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.mcp-env > span { color: var(--text); font-size: 13px; }
+.mcp-env-row { display: flex; gap: 6px; }
+.mcp-env-row input { flex: 1; min-width: 0; }
+.mcp-env-row button { padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; }
+.mcp-env-row button:hover { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }

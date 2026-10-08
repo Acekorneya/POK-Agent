@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
@@ -20,7 +20,9 @@ use pok_ai_core::{
     },
     builtins::{register_desktop_tools, register_memory_tools},
     coding::register_coding_tools,
-    config::{Config, DecisionRouterBackend, LayaDevicePreference, ProviderDataBoundary},
+    config::{
+        Config, DecisionRouterBackend, LayaDevicePreference, McpServerConfig, ProviderDataBoundary,
+    },
     context::{ContextSettings, ModelContextOverride, resolve_context_budget},
     conversation_store::{
         ConversationDisplayMessage, ConversationHistoryPage, ConversationStore, ConversationSummary,
@@ -81,6 +83,26 @@ struct AppRuntime {
     external_provider_acknowledgments: Arc<Mutex<HashSet<String>>>,
     command_manager: Arc<SyncMutex<Option<pok_ai_core::commands::CommandManager>>>,
     pending_resume: Arc<Mutex<Option<Uuid>>>,
+    /// Last MCP connection result per server, shown in Settings → MCP.
+    mcp_status: Arc<Mutex<BTreeMap<String, McpServerStatus>>>,
+}
+
+/// Last observed MCP server health, for the settings page.
+#[derive(Debug, Clone, Serialize)]
+struct McpServerStatus {
+    name: String,
+    ok: bool,
+    tools: usize,
+    detail: Option<String>,
+    checked_at: String,
+}
+
+/// A configured server plus where it came from and its last health.
+#[derive(Debug, Clone, Serialize)]
+struct McpServerView {
+    server: pok_ai_core::config::McpServerConfig,
+    source: String,
+    status: Option<McpServerStatus>,
 }
 
 struct LayaProcess {
@@ -1573,6 +1595,397 @@ async fn resume_latest_conversation(
     resume_conversation(summary.id, runtime).await
 }
 
+/// Which feed message the user acted on: its kind, the occurrence of its
+/// exact text among the same kind, and the text itself (a sanity check).
+#[derive(Deserialize)]
+struct MessageAnchor {
+    kind: String,
+    ordinal: usize,
+    text: String,
+    /// Present when the feed row came from restored history and still knows
+    /// its exact stored sequence; avoids counting across unloaded pages.
+    sequence: Option<u64>,
+}
+
+fn conversation_payload(
+    store: &ConversationStore,
+    session_id: Uuid,
+) -> std::result::Result<ResumeConversationPayload, String> {
+    let (summary, state) = store
+        .metadata(session_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("conversation {session_id} was not found"))?;
+    let history = store
+        .display_messages_page(session_id, None, 100)
+        .map_err(|error| error.to_string())?;
+    Ok(ResumeConversationPayload {
+        decision_activity: state
+            .get("decision_activity")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+        decision_router_enabled: state
+            .get("decision_router_enabled")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false),
+        decision_router_backend: state
+            .get("decision_router_backend")
+            .and_then(|value| serde_json::from_value(value.clone()).ok())
+            .unwrap_or_else(|| {
+                if state
+                    .get("decision_router_enabled")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    DecisionRouterBackend::Jev
+                } else {
+                    DecisionRouterBackend::Off
+                }
+            }),
+        summary,
+        messages: history.messages,
+        next_before_sequence: history.next_before_sequence,
+        has_more: history.has_more,
+    })
+}
+
+/// Run state (task, continuity, evidence) belongs to the turns that were just
+/// erased; provider, router, and tool-group settings must survive a revert.
+fn reset_conversation_state(previous: &serde_json::Value) -> serde_json::Value {
+    let mut state = serde_json::Map::new();
+    for key in [
+        "decision_router_enabled",
+        "decision_router_backend",
+        "active_tool_groups",
+    ] {
+        if let Some(value) = previous.get(key) {
+            state.insert(key.into(), value.clone());
+        }
+    }
+    serde_json::Value::Object(state)
+}
+
+fn fork_title(original: &str) -> String {
+    format!("{original} · fork").chars().take(80).collect()
+}
+
+/// Truncate the stored conversation at the clicked message. `fork` writes the
+/// result as a new conversation and returns it; otherwise the same
+/// conversation is rewritten in place. The live session is dropped so the
+/// next prompt rebuilds it from the truncated history.
+async fn rewrite_conversation(
+    session_id: Option<Uuid>,
+    anchor: MessageAnchor,
+    mode: RewriteMode,
+    runtime: &AppRuntime,
+) -> std::result::Result<ResumeConversationPayload, String> {
+    let mut conversation = runtime.conversation.lock().await;
+    let id = session_id
+        .or_else(|| conversation.as_ref().map(|session| session.id))
+        .ok_or_else(|| "there is no active conversation".to_string())?;
+    if let Some(session) = conversation.as_ref().filter(|session| session.id == id) {
+        // Flush the newest messages so the stored conversation is complete
+        // even if the run that produced them was cancelled mid-turn.
+        session
+            .persist_conversation("active")
+            .map_err(|error| error.to_string())?;
+    }
+    let store = open_conversation_store(runtime)?;
+    let mut snapshot = store
+        .load(id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("conversation {id} was not found"))?;
+    let sequence = anchor
+        .sequence
+        .and_then(|sequence| {
+            pok_ai_core::conversation_store::resolve_display_sequence(
+                &snapshot.messages,
+                &anchor.kind,
+                sequence,
+                &anchor.text,
+            )
+        })
+        .or_else(|| {
+            pok_ai_core::conversation_store::resolve_display_anchor(
+                &snapshot.messages,
+                &anchor.kind,
+                anchor.ordinal,
+                &anchor.text,
+            )
+        })
+        .ok_or_else(|| {
+            "that message is not part of the stored conversation yet; finish the turn and try again"
+                .to_string()
+        })?;
+    pok_ai_core::conversation_store::truncate_messages_at(&mut snapshot.messages, sequence);
+    snapshot.state = reset_conversation_state(&snapshot.state);
+    let now = chrono::Utc::now().to_rfc3339();
+    snapshot.summary.updated_at = now.clone();
+    snapshot.summary.status = "active".into();
+    if mode == RewriteMode::Fork {
+        let new_id = Uuid::new_v4();
+        let diagnostics_dir = runtime.config.lock().diagnostics_dir.clone();
+        let title = fork_title(&snapshot.summary.title);
+        snapshot.summary.title = title;
+        snapshot.summary.id = new_id;
+        snapshot.summary.artifact_dir = diagnostics_dir.join("sessions").join(new_id.to_string());
+        snapshot.summary.created_at = now;
+        snapshot.summary.legacy_imported = false;
+    }
+    let rewritten_id = snapshot.summary.id;
+    store
+        .checkpoint(&snapshot)
+        .map_err(|error| error.to_string())?;
+
+    if conversation
+        .as_ref()
+        .is_some_and(|session| session.id == id)
+    {
+        *conversation = None;
+    }
+    drop(conversation);
+    if let Some(manager) = runtime.command_manager.lock().take() {
+        manager.request_shutdown();
+    }
+    *runtime.conversation_provider.lock().await = None;
+    *runtime.conversation_decision_router_backend.lock().await = None;
+    *runtime.conversation_judge_enabled.lock().await = None;
+    *runtime.pending_resume.lock().await = Some(rewritten_id);
+    runtime
+        .external_provider_acknowledgments
+        .lock()
+        .await
+        .clear();
+    conversation_payload(&store, rewritten_id)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RewriteMode {
+    Revert,
+    Fork,
+}
+
+#[tauri::command]
+async fn revert_conversation(
+    session_id: Option<Uuid>,
+    anchor: MessageAnchor,
+    runtime: State<'_, AppRuntime>,
+) -> std::result::Result<ResumeConversationPayload, String> {
+    rewrite_conversation(session_id, anchor, RewriteMode::Revert, runtime.inner()).await
+}
+
+#[tauri::command]
+async fn fork_conversation(
+    session_id: Option<Uuid>,
+    anchor: MessageAnchor,
+    runtime: State<'_, AppRuntime>,
+) -> std::result::Result<ResumeConversationPayload, String> {
+    rewrite_conversation(session_id, anchor, RewriteMode::Fork, runtime.inner()).await
+}
+
+fn validate_mcp_server(server: &McpServerConfig) -> std::result::Result<(), String> {
+    let name = server.name.trim();
+    if name.is_empty() || name.chars().count() > 64 {
+        return Err("Give the server a name of up to 64 characters.".into());
+    }
+    if !name
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '_' || character == '-')
+    {
+        return Err("Server names can use letters, numbers, dashes, and underscores.".into());
+    }
+    if server.command.trim().is_empty() {
+        return Err("Enter the command that launches the server.".into());
+    }
+    Ok(())
+}
+
+/// Configured servers (app-managed plus `pok-ai.toml`) with the last observed
+/// health, for Settings → MCP.
+async fn mcp_server_views(runtime: &AppRuntime) -> Vec<McpServerView> {
+    let (data_dir, config_servers) = {
+        let config = runtime.config.lock();
+        (config.data_dir.clone(), config.mcp.servers.clone())
+    };
+    let stored = pok_ai_core::mcp::McpServerStore::open(&data_dir).load();
+    let stored_names = stored
+        .iter()
+        .map(|server| server.name.clone())
+        .collect::<BTreeSet<String>>();
+    let statuses = runtime.mcp_status.lock().await;
+    let mut views = stored
+        .into_iter()
+        .map(|server| McpServerView {
+            status: statuses.get(&server.name).cloned(),
+            server,
+            source: "app".into(),
+        })
+        .collect::<Vec<_>>();
+    views.extend(
+        config_servers
+            .into_iter()
+            .filter(|server| !stored_names.contains(&server.name))
+            .map(|server| McpServerView {
+                status: statuses.get(&server.name).cloned(),
+                server,
+                source: "file".into(),
+            }),
+    );
+    views
+}
+
+/// A saved/removed MCP server only changes how the live session is built, so
+/// persist the conversation and let the next prompt rebuild the registry.
+async fn refresh_session_for_mcp(runtime: &AppRuntime) -> std::result::Result<(), String> {
+    let mut conversation = runtime.conversation.lock().await;
+    let Some(session) = conversation.as_ref() else {
+        return Ok(());
+    };
+    session
+        .persist_conversation("active")
+        .map_err(|error| error.to_string())?;
+    let id = session.id;
+    *conversation = None;
+    drop(conversation);
+    if let Some(manager) = runtime.command_manager.lock().take() {
+        manager.request_shutdown();
+    }
+    *runtime.conversation_provider.lock().await = None;
+    *runtime.conversation_decision_router_backend.lock().await = None;
+    *runtime.conversation_judge_enabled.lock().await = None;
+    *runtime.pending_resume.lock().await = Some(id);
+    runtime
+        .external_provider_acknowledgments
+        .lock()
+        .await
+        .clear();
+    Ok(())
+}
+
+#[tauri::command]
+async fn list_mcp_servers(
+    runtime: State<'_, AppRuntime>,
+) -> std::result::Result<Vec<McpServerView>, String> {
+    Ok(mcp_server_views(runtime.inner()).await)
+}
+
+#[tauri::command]
+async fn save_mcp_server(
+    server: McpServerConfig,
+    original_name: Option<String>,
+    runtime: State<'_, AppRuntime>,
+) -> std::result::Result<Vec<McpServerView>, String> {
+    validate_mcp_server(&server)?;
+    let data_dir = runtime.config.lock().data_dir.clone();
+    let store = pok_ai_core::mcp::McpServerStore::open(&data_dir);
+    let mut servers = store.load();
+    let target = original_name.unwrap_or_else(|| server.name.clone());
+    match servers.iter_mut().find(|item| item.name == target) {
+        Some(existing) => *existing = server,
+        None => {
+            if servers.iter().any(|item| item.name == server.name) {
+                return Err(format!(
+                    "An MCP server named {:?} already exists.",
+                    server.name
+                ));
+            }
+            servers.push(server);
+        }
+    }
+    store.save(&servers).map_err(|error| error.to_string())?;
+    refresh_session_for_mcp(runtime.inner()).await?;
+    Ok(mcp_server_views(runtime.inner()).await)
+}
+
+#[tauri::command]
+async fn delete_mcp_server(
+    name: String,
+    runtime: State<'_, AppRuntime>,
+) -> std::result::Result<Vec<McpServerView>, String> {
+    let data_dir = runtime.config.lock().data_dir.clone();
+    let store = pok_ai_core::mcp::McpServerStore::open(&data_dir);
+    let mut servers = store.load();
+    let before = servers.len();
+    servers.retain(|item| item.name != name);
+    if servers.len() != before {
+        store.save(&servers).map_err(|error| error.to_string())?;
+    }
+    runtime.mcp_status.lock().await.remove(&name);
+    refresh_session_for_mcp(runtime.inner()).await?;
+    Ok(mcp_server_views(runtime.inner()).await)
+}
+
+#[tauri::command]
+async fn set_mcp_server_enabled(
+    name: String,
+    enabled: bool,
+    runtime: State<'_, AppRuntime>,
+) -> std::result::Result<Vec<McpServerView>, String> {
+    let data_dir = runtime.config.lock().data_dir.clone();
+    let store = pok_ai_core::mcp::McpServerStore::open(&data_dir);
+    let mut stored = store.load();
+    // Take the merged server so a `pok-ai.toml` entry can be toggled too; the
+    // app-managed copy then overrides the file entry.
+    if let Some(server) = stored.iter_mut().find(|item| item.name == name) {
+        server.enabled = enabled;
+    } else {
+        let mut server = runtime
+            .config
+            .lock()
+            .mcp
+            .servers
+            .iter()
+            .find(|item| item.name == name)
+            .cloned()
+            .ok_or_else(|| format!("MCP server {name:?} was not found."))?;
+        server.enabled = enabled;
+        stored.push(server);
+    }
+    store.save(&stored).map_err(|error| error.to_string())?;
+    if !enabled {
+        runtime.mcp_status.lock().await.remove(&name);
+    }
+    refresh_session_for_mcp(runtime.inner()).await?;
+    Ok(mcp_server_views(runtime.inner()).await)
+}
+
+#[tauri::command]
+async fn test_mcp_server(
+    server: McpServerConfig,
+    runtime: State<'_, AppRuntime>,
+) -> std::result::Result<McpServerStatus, String> {
+    validate_mcp_server(&server)?;
+    let config = runtime.config.lock().mcp.clone();
+    let started = std::time::Instant::now();
+    let status = match pok_ai_core::mcp::probe_server(&server, &config).await {
+        Ok(tools) => McpServerStatus {
+            name: server.name.clone(),
+            ok: true,
+            tools: tools.len(),
+            detail: Some(format!(
+                "{} tool{} · {} ms",
+                tools.len(),
+                if tools.len() == 1 { "" } else { "s" },
+                started.elapsed().as_millis()
+            )),
+            checked_at: chrono::Utc::now().to_rfc3339(),
+        },
+        Err(error) => McpServerStatus {
+            name: server.name.clone(),
+            ok: false,
+            tools: 0,
+            detail: Some(error.to_string()),
+            checked_at: chrono::Utc::now().to_rfc3339(),
+        },
+    };
+    runtime
+        .mcp_status
+        .lock()
+        .await
+        .insert(server.name.clone(), status.clone());
+    Ok(status)
+}
+
 #[tauri::command]
 async fn stop_command(
     task_id: String,
@@ -1678,6 +2091,7 @@ async fn run_prompt(
         max_turns,
         agent_temperature,
         mut decision_router_config,
+        mcp_config,
     ) = {
         let config = runtime.config.lock();
         if config.prompt_token_target.is_some() {
@@ -1707,6 +2121,7 @@ async fn run_prompt(
             config.max_turns,
             config.agent_temperature,
             config.decision_router.clone(),
+            config.mcp.clone(),
         )
     };
     let legacy_requested_decision_router = pending_snapshot
@@ -1900,6 +2315,28 @@ async fn run_prompt(
         register_memory_tools(&mut tools);
         register_generated_tool_tools(&mut tools);
         tools.register(SpawnSubagentTool::new(brain.clone(), &model));
+        let stored_mcp = pok_ai_core::mcp::McpServerStore::open(&data_dir).load();
+        let merged_mcp = pok_ai_core::mcp::merge_servers(&mcp_config, &stored_mcp);
+        let mcp_registration = pok_ai_core::mcp::register_mcp_tools(&mut tools, &merged_mcp).await;
+        for warning in &mcp_registration.warnings {
+            eprintln!("Warning: {warning}");
+        }
+        {
+            let mut statuses = runtime.mcp_status.lock().await;
+            statuses.clear();
+            for status in &mcp_registration.statuses {
+                statuses.insert(
+                    status.name.clone(),
+                    McpServerStatus {
+                        name: status.name.clone(),
+                        ok: status.ok,
+                        tools: status.tools,
+                        detail: status.detail.clone(),
+                        checked_at: chrono::Utc::now().to_rfc3339(),
+                    },
+                );
+            }
+        }
         let provider_models = tokio::select! {
             () = cancellation.cancelled() => return Err(pok_ai_core::PokError::Cancelled.to_string()),
             result = provider_model_catalog(runtime.inner(), &provider, &provider_config) => result,
@@ -3158,6 +3595,7 @@ pub fn run() {
         external_provider_acknowledgments: Arc::new(Mutex::new(HashSet::new())),
         command_manager: Arc::new(SyncMutex::new(None)),
         pending_resume: Arc::new(Mutex::new(None)),
+        mcp_status: Arc::new(Mutex::new(BTreeMap::new())),
     };
     let broker = Arc::new(ApprovalBroker::default());
     let broker_setup = broker.clone();
@@ -3253,6 +3691,13 @@ pub fn run() {
             list_conversations,
             resume_conversation,
             resume_latest_conversation,
+            revert_conversation,
+            fork_conversation,
+            list_mcp_servers,
+            save_mcp_server,
+            delete_mcp_server,
+            set_mcp_server_enabled,
+            test_mcp_server,
             load_conversation_history,
             compact_context,
             run_prompt,

@@ -679,6 +679,9 @@ fn normalized_property_name(value: &str) -> String {
 /// schemas. Every installed tool remains discoverable; this only reduces the
 /// schema payload sent on turns that do not need it.
 pub fn tool_group(name: &str) -> &'static str {
+    if name.starts_with("mcp__") {
+        return "mcp";
+    }
     match name {
         "get_current_time" | "update_task_plan" | "discover_tools" | "fast_actions" => "control",
         "observe_desktop"

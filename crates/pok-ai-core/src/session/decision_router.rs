@@ -2069,13 +2069,15 @@ impl Session {
             for group in groups.iter().filter_map(Value::as_str) {
                 if matches!(
                     group,
-                    "desktop"
+                    "browser"
+                        | "desktop"
                         | "system"
                         | "coding"
                         | "memory"
                         | "archive"
                         | "generated"
                         | "subagent"
+                        | "mcp"
                         | "other"
                 ) {
                     self.active_tool_groups.insert(group.into());

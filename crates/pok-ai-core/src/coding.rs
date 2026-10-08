@@ -1674,9 +1674,36 @@ fn command_failure_summary(stderr: &str) -> String {
     let meaningful = stderr
         .lines()
         .map(str::trim)
-        .find(|line| !line.is_empty())
-        .unwrap_or("command failed without diagnostic output");
-    meaningful.chars().take(500).collect()
+        .filter(|line| !line.is_empty() && !powershell_error_boilerplate(line))
+        .collect::<Vec<_>>();
+    // A Python-style traceback states the real problem on its final line; its
+    // first line is only "Traceback (most recent call last):". For every other
+    // failure the first meaningful line stays the summary.
+    let summary = if stderr
+        .to_ascii_lowercase()
+        .contains("traceback (most recent call last)")
+    {
+        meaningful.last()
+    } else {
+        meaningful.first()
+    };
+    summary.map_or_else(
+        || "command failed without diagnostic output".into(),
+        |line| line.chars().take(500).collect(),
+    )
+}
+
+/// PowerShell's own error-record frame around a failed command.
+fn powershell_error_boilerplate(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.starts_with("at line:")
+        || lower.starts_with("+ ")
+        || lower.starts_with("+ categoryinfo")
+        || lower.starts_with("+ fullyqualifiederrorid")
+        || lower.starts_with("categoryinfo")
+        || lower.starts_with("fullyqualifiederrorid")
+        || line.starts_with('~')
+        || line.chars().all(char::is_whitespace)
 }
 
 fn command_artifact_candidates(command: &str, stdout: &str, stderr: &str) -> Vec<PathBuf> {
@@ -1921,19 +1948,6 @@ fn mutates_protected_windows_path(command: &str) -> bool {
             .any(|marker| command.contains(marker))
 }
 
-#[cfg(test)]
-fn powershell_utf8_script(command: &str) -> String {
-    format!(
-        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); \
-         $OutputEncoding = [Console]::OutputEncoding; \
-         $ErrorActionPreference = 'Stop'; \
-         $global:LASTEXITCODE = 0; \
-         try {{ & {{ {command} }}; \
-         if ($global:LASTEXITCODE -ne 0) {{ exit $global:LASTEXITCODE }} \
-         }} catch {{ [Console]::Error.WriteLine(($_ | Out-String)); exit 1 }}"
-    )
-}
-
 fn hash_text(text: &str) -> String {
     hash_bytes(text.as_bytes())
 }
@@ -2109,11 +2123,28 @@ mod tests {
     }
 
     #[test]
-    fn powershell_wrapper_turns_error_records_into_failed_processes() {
-        let script = powershell_utf8_script("Write-Error 'broken'");
-        assert!(script.contains("$ErrorActionPreference = 'Stop'"));
-        assert!(script.contains("catch"));
-        assert!(script.contains("exit 1"));
+    fn command_failure_summary_reports_the_actual_error() {
+        // PowerShell wraps a failing native command in an error record; the
+        // Python traceback body follows it, with the exception on the last
+        // line. Reporting the first line ("Traceback ...") sent the model in
+        // circles, so the summary must name the exception.
+        let stderr = "python : Traceback (most recent call last):\n\
+                      At line:1 char:184\n\
+                      + ... ; try { & { python probe.py 2>&1 | ...\n\
+                      + CategoryInfo          : NotSpecified: (Traceback ...) [], RemoteException\n\
+                      + FullyQualifiedErrorId : NativeCommandError\n\
+                      \n\
+                      \x20 File \"probe.py\", line 54, in <module>\n\
+                      \x20   pe = dnfile.dnPE(path)\n\
+                      FileNotFoundError: [Errno 2] No such file or directory\n";
+        assert_eq!(
+            command_failure_summary(stderr),
+            "FileNotFoundError: [Errno 2] No such file or directory"
+        );
+        assert_eq!(
+            command_failure_summary("missing.exe: command not found"),
+            "missing.exe: command not found"
+        );
         assert_eq!(
             command_failure_kind("ParserError: Unexpected token"),
             "syntax"
@@ -2121,6 +2152,10 @@ mod tests {
         assert_eq!(
             command_failure_kind("ModuleNotFoundError: demo"),
             "dependency"
+        );
+        assert_eq!(
+            command_failure_kind("FileNotFoundError: [Errno 2] no such file"),
+            "environment"
         );
     }
 
@@ -2359,16 +2394,6 @@ mod tests {
         let catalog = registry.compact_catalog(&active);
         assert!(catalog.contains("run_command [system; inactive]"));
         assert!(catalog.contains("read_file [coding; active]"));
-    }
-
-    #[test]
-    fn powershell_commands_enable_utf8_without_nesting_another_shell() {
-        let script = powershell_utf8_script("Write-Output 'Pokémon °C'");
-        assert!(script.contains("[Console]::OutputEncoding"));
-        assert!(script.contains("$OutputEncoding"));
-        assert!(script.contains("Write-Output 'Pokémon °C'"));
-        assert!(script.ends_with("exit 1 }"));
-        assert!(!script.contains("powershell -Command"));
     }
 
     #[test]

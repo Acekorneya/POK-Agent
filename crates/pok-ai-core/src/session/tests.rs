@@ -1147,7 +1147,11 @@ fn repairs_only_schema_declared_bare_enum_values() {
 
 #[test]
 fn reasoning_length_is_not_an_empty_provider_response() {
-    assert_eq!(initial_response_max_tokens("deepseek-v4-flash"), 8_192);
+    assert_eq!(initial_response_max_tokens("deepseek-v4-flash"), 16_384);
+    assert_eq!(
+        initial_response_max_tokens("thinkingcap-qwen3.8-27b"),
+        16_384
+    );
     assert_eq!(initial_response_max_tokens("ordinary-model"), 4_096);
     assert!(reasoning_output_limit_reached(
         Some("length"),
@@ -1945,7 +1949,8 @@ fn long_runs_keep_task_recent_cycles_and_continuity_ledger() {
         });
     }
 
-    let (bounded, estimate, actions) = bounded_context(&messages, 1, 16_000, 4_000, 1.0);
+    // A tight target forces the over-budget reduction path.
+    let (bounded, estimate, actions) = bounded_context(&messages, 1, 3_000, 4_000, 1.0);
     let rendered = serde_json::to_string(&bounded).unwrap();
     assert!(rendered.contains("open the requested website"));
     assert!(rendered.contains("AUTOMATIC CONTEXT COMPACTION"));
@@ -1956,6 +1961,172 @@ fn long_runs_keep_task_recent_cycles_and_continuity_ledger() {
         actions
             .iter()
             .any(|action| action.starts_with("continuity_ledger:"))
+    );
+}
+
+fn read_file_cycle(index: usize, content: &str) -> [BrainMessage; 2] {
+    let path = format!("src/file-{index}.rs");
+    [
+        BrainMessage {
+            role: "assistant".into(),
+            content: Vec::new(),
+            origin: MessageOrigin::Assistant,
+            tool_call_id: None,
+            tool_calls: vec![CompletedToolCall {
+                id: format!("call-{index}"),
+                name: "read_file".into(),
+                arguments: json!({"path": path}),
+            }],
+        },
+        BrainMessage {
+            role: "tool".into(),
+            content: vec![MessageContent::Text {
+                text: json!({
+                    "path": path,
+                    "sha256": format!("hash-{index}"),
+                    "total_lines": 1,
+                    "start_line": 1,
+                    "end_line": 1,
+                    "content": content,
+                    "truncated": false,
+                })
+                .to_string(),
+            }],
+            origin: MessageOrigin::ToolResult,
+            tool_call_id: Some(format!("call-{index}")),
+            tool_calls: Vec::new(),
+        },
+    ]
+}
+
+#[test]
+fn bounded_context_keeps_many_tool_results_while_they_fit_the_budget() {
+    let mut messages = vec![
+        BrainMessage::text("system", "system"),
+        BrainMessage::text("user", "review the module files and report the bug"),
+    ];
+    for index in 0..30 {
+        messages.extend(read_file_cycle(
+            index,
+            &format!("UNIQUE_CONTENT_{index}_{}", "x".repeat(120)),
+        ));
+    }
+
+    let (bounded, _, actions) = bounded_context(&messages, 1, 16_000, 4_000, 1.0);
+    let rendered = serde_json::to_string(&bounded).unwrap();
+    // All 30 recent results fit, so none is thrown away; the old fixed cap of
+    // six made the model re-read the same files every turn.
+    for index in 0..30 {
+        assert!(
+            rendered.contains(&format!("UNIQUE_CONTENT_{index}_")),
+            "tool result {index} was compacted while under budget"
+        );
+    }
+    assert!(
+        !actions
+            .iter()
+            .any(|action| action.starts_with("compacted_tool_results")
+                || action.starts_with("continuity_ledger:"))
+    );
+}
+
+#[test]
+fn bounded_context_compacts_oldest_tool_results_only_over_budget() {
+    let mut messages = vec![
+        BrainMessage::text("system", "system"),
+        BrainMessage::text("user", "review the module files and report the bug"),
+    ];
+    for index in 0..30 {
+        messages.extend(read_file_cycle(
+            index,
+            &format!("UNIQUE_CONTENT_{index}_{}", "x".repeat(1_000)),
+        ));
+    }
+
+    let (bounded, _, actions) = bounded_context(&messages, 1, 5_000, 4_000, 1.0);
+    let rendered = serde_json::to_string(&bounded).unwrap();
+    assert!(
+        actions
+            .iter()
+            .any(|action| action.starts_with("compacted_tool_results"))
+    );
+    // Over budget the oldest are reduced first; the survivors are the newest
+    // contiguous run, and the floor keeps a real working set instead of the
+    // old fixed six results.
+    let survivors = (0..30)
+        .filter(|index| rendered.contains(&format!("UNIQUE_CONTENT_{index}_")))
+        .collect::<Vec<_>>();
+    // The budget wins when even the floor does not fit, but the old fixed cap
+    // of six is gone: a real working set survives.
+    assert!(
+        survivors.len() > 6,
+        "only {} results survived",
+        survivors.len()
+    );
+    assert!(survivors.len() < 30);
+    assert_eq!(survivors.first(), Some(&(30 - survivors.len())));
+    assert_eq!(survivors.last(), Some(&29));
+}
+
+#[test]
+fn duplicate_read_stub_reuses_a_retained_unchanged_page() {
+    let path = "src/lib.rs";
+    let content = "pub fn example() {}";
+    let call = CompletedToolCall {
+        id: "call-new".into(),
+        name: "read_file".into(),
+        arguments: json!({"path": path}),
+    };
+    let result = || {
+        Ok(json!({
+            "path": path,
+            "sha256": "abc123",
+            "total_lines": 1,
+            "start_line": 1,
+            "end_line": 1,
+            "content": content,
+            "truncated": false,
+        }))
+    };
+    let mut messages = vec![BrainMessage::text("user", "read the file")];
+    messages.extend(read_file_cycle(0, content));
+    // The helper matches on the exact path, hash, and page.
+    messages[2].content = vec![MessageContent::Text {
+        text: json!({
+            "path": path,
+            "sha256": "abc123",
+            "total_lines": 1,
+            "start_line": 1,
+            "end_line": 1,
+            "content": content,
+            "truncated": false,
+        })
+        .to_string(),
+    }];
+
+    let retained = retained_tool_result_ids(&messages);
+    let stub = duplicate_read_stub(&call, &result(), &messages, &retained)
+        .expect("retained read is reused");
+    assert_eq!(stub.get("duplicate_read"), Some(&Value::Bool(true)));
+    assert_eq!(stub.get("content_omitted"), Some(&Value::Bool(true)));
+    assert!(stub.get("content").is_none());
+
+    // A changed file is a new read, not a duplicate.
+    let changed = Ok(json!({
+        "path": path,
+        "sha256": "def456",
+        "total_lines": 1,
+        "start_line": 1,
+        "end_line": 1,
+        "content": "pub fn example() { changed(); }",
+        "truncated": false,
+    }));
+    assert!(duplicate_read_stub(&call, &changed, &messages, &retained).is_none());
+
+    // A result the projection did not carry verbatim is read again.
+    assert!(
+        duplicate_read_stub(&call, &result(), &messages, &BTreeSet::new()).is_none(),
+        "only results the model can still see may be reused"
     );
 }
 #[test]
@@ -2008,7 +2179,7 @@ fn context_compaction_preserves_midnight_temporal_update() {
             "<temporal_context>Today's local date is 2026-07-19.</temporal_context>",
         ),
     ];
-    for index in 0..13 {
+    for index in 0..25 {
         messages.push(BrainMessage {
             role: "assistant".into(),
             content: Vec::new(),
@@ -7240,7 +7411,7 @@ fn pages_already_read_survive_compaction_so_the_planner_does_not_reread_them() {
         };
         messages.extend(cycle);
     }
-    let (bounded, _, actions) = bounded_context(&messages, 1, 400_000, 4_000, 1.0);
+    let (bounded, _, actions) = bounded_context(&messages, 1, 3_000, 4_000, 1.0);
     assert!(
         actions
             .iter()
@@ -7263,7 +7434,7 @@ fn pages_already_read_survive_compaction_so_the_planner_does_not_reread_them() {
             &["Home", "Example headline two · 1h"],
         ));
     }
-    let (again, _, _) = bounded_context(&longer, 1, 400_000, 4_000, 1.0);
+    let (again, _, _) = bounded_context(&longer, 1, 3_000, 4_000, 1.0);
     let rendered = serde_json::to_string(&again).unwrap();
     assert!(
         rendered.contains("Recent post from Example Author · 5h"),
@@ -7628,4 +7799,39 @@ async fn a_notice_that_comes_back_after_its_dismissal_goes_to_the_planner() {
         .count();
     assert_eq!(dismissals, 1);
     assert_eq!(metrics.extras["fast_actions_popups_dismissed"], 1);
+}
+
+#[test]
+fn compactable_history_at_minimum_matches_the_compaction_slice() {
+    let system = BrainMessage::text("system", "system instructions");
+    let active = BrainMessage::text("user", "the active request");
+
+    // Nothing precedes the active request: compaction has no candidate.
+    assert!(compressible_history_at_minimum(&[
+        system.clone(),
+        active.clone()
+    ]));
+
+    // A real earlier turn remains compactable.
+    let conversation = vec![
+        system.clone(),
+        BrainMessage::text("user", "an earlier request"),
+        BrainMessage::text("assistant", "an earlier answer"),
+        active.clone(),
+    ];
+    assert!(!compressible_history_at_minimum(&conversation));
+
+    // Once earlier turns were replaced by one summary, the meter must report
+    // "at minimum" even though fixed tool schemas keep the total above the
+    // compaction threshold.
+    let summarized = vec![
+        system,
+        BrainMessage::text_with_origin(
+            "system",
+            "[Historical conversation summary: earlier work]",
+            MessageOrigin::HistorySummary,
+        ),
+        active,
+    ];
+    assert!(compressible_history_at_minimum(&summarized));
 }

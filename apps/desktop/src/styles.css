@@ -825,9 +825,13 @@ button.reject, .approval-choice.deny { color: #ffaaaa; border-color: #73444a; ba
 .context-meter { margin: 0 0 12px; padding: 9px 11px; border: 1px solid #214653; border-radius: 9px; background: linear-gradient(135deg, #07151b, #0b2027); cursor: pointer; }
 .context-meter.unknown { border-color: #8a6826; }
 .context-meter-heading { display: flex; justify-content: space-between; gap: 12px; color: #b7d1d8; font-size: 11px; font-weight: 700; }
-.context-meter-track { height: 7px; margin: 7px 0 5px; overflow: hidden; border-radius: 999px; background: #132e37; }
-.context-meter-fill { height: 100%; min-width: 0; border-radius: inherit; background: linear-gradient(90deg, #23c998, #38bdf8, #f6c453); box-shadow: 0 0 12px #38bdf866; transition: width 500ms cubic-bezier(.2,.8,.2,1); position: relative; }
-.context-meter-fill::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, #ffffff55, transparent); animation: context-shimmer 2.2s linear infinite; }
+.context-meter-track { position: relative; height: 7px; margin: 7px 0 5px; border-radius: 999px; background: #132e37; }
+.context-meter-fill { position: absolute; top: 0; bottom: 0; min-width: 0; transition: width 500ms cubic-bezier(.2,.8,.2,1), left 500ms cubic-bezier(.2,.8,.2,1); }
+.context-meter-fill.fixed { left: 0; border-radius: 999px 0 0 999px; background: #3d5a66; }
+.context-meter-fill.compactable { border-radius: 0 999px 999px 0; background: linear-gradient(90deg, #23c998, #38bdf8); box-shadow: 0 0 12px #38bdf866; overflow: hidden; }
+.context-meter-fill.compactable::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, #ffffff55, transparent); animation: context-shimmer 2.2s linear infinite; }
+.context-meter-threshold { position: absolute; top: -1px; bottom: -1px; width: 2px; border-radius: 1px; background: #f6c453; box-shadow: 0 0 5px #f6c45399; }
+.context-meter-sent { position: absolute; top: -1px; bottom: -1px; width: 2px; border-radius: 1px; background: #eaf6f8; opacity: .8; }
 .context-meter-detail { color: #6f929d; font-size: 10px; line-height: 1.4; }
 .compact-now { margin-top: 6px; padding: 3px 8px; font-size: 9px; }
 .context-settings { margin-top: 10px; border-top: 1px solid #17333c; padding-top: 8px; }

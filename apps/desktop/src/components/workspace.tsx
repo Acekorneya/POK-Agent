@@ -50,13 +50,16 @@ function CodeBlock({ children, ...props }: React.ComponentProps<"pre">) {
   const ref = useRef<HTMLPreElement>(null);
   return <div className="code-block"><button className="copy-button" onClick={e => { const button = e.currentTarget; void navigator.clipboard.writeText(ref.current?.textContent || "").then(() => { button.textContent = "Copied"; }, () => { button.textContent = "Copy unavailable"; }); }}>Copy code</button><pre ref={ref} {...props}>{children}</pre></div>;
 }
-export function MarkdownMessage({ text }: { text: string }) {
+function MarkdownMessageView({ text }: { text: string }) {
   return <div className="markdown-message"><Markdown remarkPlugins={[remarkGfm]} skipHtml components={{
     pre: CodeBlock,
     img: ({ alt }) => <span className="image-placeholder">[Image: {alt || "not loaded"}]</span>,
     a: ({ children, href }) => <a href={href && /^https?:\/\//i.test(href) ? href : undefined} target="_blank" rel="noreferrer noopener">{children}</a>,
   }}>{text}</Markdown><CopyButton text={text} /></div>;
 }
+/** Markdown parsing is the most expensive part of the feed; skip it when the
+ * text did not change (every composer keystroke re-renders the session). */
+export const MarkdownMessage = React.memo(MarkdownMessageView);
 
 export function ActivityRow({ label, detail, status, durationMs, children }: {
   label: string; detail?: string; status?: string; durationMs?: number; children: React.ReactNode;

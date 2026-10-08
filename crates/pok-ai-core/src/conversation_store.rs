@@ -239,14 +239,7 @@ impl ConversationStore {
         let Some(snapshot) = self.load(id)? else {
             return Ok(Vec::new());
         };
-        Ok(snapshot
-            .messages
-            .iter()
-            .enumerate()
-            .flat_map(|(sequence, message)| {
-                display_events_for_message(u64::try_from(sequence).unwrap_or(u64::MAX), message)
-            })
-            .collect())
+        Ok(conversation_display_events(&snapshot.messages))
     }
 
     pub fn display_messages_page(
@@ -545,6 +538,100 @@ fn parse_summary(row: SummaryRow) -> Result<ConversationSummary> {
     })
 }
 
+/// The dashboard-facing events a stored conversation contains, with the
+/// canonical sequence of the message that produced each one. The feed is a
+/// presentation of these; a clicked feed message maps back to a sequence
+/// through its kind, exact text, and occurrence.
+pub fn conversation_display_events(messages: &[BrainMessage]) -> Vec<ConversationDisplayMessage> {
+    messages
+        .iter()
+        .enumerate()
+        .flat_map(|(sequence, message)| {
+            display_events_for_message(u64::try_from(sequence).unwrap_or(u64::MAX), message)
+        })
+        .collect()
+}
+
+/// Map a clicked feed message back to its stored message sequence: the
+/// `ordinal`-th event of `kind` whose text equals `text` (trimmed).
+pub fn resolve_display_anchor(
+    messages: &[BrainMessage],
+    kind: &str,
+    ordinal: usize,
+    text: &str,
+) -> Option<u64> {
+    let wanted = text.trim();
+    let mut seen = 0usize;
+    for event in conversation_display_events(messages) {
+        if event.kind != kind || event.text.trim() != wanted {
+            continue;
+        }
+        if seen == ordinal {
+            return Some(event.sequence);
+        }
+        seen += 1;
+    }
+    None
+}
+
+/// Map a feed message that still carries its stored sequence (restored
+/// history) back to that sequence, checking kind and text so a stale id cannot
+/// truncate the wrong point.
+pub fn resolve_display_sequence(
+    messages: &[BrainMessage],
+    kind: &str,
+    sequence: u64,
+    text: &str,
+) -> Option<u64> {
+    let wanted = text.trim();
+    conversation_display_events(messages)
+        .into_iter()
+        .find(|event| {
+            event.sequence == sequence
+                && event.kind == kind
+                && (wanted.is_empty() || event.text.trim() == wanted)
+        })
+        .map(|event| event.sequence)
+}
+
+/// Keep the conversation through `sequence`, then repair the tail so the
+/// provider never sees an unanswered tool call: trailing tool results and
+/// dangling assistant tool calls are removed, while an assistant's visible
+/// text is kept when it has any. Returns how many messages were removed.
+pub fn truncate_messages_at(messages: &mut Vec<BrainMessage>, sequence: u64) -> usize {
+    let before = messages.len();
+    let keep = usize::try_from(sequence.saturating_add(1))
+        .unwrap_or(usize::MAX)
+        .min(messages.len());
+    messages.truncate(keep);
+    loop {
+        match messages.last() {
+            Some(message) if message.role == "tool" => {
+                messages.pop();
+            }
+            Some(message)
+                if message.origin == MessageOrigin::Assistant && !message.tool_calls.is_empty() =>
+            {
+                let visible = message.content.iter().any(
+                    |part| matches!(part, MessageContent::Text { text } if !text.trim().is_empty()),
+                );
+                if visible {
+                    if let Some(last) = messages.last_mut() {
+                        last.tool_calls.clear();
+                    }
+                    break;
+                }
+                messages.pop();
+            }
+            Some(message) if message.origin == MessageOrigin::SystemReminder => {
+                messages.pop();
+            }
+            _ => break,
+        }
+    }
+    before.saturating_sub(messages.len())
+}
+
 pub fn sanitized_persisted_messages(messages: &[BrainMessage]) -> Vec<BrainMessage> {
     messages.iter().cloned().map(|mut message| {
         let had_images = message.content.iter().any(|part| matches!(part, MessageContent::ImagePng { .. }));
@@ -665,6 +752,126 @@ mod tests {
                 .messages
                 .windows(2)
                 .all(|pair| pair[0].sequence <= pair[1].sequence)
+        );
+    }
+
+    fn assistant_with_tools(text: Option<&str>, call: &str) -> BrainMessage {
+        BrainMessage {
+            role: "assistant".into(),
+            content: text
+                .map(|text| vec![MessageContent::Text { text: text.into() }])
+                .unwrap_or_default(),
+            origin: MessageOrigin::Assistant,
+            tool_call_id: None,
+            tool_calls: vec![CompletedToolCall {
+                id: format!("{call}-id"),
+                name: "capture_screen".into(),
+                arguments: json!({}),
+            }],
+        }
+    }
+
+    fn tool_result(call: &str) -> BrainMessage {
+        BrainMessage {
+            role: "tool".into(),
+            content: vec![MessageContent::Text {
+                text: json!({"executed": true}).to_string(),
+            }],
+            origin: MessageOrigin::ToolResult,
+            tool_call_id: Some(format!("{call}-id")),
+            tool_calls: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn truncating_at_a_message_repairs_the_tail_tool_pairing() {
+        let base = || {
+            vec![
+                BrainMessage::text("system", "system"),
+                BrainMessage::text("user", "first request"),
+                assistant_with_tools(Some("Looking first."), "call-a"),
+                tool_result("call-a"),
+                BrainMessage::text("assistant", "First answer"),
+                BrainMessage::text("user", "second request"),
+                assistant_with_tools(None, "call-b"),
+                tool_result("call-b"),
+            ]
+        };
+
+        // Cutting at a tool-calling assistant with no visible text drops it.
+        let mut messages = base();
+        assert_eq!(truncate_messages_at(&mut messages, 6), 2);
+        assert_eq!(messages.len(), 6);
+        assert!(matches!(
+            &messages.last().unwrap().content[0],
+            MessageContent::Text { text } if text == "second request"
+        ));
+
+        // Cutting at a tool-calling assistant with text keeps the answer and
+        // drops the now-unanswerable calls.
+        let mut messages = base();
+        assert_eq!(truncate_messages_at(&mut messages, 2), 5);
+        assert_eq!(messages.len(), 3);
+        assert!(messages[2].tool_calls.is_empty());
+        assert!(matches!(
+            &messages[2].content[0],
+            MessageContent::Text { text } if text == "Looking first."
+        ));
+
+        // Cutting at a tool result removes it and then the dangling call.
+        let mut messages = base();
+        assert_eq!(truncate_messages_at(&mut messages, 3), 5);
+        assert_eq!(messages.len(), 3);
+        assert!(messages[2].tool_calls.is_empty());
+
+        // Cutting at a user request keeps it as the last message.
+        let mut messages = base();
+        assert_eq!(truncate_messages_at(&mut messages, 5), 2);
+        assert_eq!(messages.len(), 6);
+        assert_eq!(messages.last().unwrap().role, "user");
+    }
+
+    #[test]
+    fn display_anchor_maps_a_clicked_message_to_its_sequence() {
+        let messages = vec![
+            BrainMessage::text("system", "system"),
+            BrainMessage::text("user", "same request"),
+            BrainMessage::text("assistant", "first answer"),
+            BrainMessage::text("user", "same request"),
+            BrainMessage::text("assistant", "second answer"),
+        ];
+        assert_eq!(
+            resolve_display_anchor(&messages, "prompt", 0, "same request"),
+            Some(1)
+        );
+        assert_eq!(
+            resolve_display_anchor(&messages, "prompt", 1, "same request"),
+            Some(3)
+        );
+        assert_eq!(
+            resolve_display_anchor(&messages, "response", 0, "second answer"),
+            Some(4)
+        );
+        assert_eq!(
+            resolve_display_anchor(&messages, "response", 1, "second answer"),
+            None
+        );
+        assert_eq!(
+            resolve_display_anchor(&messages, "prompt", 0, "missing"),
+            None
+        );
+        // Restored history carries the exact sequence; text guards stale ids.
+        assert_eq!(
+            resolve_display_sequence(&messages, "prompt", 3, "same request"),
+            Some(3)
+        );
+        assert_eq!(
+            resolve_display_sequence(&messages, "prompt", 1, "second answer"),
+            None
+        );
+        assert_eq!(
+            resolve_display_sequence(&messages, "response", 4, ""),
+            Some(4)
         );
     }
 

@@ -5,7 +5,7 @@ use super::*;
 #[derive(Debug, Deserialize, JsonSchema)]
 pub(super) struct DiscoverToolsArgs {
     /// Capability families to enable for subsequent turns. Supported values:
-    /// desktop, system, coding, memory, archive, generated, subagent, other.
+    /// desktop, system, coding, memory, archive, generated, subagent, mcp, other.
     pub(super) groups: Vec<String>,
 }
 

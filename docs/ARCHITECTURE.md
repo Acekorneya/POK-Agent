@@ -91,11 +91,16 @@ the benchmark error count. It also recognizes LM Studio's fallback
 
 Only the newest screenshot remains in active context. Older images are replaced
 with compact markers while their full PNGs remain in the artifact directory.
-After six tool results, older complete tool cycles are micro-compacted into one
-bounded continuity ledger. The original request and recent cycles remain
-verbatim; the ledger retains tool counts, recent earlier actions, arguments,
-and success/failure state. Tool-call arguments are included in token estimates,
-and the complete unabridged execution remains available in `trace.jsonl`.
+Tool history is reduced only when the projected working set does not fit its
+token target: older complete tool cycles are micro-compacted into one bounded
+continuity ledger, then the oldest tool results are reduced until the target is
+met, keeping a recent floor. The working set scales with the model's window
+(latency-bounded), and a repeated read of an unchanged page is answered from
+the retained result instead of re-sending the same bytes. The original request
+and recent cycles remain verbatim; the ledger retains tool counts, recent
+earlier actions, arguments, and success/failure state. Tool-call arguments are
+included in token estimates, and the complete unabridged execution remains
+available in `trace.jsonl`.
 
 ## Desktop safety
 
@@ -258,6 +263,30 @@ live browsing is not learned as a reusable procedure from UI changes alone.
 Coding children require a clean Git repository. Each child receives only coding
 tools, cannot spawn grandchildren, and works on a temporary branch/worktree.
 POK-Agent returns its commit and diff but never merges it automatically.
+
+## MCP servers
+
+Local Model Context Protocol servers extend the tool set without new Rust code.
+Each enabled server in `[mcp]` (`[[mcp.servers]]` in `pok-ai.toml`) is spawned
+once per session over stdio JSON-RPC, completes the `initialize` handshake, and
+has its `tools/list` tools registered as `mcp__<server>__<tool>` in the `mcp`
+capability family. The compact catalog lists them as inactive; the model loads
+their schemas with `discover_tools(["mcp"])`. The desktop app's Settings → MCP
+page manages the same list in `<data_dir>/mcp-servers.json`, where an
+app-managed entry overrides a same-named file entry. A server that does not
+start is a warning, not a session failure; the registry keeps its process alive
+for the session and kills it on drop.
+
+MCP tools default to `process_execution` risk: Ask-permission mode approves the
+first call (one approval is remembered per server) and Autonomous runs them
+directly. A server can declare `risk` or `auto_approve = true` (mapped to
+read-only) when its tools genuinely cannot change state. Empty environment
+values pass the process variable of the same name through, so secrets stay out
+of configuration. Tool names, descriptions, schemas, text, image payloads, and
+structured content are bounded before they reach the model; server stderr is
+discarded, and results are treated as untrusted evidence like any other tool
+output. The managed server process runs with the harness's own privileges, so
+policy, approvals, and the safety boundaries above apply unchanged.
 
 ## Optional JEV decisions
 
@@ -516,6 +545,10 @@ results without replaying a tool. Resume reconstructs the saved provider/model/w
 always clears observations, focused controls, approvals, and other authority tied to external
 state. A model/workspace change or explicit New conversation drops the live state, while the
 saved conversation, approved SQLite memory, and procedural skills remain cross-session.
+The dashboard also acts on a past prompt or response: copy its text, revert the conversation
+to it, or fork it into a new conversation starting there. Both rewrite the stored transcript
+at a tool-pair-safe boundary, reset run state while keeping provider/router/tool-group
+settings, and drop the live session so the next prompt rebuilds from the rewritten history.
 Background LLM curation waits for an idle window and is cancelled when a follow-up begins,
 preventing simultaneous inference requests to the local model.
 

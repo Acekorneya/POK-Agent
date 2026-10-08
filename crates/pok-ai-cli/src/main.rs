@@ -521,6 +521,11 @@ async fn run_cli() -> anyhow::Result<()> {
             let platform = pok_ai_windows::desktop_platform(config.background_desktop_work);
             let mut tools = standard_tools(brain.clone(), &model);
             pok_ai_core::generated_tools::register_generated_tool_tools(&mut tools);
+            let mcp_registration =
+                pok_ai_core::mcp::register_mcp_tools(&mut tools, &config.mcp).await;
+            for warning in &mcp_registration.warnings {
+                eprintln!("Warning: {warning}");
+            }
             let artifact_dir = resume_snapshot.as_ref().map_or_else(
                 || {
                     config

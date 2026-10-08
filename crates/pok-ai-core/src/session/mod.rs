@@ -214,6 +214,9 @@ pub struct Session {
     trace: Mutex<std::fs::File>,
     observer: Option<Arc<dyn SessionObserver>>,
     usage_scale: f64,
+    /// Tool-result ids the last projected request actually carried verbatim;
+    /// the duplicate-read guard answers a repeated read only from these.
+    retained_tool_results: BTreeSet<String>,
     image_input_override: Option<bool>,
     single_system_message_required: bool,
     alternating_roles_required: bool,
@@ -227,6 +230,9 @@ pub struct Session {
     curation_tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     manual_compaction_requested: bool,
     last_prompt_tokens: Option<u64>,
+    /// Fixed request cost (system, tool schemas, reminder) from the last turn;
+    /// the compaction trigger and the dashboard split it from history.
+    last_fixed_prompt_tokens: u64,
     average_turn_growth: f64,
     compaction_count: usize,
     consecutive_compaction_failures: u8,
@@ -447,6 +453,7 @@ impl Session {
             trace: Mutex::new(trace),
             observer: None,
             usage_scale: 1.0,
+            retained_tool_results: BTreeSet::new(),
             image_input_override: None,
             single_system_message_required: strict_role_layout,
             alternating_roles_required: strict_role_layout,
@@ -457,6 +464,7 @@ impl Session {
             curation_tasks: Mutex::default(),
             manual_compaction_requested: false,
             last_prompt_tokens: None,
+            last_fixed_prompt_tokens: 0,
             average_turn_growth: 0.0,
             compaction_count: 0,
             consecutive_compaction_failures: 0,
@@ -867,6 +875,14 @@ impl Session {
                 .map_or(0, |schema| schema.len());
         let conversation_tokens =
             estimate_context_tokens(&self.messages, schema_chars, self.usage_scale);
+        let fixed_prompt_tokens = self
+            .last_fixed_prompt_tokens
+            .max(estimate_fixed_prompt_tokens(
+                &self.messages,
+                schema_chars,
+                self.usage_scale,
+            ));
+        let compactable_tokens = conversation_tokens.saturating_sub(fixed_prompt_tokens);
         let (archived_entries, archived_tokens) =
             self.context.session_archive.stats().unwrap_or((0, 0));
         self.emit(AgentEvent::ContextStatus {
@@ -874,6 +890,9 @@ impl Session {
             budget,
             prompt_tokens,
             conversation_tokens,
+            fixed_prompt_tokens,
+            compactable_tokens,
+            compactable_at_minimum: compressible_history_at_minimum(&self.messages),
             working_set_target_tokens: self.context.prompt_token_target,
             archived_entries,
             archived_tokens,

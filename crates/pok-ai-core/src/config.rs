@@ -536,6 +536,81 @@ impl TemperatureSetting {
     }
 }
 
+/// Local Model Context Protocol servers the harness can use. Servers are
+/// spawned over stdio, their tools are registered as `mcp__<server>__<tool>`,
+/// and they stay inactive until the model discovers the `mcp` group.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub servers: Vec<McpServerConfig>,
+    #[serde(default = "default_mcp_startup_timeout_seconds")]
+    pub startup_timeout_seconds: u64,
+    #[serde(default = "default_mcp_call_timeout_seconds")]
+    pub call_timeout_seconds: u64,
+}
+
+impl Default for McpConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            servers: Vec::new(),
+            startup_timeout_seconds: default_mcp_startup_timeout_seconds(),
+            call_timeout_seconds: default_mcp_call_timeout_seconds(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerConfig {
+    pub name: String,
+    pub command: String,
+    /// Disabled servers stay configured but are not spawned.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub args: Vec<String>,
+    /// Extra environment variables for the server process. Reference secrets
+    /// with an empty value and put the real value in the process environment:
+    /// `MY_TOKEN = ""` passes through `MY_TOKEN` when it is set.
+    #[serde(default)]
+    pub env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub cwd: Option<PathBuf>,
+    /// Treat this server's calls as read-only for policy: no approval prompt.
+    /// Only set it for a server whose tools cannot change state.
+    #[serde(default)]
+    pub auto_approve: bool,
+    #[serde(default)]
+    pub risk: McpRisk,
+    /// Restrict the server to these tool names; empty registers all of them.
+    #[serde(default)]
+    pub tools: Vec<String>,
+    #[serde(default)]
+    pub startup_timeout_seconds: Option<u64>,
+    #[serde(default)]
+    pub call_timeout_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpRisk {
+    ReadOnly,
+    WorkspaceWrite,
+    #[default]
+    ProcessExecution,
+    DesktopInput,
+    HighImpact,
+}
+
+const fn default_mcp_startup_timeout_seconds() -> u64 {
+    30
+}
+const fn default_mcp_call_timeout_seconds() -> u64 {
+    120
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(default)]
@@ -593,6 +668,8 @@ pub struct Config {
     pub providers: BTreeMap<String, ProviderConfig>,
     #[serde(default)]
     pub decision_router: DecisionRouterConfig,
+    #[serde(default)]
+    pub mcp: McpConfig,
     /// Maximum planner turns that act on the computer per run (a
     /// `fast_actions` plan is one step). Unset means unlimited; benchmarks
     /// such as Windows Agent Arena use 30.
@@ -824,6 +901,7 @@ impl Default for Config {
             agent_temperature: default_agent_temperature(),
             providers: default_providers(),
             decision_router: DecisionRouterConfig::default(),
+            mcp: McpConfig::default(),
             action_step_budget: None,
             standing_instructions: None,
         }
@@ -1043,6 +1121,38 @@ pub fn default_config_path() -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mcp_servers_parse_with_safe_defaults() {
+        let config: Config = toml::from_str(
+            r#"
+            [mcp]
+            startup_timeout_seconds = 45
+
+            [[mcp.servers]]
+            name = "rea"
+            command = "npx"
+            args = ["-y", "rea-agents@4.1.0", "mcp"]
+
+            [[mcp.servers]]
+            name = "files"
+            command = "npx"
+            args = ["-y", "@modelcontextprotocol/server-filesystem", "J:/work"]
+            auto_approve = true
+            "#,
+        )
+        .expect("mcp config parses");
+        assert!(config.mcp.enabled);
+        assert_eq!(config.mcp.startup_timeout_seconds, 45);
+        assert_eq!(config.mcp.call_timeout_seconds, 120);
+        assert_eq!(config.mcp.servers.len(), 2);
+        let rea = &config.mcp.servers[0];
+        assert!(rea.enabled);
+        assert_eq!(rea.args.len(), 3);
+        assert_eq!(rea.risk, McpRisk::ProcessExecution);
+        assert!(!rea.auto_approve);
+        assert!(config.mcp.servers[1].auto_approve);
+    }
 
     #[test]
     fn routers_validated_live_are_trusted_by_default() {

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Appearance, MarkdownMessage } from "./components/workspace";
+import { ConversationMessage } from "./components/conversation";
 import { appendStreamDelta } from "./session-display";
 import { appendDictation, shortcutFromEvent } from "./components/voice";
 import { App } from "./main";
@@ -59,6 +60,14 @@ describe("workspace presentation", () => {
       expect(document.documentElement.dataset.theme).toBe(value); expect(localStorage.getItem("pok_theme")).toBe(value);
     }
     view.unmount(); render(<Appearance />); expect(screen.getByRole("button", { name: "POK dark teal" }).getAttribute("aria-pressed")).toBe("true");
+  });
+  it("memoizes history rows so composer typing does not re-render the feed", () => {
+    // A keystroke re-renders the whole session; without memoized rows every
+    // historical activity re-stringifies its tool payload and re-parses its
+    // markdown, which becomes minutes of lag in a long conversation.
+    const memo = Symbol.for("react.memo");
+    expect((ConversationMessage as unknown as { $$typeof: symbol }).$$typeof).toBe(memo);
+    expect((MarkdownMessage as unknown as { $$typeof: symbol }).$$typeof).toBe(memo);
   });
   it("renders tables and code without raw HTML, remote images, or unsafe links", () => {
     const { container } = render(<MarkdownMessage text={'| A | B |\n|---|---|\n| 1 | 2 |\n\n```rust\nfn main() {}\n```\n\n<script>alert(1)</script>\n\n![private](https://example.test/track)\n\n[bad](javascript:alert(1))'} />);
@@ -181,6 +190,49 @@ describe("workspace presentation", () => {
     await screen.findByText("Earlier answer");
     expect(mock.invoke).toHaveBeenCalledWith("resume_conversation", { sessionId: "saved" });
   });
+  it("copies, forks, and reverts from a past message", async () => {
+    const previous = mock.invoke.getMockImplementation()!;
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const rewritten = (id: string) => ({
+      summary: { ...conversation, id },
+      messages: [{ sequence: 1, subsequence: 0, sender: "user", kind: "prompt", text: "Earlier question" }],
+      next_before_sequence: null,
+      has_more: false,
+      decision_router_enabled: false,
+      decision_router_backend: "off",
+      decision_activity: [],
+    });
+    mock.invoke.mockImplementation((name, args) =>
+      name === "fork_conversation" ? Promise.resolve(rewritten("forked"))
+        : name === "revert_conversation" ? Promise.resolve(rewritten("saved"))
+        : previous(name, args));
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: /Explore the project/ }));
+    const answer = await screen.findByText("Earlier answer");
+    const row = answer.closest(".console-line") as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: "Copy message" }));
+    expect(writeText).toHaveBeenCalledWith("Earlier answer");
+
+    await user.click(within(row).getByRole("button", { name: "Fork from this message" }));
+    await waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("fork_conversation", {
+      sessionId: "saved",
+      anchor: { kind: "response", ordinal: 0, text: "Earlier answer", sequence: 2 },
+    }));
+    await waitFor(() => expect(document.querySelector(".console-feed")?.textContent).toContain("Earlier question"));
+
+    // The fork replaced the feed; resume again and revert from the same point.
+    await user.click(screen.getByRole("button", { name: /Explore the project/ }));
+    const restored = await screen.findByText("Earlier answer");
+    const restoredRow = restored.closest(".console-line") as HTMLElement;
+    await user.click(within(restoredRow).getByRole("button", { name: "Revert to this message" }));
+    await waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("revert_conversation", {
+      sessionId: "saved",
+      anchor: { kind: "response", ordinal: 0, text: "Earlier answer", sequence: 2 },
+    }));
+  });
   it("restores tool activity in its original chronological position", async () => {
     const previous = mock.invoke.getMockImplementation()!;
     mock.invoke.mockImplementation((name, args) => name === "resume_conversation"
@@ -193,7 +245,7 @@ describe("workspace presentation", () => {
     await renderApp();
     await userEvent.click(screen.getByRole("button", { name: /Explore the project/ }));
     const question = await screen.findByText("Earlier question");
-    const tool = await screen.findByText("Reading the screen");
+    const tool = await screen.findByText("Read the screen");
     const answer = await screen.findByText("Earlier answer");
     expect(question.compareDocumentPosition(tool) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(tool.compareDocumentPosition(answer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -413,6 +465,55 @@ describe("workspace presentation", () => {
     expect(await screen.findByText("Zeiger approved: click_target")).not.toBeNull();
     expect(screen.getByText(/safe, cheap and evidenced/i)).not.toBeNull();
   });
+  it("adds, tests, disables, and removes MCP servers from settings", async () => {
+    const previous = mock.invoke.getMockImplementation()!;
+    const server = {
+      name: "rea", command: "npx", enabled: true, args: ["-y", "rea-agents@4.1.0", "mcp"], env: {},
+      cwd: null, auto_approve: false, risk: "process_execution", tools: [],
+      startup_timeout_seconds: null, call_timeout_seconds: null,
+    };
+    let servers: unknown[] = [];
+    mock.invoke.mockImplementation((name, args) => {
+      const input = args as Record<string, unknown>;
+      if (name === "list_mcp_servers") return Promise.resolve(servers);
+      if (name === "save_mcp_server") { servers = [{ server, source: "app", status: null }]; return Promise.resolve(servers); }
+      if (name === "set_mcp_server_enabled") {
+        servers = [{ server: { ...server, enabled: input.enabled === true }, source: "app", status: null }];
+        return Promise.resolve(servers);
+      }
+      if (name === "delete_mcp_server") { servers = []; return Promise.resolve(servers); }
+      if (name === "test_mcp_server") {
+        return Promise.resolve({ name: "rea", ok: true, tools: 12, detail: "12 tools · 40 ms", checked_at: "2026-10-07T00:00:00Z" });
+      }
+      return previous(name, args);
+    });
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: "Settings", expanded: false }));
+    await user.click(within(screen.getByRole("navigation", { name: "Settings sections" })).getByRole("button", { name: /MCP servers/ }));
+    await screen.findByText("No MCP servers yet.");
+
+    await user.click(screen.getByRole("button", { name: "Add server" }));
+    await user.type(screen.getByLabelText("Server name"), "rea");
+    await user.type(screen.getByLabelText("Server command"), "npx");
+    await user.type(screen.getByLabelText("Server arguments"), "-y rea-agents@4.1.0 mcp");
+    await user.click(screen.getByRole("button", { name: "Save server" }));
+    await waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("save_mcp_server", {
+      server: expect.objectContaining({ name: "rea", command: "npx", args: ["-y", "rea-agents@4.1.0", "mcp"] }),
+      originalName: null,
+    }));
+    await screen.findByText("rea");
+
+    await user.click(screen.getByRole("button", { name: "Test" }));
+    await screen.findByText(/12 tools available/);
+
+    await user.click(screen.getByRole("checkbox", { name: "Enable rea" }));
+    await waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("set_mcp_server_enabled", { name: "rea", enabled: false }));
+
+    await user.click(screen.getByRole("button", { name: "Remove" }));
+    await waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("delete_mcp_server", { name: "rea" }));
+  });
   it("stops following output when scrolled back and offers jump to latest", async () => {
     await renderApp(); const feed = document.querySelector(".console-container")!;
     Object.defineProperties(feed, { scrollHeight: { configurable: true, value: 1500 }, clientHeight: { configurable: true, value: 400 }, scrollTop: { configurable: true, writable: true, value: 0 } });
@@ -421,5 +522,48 @@ describe("workspace presentation", () => {
     expect(feed.scrollTop).toBe(0);
     await userEvent.click(screen.getByRole("button", { name: /Jump to latest/ }));
     await waitFor(() => expect(screen.queryByRole("button", { name: /Jump to latest/ })).toBeNull());
+  });
+});
+
+describe("context meter", () => {
+  it("separates fixed tool schemas from compactable history after a compaction", async () => {
+    await renderApp();
+    emit({
+      type: "context_status",
+      budget: { provider: "lm_studio", model: "test-model", context_window_tokens: 101120, threshold_percent: 80, compact_at_tokens: 79680, post_compaction_target_tokens: 39840, output_reserve_tokens: 16384, source: "provider_loaded", known: true },
+      prompt_tokens: 64264,
+      conversation_tokens: 87022,
+      fixed_prompt_tokens: 66189,
+      compactable_tokens: 20833,
+      compactable_at_minimum: true,
+      working_set_target_tokens: 32000,
+      remaining_tokens: 0,
+      archived_entries: 44,
+      archived_tokens: 46962,
+      compactions: 1,
+    });
+    const meter = document.querySelector(".context-meter") as HTMLElement;
+    expect(meter).not.toBeNull();
+    expect(within(meter).getAllByText(/66,189 fixed/).length).toBeGreaterThan(0);
+    expect(within(meter).getByText("History at minimum")).not.toBeNull();
+    expect(meter.querySelector(".context-meter-fill.fixed")).not.toBeNull();
+    expect(meter.querySelector(".context-meter-fill.compactable")).not.toBeNull();
+    expect(within(meter).getByTitle(/64,264 tokens sent/)).not.toBeNull();
+  });
+});
+
+describe("activity feed presentation", () => {
+  it("reads a finished command as one past-tense row and keeps reasoning separate", async () => {
+    await renderApp();
+    emit({ type: "run_started", session_id: "s1", model: "test-model" });
+    emit({ type: "reasoning_delta", text: "The build failed. Let's retry the command." });
+    emit({ type: "tool_started", call_id: "c1", name: "run_command", arguments: { command: "cargo build" } });
+    emit({ type: "tool_finished", call_id: "c1", name: "run_command", ok: true, result: { status: "completed", exit_code: 0, stdout: "done" } });
+    const feed = document.querySelector(".console-feed") as HTMLElement;
+    expect(within(feed).getByText("Ran a command")).not.toBeNull();
+    expect(within(feed).queryByText("Running a command")).toBeNull();
+    const reasoning = feed.querySelector(".reasoning-disclosure");
+    expect(reasoning).not.toBeNull();
+    expect(reasoning!.textContent).toContain("Reasoning");
   });
 });

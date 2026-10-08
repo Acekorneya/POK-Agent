@@ -74,7 +74,11 @@ main.app-shell.navigation-closed { grid-template-columns: minmax(0, 1fr); }
 .console-empty h2 { font-size: clamp(21px, 3vw, 28px); color: var(--text); text-transform: none; letter-spacing: -.6px; margin: 0; }
 .console-empty p { margin: 0; font-size: 14px; }
 .console-empty small { margin-top: 4px; font-size: 12px; }
-.console-line { font-family: inherit; font-size: 14px; line-height: 1.7; color: var(--text); white-space: pre-wrap; }
+.console-line { position: relative; font-family: inherit; font-size: 14px; line-height: 1.7; color: var(--text); white-space: pre-wrap; }
+.message-tools { position: absolute; top: 2px; right: 6px; display: inline-flex; gap: 4px; opacity: 0; transition: opacity 120ms ease; }
+.console-line:hover .message-tools, .console-line:focus-within .message-tools { opacity: 1; }
+.message-tools button { font: inherit; font-size: 11px; line-height: 1.4; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--raised); color: var(--muted); cursor: pointer; }
+.message-tools button:hover, .message-tools button:focus-visible { color: var(--text); border-color: var(--accent); }
 .line-prompt, .line-guidance { align-self: flex-end; max-width: 85%; background: var(--raised); border: 1px solid var(--border); border-radius: 16px 16px 4px 16px; padding: 12px 16px; color: var(--text); }
 .line-response { white-space: normal; padding: 4px 0; border: 0; background: transparent; }
 .line-guidance small { display: block; font-size: 10px; margin-bottom: 4px; }
@@ -101,8 +105,9 @@ pre, .markdown-message code { background: var(--code); color: var(--text); borde
 .tool-duration { margin-left: auto; flex: none; font-size: 10px; }
 .tool-state { color: var(--success); font-size: 16px; }.activity-running .tool-state { color: var(--accent); }.activity-failed .tool-state, .activity-failed .tool-summary { color: var(--danger); }
 .tool-body { padding: 8px 0 8px 24px; border-left: 1px solid var(--border); margin-left: 6px; }
-.reasoning-disclosure > summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 6px 0; }
-.reasoning-disclosure > summary span { margin-left: 12px; opacity: .8; }.reasoning-disclosure .markdown-message { color: var(--muted); font-size: 12px; padding: 12px; }
+.reasoning-disclosure { margin-left: 26px; padding-left: 12px; border-left: 2px solid var(--border); }
+.reasoning-disclosure > summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 5px 0; font-style: italic; }
+.reasoning-disclosure > summary span { margin-left: 8px; opacity: .8; }.reasoning-disclosure .markdown-message { color: var(--muted); font-size: 12px; padding: 8px 4px; }
 .composer { width: min(100%, 860px); margin: 0 auto; flex: none; padding: 8px 12px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); box-shadow: 0 8px 28px #0000000c; }
 .composer:focus-within { border-color: var(--accent); }
 .composer textarea { resize: none; padding: 10px 2px; min-height: 56px; max-height: 180px; border: 0; border-radius: 0; background: transparent; font: 14px/1.6 inherit; box-shadow: none; outline: none; }
@@ -151,6 +156,11 @@ button.stop, button.reject, .approval-choice.deny { background: var(--danger-bg)
 :is(.context-settings, .context-settings-body, .context-meter, .task-progress, .memory, .generated-tool, .question-card, .question-option, .terminal-card, .file-change-card, .explored-card, .jev-scorecard, .session-approvals) { background: var(--surface); color: var(--text); border-color: var(--border); }
 :is(.context-settings, .context-meter, .task-progress, .memory, .generated-tool, .jev-scorecard) :is(small, p, span, strong) { color: inherit; }
 .token-line, .context-meter-heading, .context-meter-detail, .empty-memory-msg, .provider-boundary { color: var(--muted); }
+.context-meter-track { background: var(--raised); border: 1px solid var(--border); }
+.context-meter-fill.fixed { background: color-mix(in srgb, var(--muted) 45%, var(--raised)); }
+.context-meter-fill.compactable { background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 45%, #38bdf8)); box-shadow: none; }
+.context-meter-threshold { background: var(--warning); box-shadow: none; }
+.context-meter-sent { background: var(--text); }
 .line-error, .approval-error, .error-text { color: var(--danger); background: var(--danger-bg); }
 .pause-toggle, .pause-toggle:hover:not(:disabled) { color: var(--warning); background: var(--surface); border-color: var(--border); }
 .approval-choice.session, .approval-choice.selected, .question-option.selected { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }

@@ -23,6 +23,9 @@ impl Session {
         self.messages
             .retain(|message| message.origin != MessageOrigin::RetrievedContext);
         self.active_tool_groups = inferred_tool_groups(&prompt);
+        // The fixed prompt from the previous run may include schemas the new
+        // request no longer activates; recompute it before the first turn.
+        self.last_fixed_prompt_tokens = 0;
         self.curation_cancellation.cancel();
         self.curation_cancellation = CancellationToken::new();
         let curation_cancellation = self.curation_cancellation.clone();
@@ -94,7 +97,7 @@ impl Session {
             .or_else(|| self.reasoning_effort.clone());
         let model_reasoning_default = model_info.and_then(|model| model.reasoning_default.clone());
         if model_reasoning == Some(true) {
-            self.response_max_tokens = self.response_max_tokens.max(8_192);
+            self.response_max_tokens = self.response_max_tokens.max(16_384);
         }
         // Unknown providers retain the historical image-capable behavior. LM Studio's
         // native model endpoint supplies an explicit false for text-only models.
@@ -734,6 +737,7 @@ impl Session {
                 .div_ceil(4),
             )
             .unwrap_or(u64::MAX);
+            self.last_fixed_prompt_tokens = fixed_tokens;
             {
                 self.context
                     .context_budget
@@ -777,6 +781,7 @@ impl Session {
                 schema_chars,
                 self.usage_scale,
             );
+            self.retained_tool_results = retained_tool_result_ids(&compacted_messages);
             let projection_kinds = context_projection_kinds(&compactions);
             if !compactions.is_empty() {
                 let image_stats = image_payload_stats(&compacted_messages);
@@ -1268,6 +1273,7 @@ impl Session {
                                 schema_chars,
                                 self.usage_scale,
                             );
+                            self.retained_tool_results = retained_tool_result_ids(&messages);
                             request.messages = messages;
                             self.log(
                                 "context_overflow_recovery",
@@ -1631,7 +1637,7 @@ impl Session {
                 reasoning_output_limit_reached(finish_reason.as_deref(), &calls, &text, &reasoning);
             if reasoning_output_limit {
                 reasoning_output_limit_streak = reasoning_output_limit_streak.saturating_add(1);
-                self.response_max_tokens = self.response_max_tokens.saturating_mul(2).min(16_384);
+                self.response_max_tokens = self.response_max_tokens.saturating_mul(2).min(32_768);
                 empty_response_streak = 0;
                 self.log(
                     "model_output_limit_recovery",
@@ -2186,6 +2192,7 @@ impl Session {
                                 | "archive"
                                 | "generated"
                                 | "subagent"
+                                | "mcp"
                                 | "other"
                         ) {
                             self.active_tool_groups.insert(group.into());
@@ -2681,7 +2688,7 @@ impl Session {
                         diagnostic_command_streak = diagnostic_command_streak.saturating_add(1);
                         if diagnostic_command_streak == 4 {
                             strategy_recovery = Some(
-                                "<system-reminder>Four command attempts have run without registered task-state, artifact, or terminal-goal progress. Summarize the evidence already obtained and change strategy; do not repeat another minor command variation.</system-reminder>"
+                                "<system-reminder>Four command attempts have run without registered task-state, artifact, or terminal-goal progress. Summarize the evidence already obtained, reuse the tool results still retained in context above, and change strategy; do not repeat another minor command, read, or search variation.</system-reminder>"
                                     .to_owned(),
                             );
                             self.log(
@@ -2758,12 +2765,42 @@ impl Session {
                 let typing_recovery_required = result.as_ref().is_ok_and(|value| {
                     value.get("recovery_required").and_then(Value::as_bool) == Some(true)
                 });
+                // A repeated read of unchanged content is answered from the
+                // retained working set instead of re-sending the same bytes.
+                let duplicate_read = duplicate_read_stub(
+                    &call,
+                    &result,
+                    &self.messages,
+                    &self.retained_tool_results,
+                );
+                let duplicate_read_repeated = duplicate_read.is_some();
+                if duplicate_read_repeated {
+                    self.log(
+                        "duplicate_read_suppressed",
+                        json!({
+                            "turn": turn_index + 1,
+                            "tool": call.name,
+                            "arguments": call.arguments,
+                        }),
+                    )?;
+                }
+                let result = match duplicate_read {
+                    Some(stub) => Ok(stub),
+                    None => result,
+                };
                 for message in tool_result_messages(&call, result, send_images) {
                     if message.role == "tool" {
                         self.messages.push(message);
                     } else {
                         post_tool_batch_messages.push(message);
                     }
+                }
+                if duplicate_read_repeated {
+                    post_tool_batch_messages.push(BrainMessage::text_with_origin(
+                        "user",
+                        "<system-reminder>You repeated an identical read_file whose unchanged result is still retained in context above. Do not read the same page again; reuse the retained result and take the next concrete step.</system-reminder>",
+                        MessageOrigin::SystemReminder,
+                    ));
                 }
                 if let Some(reminder) = plan_loop_recovery {
                     post_tool_batch_messages.push(BrainMessage::text_with_origin(

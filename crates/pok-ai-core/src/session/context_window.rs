@@ -15,7 +15,9 @@ pub(super) fn initial_response_max_tokens(model: &str) -> u32 {
     .iter()
     .any(|marker| model.contains(marker))
     {
-        8_192
+        // Reasoning models spend the output budget on hidden thinking before
+        // any tool call, so start high enough that a long plan is not cut off.
+        16_384
     } else {
         4_096
     }
@@ -128,7 +130,14 @@ pub(super) fn bounded_context(
     usage_scale: f64,
 ) -> (Vec<BrainMessage>, u64, Vec<String>) {
     let mut compactions = Vec::new();
-    let mut messages = compact_old_tool_cycles(messages, &mut compactions);
+    let mut messages = messages.to_vec();
+    // Tool history is reduced only when the working set does not fit the
+    // target. Evicting it eagerly made multi-file coding and analysis runs
+    // re-read the same inputs every turn because the content they were working
+    // from had been dropped before the next request.
+    if estimate_context_tokens(&messages, schema_chars, usage_scale) > token_target {
+        messages = compact_old_tool_cycles(&messages, &mut compactions);
+    }
     let compacted_observations = compact_superseded_observations(&mut messages);
     if compacted_observations > 0 {
         compactions.push(format!(
@@ -151,16 +160,16 @@ pub(super) fn bounded_context(
         .filter(|(_, message)| message.role == "tool")
         .map(|(index, _)| index)
         .collect::<Vec<_>>();
-    let stale_tools = tool_positions.len().saturating_sub(6);
-    for index in tool_positions.into_iter().take(stale_tools) {
-        messages[index].content = vec![MessageContent::Text {
-            text: "[older successful tool result compacted]".into(),
-        }];
+    if estimate_context_tokens(&messages, schema_chars, usage_scale) > token_target {
+        compact_tool_results_to_budget(
+            &mut messages,
+            &tool_positions,
+            schema_chars,
+            usage_scale,
+            token_target,
+            &mut compactions,
+        );
     }
-    if stale_tools > 0 {
-        compactions.push(format!("compacted_tool_results:{stale_tools}"));
-    }
-
     let image_count = count_images(&messages);
     let scaled_target = ((token_target as f64 / usage_scale.max(0.5)).floor() as u64).max(4_000);
     let reserved = u64::try_from(schema_chars / 4).unwrap_or(u64::MAX)
@@ -227,6 +236,47 @@ pub(super) fn estimate_context_tokens(
                 .saturating_mul(1_024),
         );
     (raw_estimate as f64 * usage_scale.max(0.5)).ceil() as u64
+}
+
+/// Estimated fixed request cost the compaction path cannot reduce: system
+/// messages and active tool schemas. The dashboard splits this from the
+/// compactable transcript so a large schema catalog is not mistaken for
+/// history that compaction should shrink.
+pub(super) fn estimate_fixed_prompt_tokens(
+    messages: &[BrainMessage],
+    schema_chars: usize,
+    usage_scale: f64,
+) -> u64 {
+    let system_chars = messages
+        .iter()
+        .filter(|message| message.role == "system")
+        .flat_map(|message| &message.content)
+        .filter_map(|part| match part {
+            MessageContent::Text { text } => Some(text.len()),
+            MessageContent::ImagePng { .. } => None,
+        })
+        .sum::<usize>();
+    let raw =
+        u64::try_from(system_chars.saturating_add(schema_chars).div_ceil(4)).unwrap_or(u64::MAX);
+    (raw as f64 * usage_scale.max(0.5)).ceil() as u64
+}
+
+/// True when there is nothing left for semantic compaction to summarize: the
+/// slice before the active request is empty or already a single history
+/// summary. Matches the slice guard inside `compress_history_if_needed`.
+pub(super) fn compressible_history_at_minimum(messages: &[BrainMessage]) -> bool {
+    let active_request_index = messages
+        .iter()
+        .rposition(|message| message.origin == MessageOrigin::UserInput)
+        .unwrap_or(messages.len());
+    let compress_start = messages
+        .iter()
+        .take_while(|message| message.role == "system" && message.origin == MessageOrigin::System)
+        .count();
+    compress_start >= active_request_index
+        || messages[compress_start..active_request_index]
+            .iter()
+            .all(|message| message.origin == MessageOrigin::HistorySummary)
 }
 
 pub(super) fn context_projection_kinds(actions: &[String]) -> Vec<&'static str> {
@@ -703,7 +753,17 @@ pub(super) fn is_context_overflow_rejection(error: &PokError) -> bool {
     .any(|pattern| message.contains(pattern))
 }
 
-pub(super) const RETAINED_TOOL_RESULTS: usize = 6;
+/// Recent tool results kept verbatim before older cycles are reduced to the
+/// continuity ledger. Large enough to carry a multi-file analysis across
+/// several turns.
+pub(super) const RETAINED_TOOL_RESULTS: usize = 24;
+/// Budget trim floor: the most recent tool results the trim keeps before the
+/// final text pass may still reduce them if the target cannot otherwise be
+/// met. The duplicate-read guard trusts only ids the last projection actually
+/// carried verbatim.
+pub(super) const MIN_RETAINED_TOOL_RESULTS: usize = 12;
+/// Marker replacing an old tool result that the budget had to evict.
+pub(super) const TOOL_RESULT_COMPACTED_STUB: &str = "[older successful tool result compacted]";
 /// Text kept per page the agent has read, once its observation is compacted.
 pub(super) const PAGE_NOTE_CHARS: usize = 1_200;
 /// Pages whose latest text the continuity ledger carries forward.
@@ -818,8 +878,44 @@ fn collect_page_notes(messages: &[BrainMessage], prior: &str) -> Vec<(String, us
     pages.drain(..excess);
     pages
 }
-pub(super) const TOOL_COMPACTION_TRIGGER: usize = 12;
+pub(super) const TOOL_COMPACTION_TRIGGER: usize = RETAINED_TOOL_RESULTS;
 pub(super) const CONTINUITY_ACTIONS: usize = 24;
+
+/// Reduce the oldest tool results, one at a time, until the working set fits
+/// `token_target`, never touching the `MIN_RETAINED_TOOL_RESULTS` most recent.
+fn compact_tool_results_to_budget(
+    messages: &mut [BrainMessage],
+    tool_positions: &[usize],
+    schema_chars: usize,
+    usage_scale: f64,
+    token_target: u64,
+    compactions: &mut Vec<String>,
+) {
+    if tool_positions.len() <= MIN_RETAINED_TOOL_RESULTS {
+        return;
+    }
+    let trim_limit = tool_positions.len() - MIN_RETAINED_TOOL_RESULTS;
+    let mut compacted = 0;
+    for &index in tool_positions.iter().take(trim_limit) {
+        if estimate_context_tokens(messages, schema_chars, usage_scale) <= token_target {
+            break;
+        }
+        let already_compacted = messages[index].content.len() == 1
+            && messages[index].content.iter().any(|part| {
+                matches!(part, MessageContent::Text { text } if text == TOOL_RESULT_COMPACTED_STUB)
+            });
+        if already_compacted {
+            continue;
+        }
+        messages[index].content = vec![MessageContent::Text {
+            text: TOOL_RESULT_COMPACTED_STUB.into(),
+        }];
+        compacted += 1;
+    }
+    if compacted > 0 {
+        compactions.push(format!("compacted_tool_results:{compacted}"));
+    }
+}
 
 /// Micro-compact complete old tool cycles before applying the token budget. This keeps the
 /// provider's tool-call/result ordering valid, preserves the original task and recent working
@@ -1293,8 +1389,16 @@ impl Session {
         }
         const MAX_CONSECUTIVE_FAILURES: u8 = 1;
         let semantic_threshold = self.context.context_budget.lock().compact_at_tokens;
+        // The fixed request cost (system, tool schemas, reminder) cannot be
+        // compacted, so compare the compactable transcript against the room
+        // the threshold leaves for it. Without this split a large active tool
+        // catalog (for example an MCP server with many schemas) sits inside
+        // the total, pins the meter at "0 until compact", and makes successful
+        // compactions look ineffective.
+        let history_tokens = conversation_tokens.saturating_sub(self.last_fixed_prompt_tokens);
+        let history_room = semantic_threshold.saturating_sub(self.last_fixed_prompt_tokens);
         if !force
-            && (conversation_tokens <= semantic_threshold
+            && (history_tokens <= history_room
                 || self.consecutive_compaction_failures >= MAX_CONSECUTIVE_FAILURES)
         {
             return Ok(false);

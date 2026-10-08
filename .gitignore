@@ -1,3 +1,16 @@
+# The workspace root is source-only. Every top-level directory is ignored by
+# default so toolchains, scratch projects, and analysis folders the agent
+# downloads or creates while solving a task (tools/, work/, per-task folders)
+# can never be committed or indexed. Re-include only real project trees here.
+/*/
+!/apps/
+!/crates/
+!/diagnostics/
+!/docs/
+!/exams/
+!/scripts/
+!/.github/
+
 # Rust, Node, and frontend build output at any workspace depth.
 target/
 target-*/
@@ -31,11 +44,14 @@ Thumbs.db
 # (an unrelated scratch script, a Windows folder-listing dump, a pasted
 # screenshot) — none of these belong in version control; real project
 # screenshots/assets belong under docs/ or apps/desktop/src-tauri/icons/, not
-# the repo root.
+# the repo root. Real project scripts live in scripts/.
 /*.png
 /*.jpg
 /*.jpeg
 /*.csv
+/*.py
+/*.ps1
+!/export-clean.ps1
 /tmp_*.py
 /downloads_listing*
 /artifacts/

@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./styles.css";
@@ -11,7 +11,7 @@ import "./workspace.css";
 import "./settings.css";
 import { appendStreamDelta, type ChatMessage } from "./session-display";
 import { asRecord, formatElapsed } from "./display-utils";
-import { ConversationMessage } from "./components/conversation";
+import { ConversationMessage, MessageActionProvider, type MessageActionKind } from "./components/conversation";
 
 type Approval = { id: string; tool: string; reason: string; arguments: unknown };
 type UserQuestion = { id: string; header: string; question: string; options: { label: string; description: string }[]; multi_select: boolean };
@@ -94,6 +94,9 @@ type ContextStatus = {
   budget: ContextBudget;
   prompt_tokens: number;
   conversation_tokens: number;
+  fixed_prompt_tokens?: number;
+  compactable_tokens?: number;
+  compactable_at_minimum?: boolean;
   working_set_target_tokens?: number;
   remaining_tokens: number;
   archived_entries: number;
@@ -101,6 +104,42 @@ type ContextStatus = {
   approximate_turns_remaining?: number;
   compactions: number;
 };
+type ContextMeterView = {
+  window: number;
+  fixed: number;
+  compactable: number;
+  sent: number;
+  fixedPercent: number;
+  compactablePercent: number;
+  thresholdPercent: number;
+  sentPercent: number;
+  atMinimum: boolean;
+};
+// The fixed prompt (system + active tool schemas) cannot be compacted, so the
+// meter shows it separately from history and positions the compaction
+// threshold on the full context window instead of lumping schemas into
+// "retained" history that would look unchanged after a compaction.
+function contextMeterView(status: ContextStatus | null): ContextMeterView | null {
+  if (!status) return null;
+  const window = Math.max(1, status.budget.context_window_tokens || status.budget.compact_at_tokens);
+  const fixed = Math.min(status.fixed_prompt_tokens ?? 0, window);
+  const compactable = Math.min(
+    status.compactable_tokens ?? Math.max(0, status.conversation_tokens - fixed),
+    window - fixed,
+  );
+  const sent = Math.min(Math.max(0, status.prompt_tokens), window);
+  return {
+    window,
+    fixed,
+    compactable,
+    sent,
+    fixedPercent: (fixed / window) * 100,
+    compactablePercent: (compactable / window) * 100,
+    thresholdPercent: Math.min(100, (status.budget.compact_at_tokens / window) * 100),
+    sentPercent: (sent / window) * 100,
+    atMinimum: status.compactable_at_minimum ?? false,
+  };
+}
 type ModelCapabilities = {
   id: string;
   context_length?: number;
@@ -130,6 +169,42 @@ type GeneratedTool = {
   assertions?: number;
 };
 type GeneratedToolCandidate = { id: string; helper_path: string; task: string; runtime: string; verified_command: string; created_at: string };
+type McpRisk = "read_only" | "workspace_write" | "process_execution" | "desktop_input" | "high_impact";
+type McpServerConfig = {
+  name: string;
+  command: string;
+  enabled: boolean;
+  args: string[];
+  env: Record<string, string>;
+  cwd: string | null;
+  auto_approve: boolean;
+  risk: McpRisk;
+  tools: string[];
+  startup_timeout_seconds: number | null;
+  call_timeout_seconds: number | null;
+};
+type McpServerStatus = { name: string; ok: boolean; tools: number; detail?: string | null; checked_at: string };
+type McpServerView = { server: McpServerConfig; source: "app" | "file"; status: McpServerStatus | null };
+type McpEditor = {
+  originalName: string | null;
+  name: string;
+  command: string;
+  args: string;
+  enabled: boolean;
+  risk: McpRisk;
+  autoApprove: boolean;
+  tools: string;
+  env: { key: string; value: string }[];
+  startupTimeout: string;
+  callTimeout: string;
+};
+const MCP_RISK_LABELS: Record<McpRisk, string> = {
+  read_only: "Read-only",
+  workspace_write: "Writes files",
+  process_execution: "Runs processes",
+  desktop_input: "Desktop input",
+  high_impact: "High impact",
+};
 type ConversationSummary = {
   id: string;
   title: string;
@@ -197,6 +272,9 @@ type AgentEvent = {
   budget?: ContextBudget;
   working_set_target_tokens?: number;
   conversation_tokens?: number;
+  fixed_prompt_tokens?: number;
+  compactable_tokens?: number;
+  compactable_at_minimum?: boolean;
   remaining_tokens?: number;
   archived_entries?: number;
   archived_tokens?: number;
@@ -291,20 +369,115 @@ type SubagentState = {
 function restoredChatMessage(message: ConversationHistoryMessage, timestamp: string): ChatMessage {
   const type = message.kind ?? (message.sender === "user" ? "prompt" : "response");
   const described = message.tool ? describeTool(message.tool, message.arguments) : undefined;
+  const label = message.tool && described ? completedToolLabel(message.tool, described.label) : undefined;
   return {
     id: `restored-${message.sequence}-${message.subsequence ?? 0}`,
     sender: message.tool ? "agent" : message.sender,
     type,
-    text: described?.label ?? message.text,
+    text: label ?? message.text,
     timestamp: new Date(timestamp),
     activityTool: message.tool,
-    activityLabel: described?.label,
+    activityLabel: label,
     activityDetail: described?.detail,
     activityStatus: message.tool ? "done" : undefined,
     activityArgs: message.arguments,
   };
 }
 
+
+/** How a clicked feed message maps back to the stored conversation: message
+ * kind, occurrence of the exact text among that kind, and the text itself.
+ * The backend resolves it to a canonical message and rewrites from there. */
+function messageAnchor(message: ChatMessage, messages: ChatMessage[]) {
+  const kind = message.type === "prompt" ? "prompt" : message.type === "response" ? "response" : null;
+  if (!kind) return null;
+  const text = message.text.trim();
+  if (!text) return null;
+  let ordinal = 0;
+  for (const item of messages) {
+    if (item === message) break;
+    if (item.type === kind && item.text.trim() === text) ordinal += 1;
+  }
+  // Restored rows still know their stored sequence, which stays exact even
+  // when only part of the history is loaded.
+  const restored = /^restored-(\d+)-\d+$/.exec(message.id);
+  return { kind, ordinal, text, sequence: restored ? Number(restored[1]) : null };
+}
+
+function emptyMcpEditor(): McpEditor {
+  return {
+    originalName: null,
+    name: "",
+    command: "",
+    args: "",
+    enabled: true,
+    risk: "process_execution",
+    autoApprove: false,
+    tools: "",
+    env: [],
+    startupTimeout: "",
+    callTimeout: "",
+  };
+}
+
+function mcpEditorFromServer(server: McpServerConfig): McpEditor {
+  return {
+    originalName: server.name,
+    name: server.name,
+    command: server.command,
+    args: server.args.join(" "),
+    enabled: server.enabled,
+    risk: server.risk,
+    autoApprove: server.auto_approve,
+    tools: server.tools.join(", "),
+    env: Object.entries(server.env).map(([key, value]) => ({ key, value })),
+    startupTimeout: server.startup_timeout_seconds == null ? "" : String(server.startup_timeout_seconds),
+    callTimeout: server.call_timeout_seconds == null ? "" : String(server.call_timeout_seconds),
+  };
+}
+
+function mcpConfigFromEditor(editor: McpEditor): McpServerConfig {
+  return {
+    name: editor.name.trim(),
+    command: editor.command.trim(),
+    enabled: editor.enabled,
+    args: editor.args.trim() ? editor.args.trim().split(/\s+/) : [],
+    env: Object.fromEntries(editor.env.filter(row => row.key.trim()).map(row => [row.key.trim(), row.value])),
+    cwd: null,
+    auto_approve: editor.autoApprove,
+    risk: editor.risk,
+    tools: editor.tools.trim() ? editor.tools.split(",").map(item => item.trim()).filter(Boolean) : [],
+    startup_timeout_seconds: editor.startupTimeout.trim() ? Number(editor.startupTimeout) : null,
+    call_timeout_seconds: editor.callTimeout.trim() ? Number(editor.callTimeout) : null,
+  };
+}
+
+/** Accepts a single server object or a client-style `{"mcpServers": {...}}` map. */
+function mcpEditorFromJson(text: string): McpEditor | null {
+  try {
+    const parsed = asRecord(JSON.parse(text));
+    let candidate = parsed;
+    let name = typeof parsed.name === "string" ? parsed.name : "";
+    const first = Object.entries(asRecord(parsed.mcpServers))[0];
+    if (first) {
+      name = first[0];
+      candidate = asRecord(first[1]);
+    }
+    const command = typeof candidate.command === "string" ? candidate.command : "";
+    if (!command.trim()) return null;
+    const args = Array.isArray(candidate.args) ? candidate.args.map(String) : [];
+    const env = asRecord(candidate.env);
+    return {
+      ...emptyMcpEditor(),
+      name: name || "server",
+      command,
+      args: args.join(" "),
+      env: Object.entries(env).map(([key, value]) => ({ key, value: String(value) })),
+    };
+  } catch {
+    return null;
+  }
+}
 
 /** Adds a note when a click used an accessibility action instead of the mouse. */
 function withInputMethod(detail: string | undefined, method: unknown): string | undefined {
@@ -382,6 +555,33 @@ function describeTool(name: string, rawArguments: unknown): Pick<LiveActivity, "
     label: humanizeToolName(name),
     detail: detail("path", "query", "url", "command"),
   };
+}
+
+/** Past-tense rows for finished tools: "✓ Running a command" read as if the
+ * command were still executing and made reasoning rows look like a second
+ * command. Tools without an entry keep their live label. */
+const COMPLETED_TOOL_LABELS: Record<string, string> = {
+  run_command: "Ran a command",
+  manage_command: "Ran a command",
+  read_file: "Read a file",
+  list_directory: "Listed workspace files",
+  grep_search: "Searched the workspace",
+  write_file: "Created a file",
+  edit_file: "Edited a file",
+  undo_edit: "Restored a file",
+  observe_desktop: "Surveyed the desktop",
+  capture_screen: "Read the screen",
+  activate_window: "Switched to a window",
+  open_application: "Opened an application",
+  browser_navigate: "Opened a website",
+  click_target: "Selected an interface target",
+  simulate_input: "Interacted with the application",
+  discover_tools: "Loaded more tools",
+  update_task_plan: "Updated the task plan",
+};
+
+function completedToolLabel(toolName: string, fallback: string): string {
+  return COMPLETED_TOOL_LABELS[toolName] ?? fallback;
 }
 
 
@@ -787,6 +987,7 @@ export function App() {
   const [contextWindowOverride, setContextWindowOverride] = useState("");
   const [contextThreshold, setContextThreshold] = useState(80);
   const [contextExpanded, setContextExpanded] = useState(false);
+  const contextMeter = contextMeterView(contextStatus);
   const [modelCapabilities, setModelCapabilities] = useState<ModelCapabilities | null>(null);
   const [manualCapabilityOverride, setManualCapabilityOverride] = useState(false);
   const [visionMode, setVisionMode] = useState<"auto" | "on" | "off">("auto");
@@ -797,6 +998,13 @@ export function App() {
   const [fullContext, setFullContext] = useState(false);
   const [generatedTools, setGeneratedTools] = useState<GeneratedTool[]>([]);
   const [generatedToolCandidates, setGeneratedToolCandidates] = useState<GeneratedToolCandidate[]>([]);
+  const [mcpServers, setMcpServers] = useState<McpServerView[]>([]);
+  const [mcpEditor, setMcpEditor] = useState<McpEditor | null>(null);
+  const [mcpShowJson, setMcpShowJson] = useState(false);
+  const [mcpJsonDraft, setMcpJsonDraft] = useState("");
+  const [mcpError, setMcpError] = useState<string | null>(null);
+  const [mcpNotice, setMcpNotice] = useState<string | null>(null);
+  const [mcpTesting, setMcpTesting] = useState<Record<string, boolean>>({});
   const [conversations, setConversations] = useState<ConversationSummary[]>([]);
   const [modelRuntime, setModelRuntime] = useState<LocalModelRuntimeStatus | null>(null);
   const [refreshingModels, setRefreshingModels] = useState(false);
@@ -815,6 +1023,7 @@ export function App() {
   const jevSelectedTool = useRef<string | null>(null);
   const [activeConversationId, setActiveConversationId] = useState("");
   const activeConversationIdRef = useRef("");
+  const messageActionPending = useRef(false);
   useDialogFocus(`${settingsOpen}:${showCloudModal}:${approval?.id ?? ""}:${questionRequest?.id ?? ""}`);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const openSettings = (section = "settings-heading") => {
@@ -1237,6 +1446,83 @@ export function App() {
       });
     }
   };
+
+  const refreshMcpServers = () => {
+    invoke<McpServerView[]>("list_mcp_servers")
+      .then((rows) => { setMcpServers(rows ?? []); setMcpError(null); })
+      .catch((error) => setMcpError(compactValue(String(error), 220) ?? "Could not load MCP servers"));
+  };
+
+  const saveMcpServer = async () => {
+    if (!mcpEditor) return;
+    const config = mcpConfigFromEditor(mcpEditor);
+    if (!config.name || !config.command) {
+      setMcpError("A server needs a name and a command.");
+      return;
+    }
+    try {
+      const rows = await invoke<McpServerView[]>("save_mcp_server", {
+        server: config,
+        originalName: mcpEditor.originalName,
+      });
+      setMcpServers(rows ?? []);
+      setMcpEditor(null);
+      setMcpShowJson(false);
+      setMcpJsonDraft("");
+      setMcpError(null);
+      setMcpNotice(`${config.name} saved · connects on the next message`);
+    } catch (error) {
+      setMcpError(compactValue(String(error), 220) ?? "MCP request failed");
+    }
+  };
+
+  const removeMcpServer = async (name: string) => {
+    if (!window.confirm(`Remove the MCP server “${name}”? Its tools disappear from the agent.`)) return;
+    try {
+      const rows = await invoke<McpServerView[]>("delete_mcp_server", { name });
+      setMcpServers(rows ?? []);
+      setMcpError(null);
+      setMcpNotice(`${name} removed`);
+    } catch (error) {
+      setMcpError(compactValue(String(error), 220) ?? "MCP request failed");
+    }
+  };
+
+  const toggleMcpServer = async (view: McpServerView) => {
+    try {
+      const rows = await invoke<McpServerView[]>("set_mcp_server_enabled", {
+        name: view.server.name,
+        enabled: !view.server.enabled,
+      });
+      setMcpServers(rows ?? []);
+      setMcpError(null);
+    } catch (error) {
+      setMcpError(compactValue(String(error), 220) ?? "MCP request failed");
+    }
+  };
+
+  const testMcpServer = async (view: McpServerView) => {
+    setMcpTesting((current) => ({ ...current, [view.server.name]: true }));
+    setMcpError(null);
+    try {
+      const status = await invoke<McpServerStatus>("test_mcp_server", { server: view.server });
+      setMcpServers((rows) => rows.map((row) =>
+        row.server.name === view.server.name ? { ...row, status } : row));
+    } catch (error) {
+      setMcpError(compactValue(String(error), 220) ?? "MCP request failed");
+    } finally {
+      setMcpTesting((current) => ({ ...current, [view.server.name]: false }));
+    }
+  };
+
+  const updateMcpEditor = (patch: Partial<McpEditor>) =>
+    setMcpEditor((current) => (current ? { ...current, ...patch } : current));
+
+  useEffect(() => {
+    if (settingsOpen && settingsSection === "mcp") refreshMcpServers();
+    // MCP status refreshes whenever the page is opened.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsOpen, settingsSection]);
 
   useEffect(() => {
     refreshModelContext();
@@ -1850,11 +2136,17 @@ export function App() {
               const actualIdx = prev.length - 1 - idx;
               const original = prev[actualIdx];
               const durationMs = Date.now() - original.timestamp.getTime();
+              const status = resultRecord.status === "running" ? "running" : payload.ok ? "done" : "failed";
+              const label = status === "done"
+                ? completedToolLabel(toolName, original.activityLabel ?? fallback.label)
+                : original.activityLabel;
               return [
                 ...prev.slice(0, actualIdx),
                 {
                   ...original,
-                  activityStatus: resultRecord.status === "running" ? "running" : payload.ok ? "done" : "failed",
+                  text: label ?? original.text,
+                  activityLabel: label,
+                  activityStatus: status,
                   activityDetail: payload.ok
                     ? withInputMethod(original.activityDetail, resultRecord.input_method)
                     : compactValue(payload.detail, 140) ?? original.activityDetail,
@@ -1874,7 +2166,7 @@ export function App() {
                 timestamp: new Date(),
                 activityTool: toolName,
                 activityCallId: callId,
-                activityLabel: fallback.label,
+                activityLabel: payload.ok ? completedToolLabel(toolName, fallback.label) : fallback.label,
                 activityStatus: payload.ok ? "done" : "failed",
                 activityDetail: payload.ok ? undefined : compactValue(payload.detail, 140),
                 activityResult: resultRecord,
@@ -1924,6 +2216,9 @@ export function App() {
               budget: payload.budget,
               prompt_tokens: payload.prompt_tokens ?? 0,
               conversation_tokens: payload.conversation_tokens ?? payload.prompt_tokens ?? 0,
+              fixed_prompt_tokens: payload.fixed_prompt_tokens,
+              compactable_tokens: payload.compactable_tokens,
+              compactable_at_minimum: payload.compactable_at_minimum,
               working_set_target_tokens: payload.working_set_target_tokens,
               remaining_tokens: payload.remaining_tokens ?? payload.budget.compact_at_tokens,
               archived_entries: payload.archived_entries ?? 0,
@@ -2476,46 +2771,94 @@ export function App() {
     }
   }
 
+  /** Show a conversation returned by the backend (resume, revert, or fork). */
+  function applyConversationPayload(restored: ResumeConversationPayload, label: string) {
+    setSelectedProvider(restored.summary.provider);
+    setModel(restored.summary.model);
+    setModelRuntime(null);
+    setWorkspace(restored.summary.workspace);
+    activeConversationIdRef.current = restored.summary.id;
+    setActiveConversationId(restored.summary.id);
+    setJevEnabled(restored.decision_router_enabled);
+    setDecisionRouterBackend(restored.decision_router_backend ?? (restored.decision_router_enabled ? "jev" : "off"));
+    setJevRuntimeState(restored.decision_router_backend === "jev" && !decisionRouter?.has_api_key ? "unavailable" : restored.decision_router_enabled ? "ready" : "off");
+    setJevWarning(null);
+    followOutput.current = true;
+    setShowJump(false);
+    if (window.innerWidth < 900) setNavigationOpen(false);
+    localStorage.setItem("pok_selected_provider", restored.summary.provider);
+    localStorage.setItem("pok_selected_model", restored.summary.model);
+    checkApiStatus(restored.summary.provider, restored.summary.model);
+    const restoredMessages = restored.messages.map((message) =>
+      restoredChatMessage(message, restored.summary.updated_at));
+    setMessages(restoredMessages);
+    setHistoryBeforeSequence(restored.next_before_sequence ?? null);
+    setHistoryHasMore(restored.has_more === true);
+    setTaskProgress(null);
+    setCurrentTurn(0);
+    setSessionApprovals([]);
+    setAgentFrame(null);
+    setLiveActivity({
+      phase: "idle",
+      label,
+      detail: `${restored.summary.provider} · ${restored.summary.model}`,
+      startedAt: Date.now(),
+    });
+  }
+
   async function resumeConversation(sessionId?: string) {
     if (busy) return;
     try {
       const restored = sessionId
         ? await invoke<ResumeConversationPayload>("resume_conversation", { sessionId })
         : await invoke<ResumeConversationPayload>("resume_latest_conversation");
-      setSelectedProvider(restored.summary.provider);
-      setModel(restored.summary.model);
-      setModelRuntime(null);
-      setWorkspace(restored.summary.workspace);
-      activeConversationIdRef.current = restored.summary.id;
-      setActiveConversationId(restored.summary.id);
-      setJevEnabled(restored.decision_router_enabled);
-      setDecisionRouterBackend(restored.decision_router_backend ?? (restored.decision_router_enabled ? "jev" : "off"));
-      setJevRuntimeState(restored.decision_router_backend === "jev" && !decisionRouter?.has_api_key ? "unavailable" : restored.decision_router_enabled ? "ready" : "off");
-      setJevWarning(null);
-      followOutput.current = true;
-      setShowJump(false);
-      if (window.innerWidth < 900) setNavigationOpen(false);
-      localStorage.setItem("pok_selected_provider", restored.summary.provider);
-      localStorage.setItem("pok_selected_model", restored.summary.model);
-      checkApiStatus(restored.summary.provider, restored.summary.model);
-      const restoredMessages = restored.messages.map((message) =>
-        restoredChatMessage(message, restored.summary.updated_at));
-      setMessages(restoredMessages);
-      setHistoryBeforeSequence(restored.next_before_sequence ?? null);
-      setHistoryHasMore(restored.has_more === true);
-      setTaskProgress(null);
-      setCurrentTurn(0);
-      setSessionApprovals([]);
-      setLiveActivity({
-        phase: "idle",
-        label: "Conversation restored",
-        detail: `${restored.summary.provider} · ${restored.summary.model}`,
-        startedAt: Date.now(),
-      });
+      applyConversationPayload(restored, "Conversation restored");
     } catch (error) {
       setLiveActivity({ phase: "failed", label: "Could not resume conversation", detail: compactValue(String(error), 160), startedAt: Date.now() });
     }
   }
+
+  async function handleMessageAction(kind: MessageActionKind, message: ChatMessage) {
+    if (kind === "copy") {
+      try {
+        await navigator.clipboard.writeText(message.text);
+      } catch {
+        // The clipboard can be unavailable; leave the message untouched.
+      }
+      return;
+    }
+    if (busy || messageActionPending.current) return;
+    const anchor = messageAnchor(message, messages);
+    if (!anchor) return;
+    if (kind === "revert" && !window.confirm("Erase everything after this message from the conversation? The agent will rebuild its context from that point.")) return;
+    messageActionPending.current = true;
+    try {
+      const payload = await invoke<ResumeConversationPayload>(
+        kind === "fork" ? "fork_conversation" : "revert_conversation",
+        { sessionId: activeConversationIdRef.current || null, anchor },
+      );
+      applyConversationPayload(payload, kind === "fork" ? "Forked into a new conversation" : "Conversation reverted");
+      await refreshConversations();
+    } catch (error) {
+      setLiveActivity({
+        phase: "failed",
+        label: kind === "fork" ? "Could not fork the conversation" : "Could not revert the conversation",
+        detail: compactValue(String(error), 160),
+        startedAt: Date.now(),
+      });
+    } finally {
+      messageActionPending.current = false;
+    }
+  }
+
+  // Ref-backed so memoized history rows keep a stable context value and do not
+  // re-render whenever session state changes.
+  const messageActionRef = useRef(handleMessageAction);
+  messageActionRef.current = handleMessageAction;
+  const messageAction = useCallback(
+    (kind: MessageActionKind, message: ChatMessage) => messageActionRef.current(kind, message),
+    [],
+  );
 
   async function loadEarlierHistory() {
     const sessionId = activeConversationIdRef.current;
@@ -2875,6 +3218,142 @@ export function App() {
             </div>
           </SettingsCard>
         </>}
+        {settingsSection === "mcp" && <>
+          <SettingsCard
+            title="MCP servers"
+            description={<>Model Context Protocol servers add external tools — files, databases, browser automation, specialized analysis. Their tools join the <code>mcp</code> family and the model enables them with <code>discover_tools</code>. Changes apply from your next message.</>}
+            status={mcpServers.length > 0
+              ? <StatusPill tone="ok">{mcpServers.filter((view) => view.server.enabled).length} enabled</StatusPill>
+              : undefined}
+            actions={<>
+              <button type="button" onClick={() => { setMcpEditor(emptyMcpEditor()); setMcpShowJson(false); setMcpJsonDraft(""); setMcpError(null); setMcpNotice(null); }}>Add server</button>
+              <button type="button" onClick={refreshMcpServers}>Refresh</button>
+            </>}
+          >
+            {mcpError && <p className="mcp-banner error" role="alert">{mcpError}</p>}
+            {mcpNotice && !mcpError && <p className="mcp-banner notice">{mcpNotice}</p>}
+            <div className="mcp-server-list">
+              {mcpServers.length === 0 && <div className="mcp-empty">
+                <p>No MCP servers yet.</p>
+                <small>Paste a definition from any MCP client (Claude Desktop, VS Code, Cursor) or use <strong>Add server</strong>. For example:</small>
+                <pre>{`{
+  "mcpServers": {
+    "example": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-memory"]
+    }
+  }
+}`}</pre>
+              </div>}
+              {mcpServers.map((view) => {
+                const testing = mcpTesting[view.server.name] === true;
+                const status = view.status;
+                return <div className="mcp-server" key={view.server.name}>
+                  <div className="mcp-server-main">
+                    <div className="mcp-server-title">
+                      <span className={`mcp-dot ${!view.server.enabled ? "off" : status ? (status.ok ? "ok" : "error") : "idle"}`} aria-hidden="true" />
+                      <strong>{view.server.name}</strong>
+                      {view.source === "file" && <span className="mcp-badge quiet">pok-ai.toml</span>}
+                      {view.server.auto_approve
+                        ? <span className="mcp-badge trusted">No prompts</span>
+                        : <span className="mcp-badge">{MCP_RISK_LABELS[view.server.risk]}</span>}
+                      {view.server.tools.length > 0 && <span className="mcp-badge quiet">{view.server.tools.length} allowed</span>}
+                    </div>
+                    <code className="mcp-command">{[view.server.command, ...view.server.args].join(" ")}</code>
+                    {!view.server.enabled
+                      ? <small>Disabled — its tools are not registered.</small>
+                      : status
+                        ? (status.ok
+                          ? <small>{status.tools} tool{status.tools === 1 ? "" : "s"} available{status.detail ? ` · ${status.detail}` : ""}</small>
+                          : <small className="mcp-failure">{status.detail ?? "The server did not start."}</small>)
+                        : <small>Connects when the next message starts.</small>}
+                  </div>
+                  <div className="mcp-server-actions">
+                    <Switch label={`Enable ${view.server.name}`} checked={view.server.enabled} onChange={() => void toggleMcpServer(view)} />
+                    <button type="button" disabled={testing} onClick={() => void testMcpServer(view)}>{testing ? "Testing…" : "Test"}</button>
+                    <button type="button" onClick={() => { setMcpEditor(mcpEditorFromServer(view.server)); setMcpShowJson(false); setMcpError(null); setMcpNotice(null); }}>Edit</button>
+                    {view.source === "app" && <button type="button" className="reject" onClick={() => void removeMcpServer(view.server.name)}>Remove</button>}
+                  </div>
+                </div>;
+              })}
+            </div>
+          </SettingsCard>
+          {mcpEditor && <SettingsCard
+            title={mcpEditor.originalName ? `Edit ${mcpEditor.originalName}` : "Add server"}
+            description="The command is launched locally with your account. Servers run as tools: the agent sees their schemas only after it discovers the mcp family."
+          >
+            <div className="mcp-form">
+              <div className="mcp-form-mode" role="tablist" aria-label="Server definition mode">
+                <button type="button" role="tab" aria-selected={!mcpShowJson} className={!mcpShowJson ? "active" : ""} onClick={() => setMcpShowJson(false)}>Form</button>
+                <button type="button" role="tab" aria-selected={mcpShowJson} className={mcpShowJson ? "active" : ""} onClick={() => setMcpShowJson(true)}>Paste JSON</button>
+              </div>
+              {mcpShowJson ? <>
+                <textarea
+                  className="mcp-json"
+                  aria-label="MCP server JSON"
+                  value={mcpJsonDraft}
+                  onChange={(event) => setMcpJsonDraft(event.target.value)}
+                  placeholder={'{"mcpServers": {"rea": {"command": "npx", "args": ["-y", "rea-agents@4.1.0", "mcp"]}}}'}
+                />
+                <div className="mcp-form-actions">
+                  <button type="button" onClick={() => { setMcpEditor(null); setMcpShowJson(false); setMcpJsonDraft(""); }}>Cancel</button>
+                  <button type="button" className="primary" onClick={() => {
+                    const parsed = mcpEditorFromJson(mcpJsonDraft);
+                    if (parsed) { setMcpEditor(parsed); setMcpShowJson(false); setMcpError(null); }
+                    else setMcpError("That JSON has no command. Paste a server object or a mcpServers map.");
+                  }}>Import</button>
+                </div>
+              </> : <>
+                <SettingRow label="Name" help="Used in tool names: mcp__name__tool.">
+                  <input aria-label="Server name" value={mcpEditor.name} onChange={(event) => updateMcpEditor({ name: event.target.value })} placeholder="rea" />
+                </SettingRow>
+                <SettingRow label="Command" help="The executable to launch.">
+                  <input aria-label="Server command" value={mcpEditor.command} onChange={(event) => updateMcpEditor({ command: event.target.value })} placeholder="npx" />
+                </SettingRow>
+                <SettingRow label="Arguments" help="Space-separated arguments.">
+                  <input aria-label="Server arguments" value={mcpEditor.args} onChange={(event) => updateMcpEditor({ args: event.target.value })} placeholder="-y rea-agents@4.1.0 mcp" />
+                </SettingRow>
+                <details className="mcp-advanced">
+                  <summary>Advanced</summary>
+                  <SettingRow label="Risk">
+                    <select aria-label="Server risk" value={mcpEditor.risk} onChange={(event) => updateMcpEditor({ risk: event.target.value as McpRisk })}>
+                      {(Object.keys(MCP_RISK_LABELS) as McpRisk[]).map((risk) => <option key={risk} value={risk}>{MCP_RISK_LABELS[risk]}</option>)}
+                    </select>
+                  </SettingRow>
+                  <SettingRow label="Skip approval" help="Only for servers whose tools cannot change state.">
+                    <Switch label="Skip approval" checked={mcpEditor.autoApprove} onChange={(checked) => updateMcpEditor({ autoApprove: checked })} />
+                  </SettingRow>
+                  <SettingRow label="Allowed tools" help="Comma-separated names; empty allows every tool.">
+                    <input aria-label="Allowed tools" value={mcpEditor.tools} onChange={(event) => updateMcpEditor({ tools: event.target.value })} placeholder="open_binary, search_strings" />
+                  </SettingRow>
+                  <div className="mcp-env">
+                    <span>Environment</span>
+                    {mcpEditor.env.map((entry, index) => <div className="mcp-env-row" key={index}>
+                      <input aria-label={`Environment variable ${index + 1} name`} value={entry.key} placeholder="NAME"
+                        onChange={(event) => updateMcpEditor({ env: mcpEditor.env.map((row, rowIndex) => rowIndex === index ? { ...row, key: event.target.value } : row) })} />
+                      <input aria-label={`Environment variable ${index + 1} value`} value={entry.value} placeholder="blank passes the process value through"
+                        onChange={(event) => updateMcpEditor({ env: mcpEditor.env.map((row, rowIndex) => rowIndex === index ? { ...row, value: event.target.value } : row) })} />
+                      <button type="button" aria-label={`Remove environment variable ${index + 1}`}
+                        onClick={() => updateMcpEditor({ env: mcpEditor.env.filter((_, rowIndex) => rowIndex !== index) })}>×</button>
+                    </div>)}
+                    <button type="button" onClick={() => updateMcpEditor({ env: [...mcpEditor.env, { key: "", value: "" }] })}>Add variable</button>
+                  </div>
+                  <SettingRow label="Startup timeout" help="Seconds for initialize and tools/list.">
+                    <input aria-label="Startup timeout seconds" inputMode="numeric" value={mcpEditor.startupTimeout} onChange={(event) => updateMcpEditor({ startupTimeout: event.target.value.replace(/\D/g, "") })} placeholder="30" />
+                  </SettingRow>
+                  <SettingRow label="Call timeout" help="Seconds for one tool call.">
+                    <input aria-label="Call timeout seconds" inputMode="numeric" value={mcpEditor.callTimeout} onChange={(event) => updateMcpEditor({ callTimeout: event.target.value.replace(/\D/g, "") })} placeholder="120" />
+                  </SettingRow>
+                </details>
+                {mcpError && <p className="mcp-banner error" role="alert">{mcpError}</p>}
+                <div className="mcp-form-actions">
+                  <button type="button" onClick={() => { setMcpEditor(null); setMcpShowJson(false); setMcpJsonDraft(""); setMcpError(null); }}>Cancel</button>
+                  <button type="button" className="primary" onClick={() => void saveMcpServer()}>Save server</button>
+                </div>
+              </>}
+            </div>
+          </SettingsCard>}
+        </>}
       </SettingsDrawer>
       <section className={`panel agent ${dropActive ? "drop-active" : ""}`} {...imageDrop.handlers}>
         {dropActive && <div className="drop-overlay" aria-hidden="true"><span>Drop files, folders or images to attach them</span></div>}
@@ -2893,14 +3372,22 @@ export function App() {
           </div>
           {jevMetrics.last && <small>{jevMetrics.last}</small>}
         </div>}
-        <div className={`context-meter ${contextStatus && !contextStatus.budget.known ? "unknown" : ""}`} onClick={() => setContextExpanded(!contextExpanded)}>
+        <div className={`context-meter ${contextStatus && !contextStatus.budget.known ? "unknown" : ""}${contextMeter?.atMinimum ? " at-minimum" : ""}`} onClick={() => setContextExpanded(!contextExpanded)}>
           <div className="context-meter-heading">
-            <span>Context {contextStatus ? `${contextStatus.conversation_tokens.toLocaleString()} retained · ${contextStatus.prompt_tokens.toLocaleString()} sent` : "—"}</span>
-            <span>{contextStatus ? `${contextStatus.remaining_tokens.toLocaleString()} tokens until compact` : "Select a model"}</span>
+            <span>Context {contextStatus ? `${contextStatus.conversation_tokens.toLocaleString()} retained · ${(contextMeter?.fixed ?? 0).toLocaleString()} fixed · ${contextStatus.prompt_tokens.toLocaleString()} sent` : "—"}</span>
+            <span>{contextStatus ? (contextMeter?.atMinimum ? "History at minimum" : `${contextStatus.remaining_tokens.toLocaleString()} tokens until compact`) : "Select a model"}</span>
           </div>
-          <div className="context-meter-track"><div className="context-meter-fill" style={{ width: `${contextStatus ? Math.min(100, (contextStatus.prompt_tokens / Math.max(1, contextStatus.budget.compact_at_tokens)) * 100) : 0}%` }} /></div>
+          <div className="context-meter-track">
+            {contextMeter && <>
+              <div className="context-meter-fill fixed" style={{ width: `${contextMeter.fixedPercent}%` }} />
+              <div className="context-meter-fill compactable" style={{ left: `${contextMeter.fixedPercent}%`, width: `${contextMeter.compactablePercent}%` }} />
+              <span className="context-meter-threshold" style={{ left: `${contextMeter.thresholdPercent}%` }} title={`Compaction threshold at ${contextStatus?.budget.compact_at_tokens.toLocaleString()} tokens`} />
+              <span className="context-meter-sent" style={{ left: `${contextMeter.sentPercent}%` }} title={`${contextStatus?.prompt_tokens.toLocaleString()} tokens sent this turn`} />
+            </>}
+          </div>
           {contextStatus && <div className="context-meter-detail">
             {contextStatus.budget.context_window_tokens.toLocaleString()} token window{contextStatus.working_set_target_tokens ? ` · request working set ${contextStatus.working_set_target_tokens.toLocaleString()}` : ""} · user compact threshold {contextStatus.budget.threshold_percent}% ({contextStatus.budget.compact_at_tokens.toLocaleString()}) · {contextStatus.budget.source.replaceAll("_", " ")}
+            {contextMeter && contextMeter.fixed > 0 ? ` · ${contextMeter.fixed.toLocaleString()} fixed (system + tool schemas, not compactable)` : ""}
             {contextStatus.approximate_turns_remaining ? ` · ~${contextStatus.approximate_turns_remaining} turns` : ""} · archive {contextStatus.archived_entries.toLocaleString()} entries / {contextStatus.archived_tokens.toLocaleString()} tokens · {contextStatus.compactions} semantic compactions
             {!contextStatus.budget.known ? " · context size unknown; legacy fallback active" : ""}
           </div>}
@@ -2924,7 +3411,9 @@ export function App() {
             ) : (
               <>
               {historyLoading && <div className="console-line line-omitted">Loading earlier history…</div>}
-              {visibleMessages.map(msg => <ConversationMessage key={msg.id} message={msg} />)}
+              <MessageActionProvider onAction={messageAction}>
+                {visibleMessages.map(msg => <ConversationMessage key={msg.id} message={msg} />)}
+              </MessageActionProvider>
               </>
             )}
 

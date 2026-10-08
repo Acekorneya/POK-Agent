@@ -797,11 +797,27 @@ fn pty_command(command: &str) -> CommandBuilder {
     }
 }
 
+/// The PowerShell wrapper around every Windows command. Kept
+/// platform-independent so tests on any host exercise the exact string the
+/// Windows spawn path uses.
+///
+/// `$ErrorActionPreference = 'Stop'` turns the first line a native command
+/// writes to stderr into a terminating NativeCommandError. When the command
+/// pipes or redirects stderr (as debugging commands commonly do), that aborts
+/// the stream: only "Traceback (most recent call last):" survives and the
+/// actual exception is lost. Keep 'Continue' so the whole native stderr
+/// reaches the model, take native failures from the exit code, and still fail
+/// on terminating script errors via the catch.
+#[allow(dead_code)]
+fn powershell_utf8_wrapper(command: &str) -> String {
+    format!(
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; $global:LASTEXITCODE = 0; $ErrorActionPreference = 'Continue'; $pok_ok = $true; try {{ & {{ {command} }} }} catch {{ [Console]::Error.WriteLine(($_ | Out-String)); $pok_ok = $false }}; if (-not $pok_ok) {{ exit 1 }}; exit $global:LASTEXITCODE"
+    )
+}
+
 #[cfg(windows)]
 fn powershell_script(command: &str) -> String {
-    format!(
-        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; $ErrorActionPreference = 'Stop'; $global:LASTEXITCODE = 0; try {{ & {{ {command} }}; if ($global:LASTEXITCODE -ne 0) {{ exit $global:LASTEXITCODE }} }} catch {{ [Console]::Error.WriteLine(($_ | Out-String)); exit 1 }}"
-    )
+    powershell_utf8_wrapper(command)
 }
 
 async fn terminate_process_tree(pid: u32) {
@@ -955,5 +971,20 @@ mod tests {
             .unwrap();
         assert_eq!(done.status, CommandStatus::Completed);
         assert!(done.output.contains("pty:hello"), "{}", done.output);
+    }
+
+    #[test]
+    fn powershell_wrapper_keeps_native_stderr_and_exit_codes() {
+        let script = powershell_utf8_wrapper("python probe.py 2>&1 | Select-Object -First 5");
+        assert!(script.contains("[Console]::OutputEncoding"));
+        assert!(script.contains("$OutputEncoding"));
+        assert!(script.contains("python probe.py 2>&1 | Select-Object -First 5"));
+        // 'Stop' aborts a native command at its first stderr line, hiding the
+        // rest of the traceback; keep 'Continue' and use the exit code.
+        assert!(!script.contains("$ErrorActionPreference = 'Stop'"));
+        assert!(script.contains("$ErrorActionPreference = 'Continue'"));
+        assert!(script.contains("exit $global:LASTEXITCODE"));
+        assert!(script.contains("catch"));
+        assert!(!script.contains("powershell -Command"));
     }
 }

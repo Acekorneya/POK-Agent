@@ -1215,9 +1215,9 @@ fn openai_request(request: &BrainRequest) -> Value {
                     // renderer rejects converting that NullValue. Null schema entries
                     // carry no useful constraint, so omit them at the provider boundary.
                     "parameters": if scalar_tool_types {
-                        scalarize_schema_types(&openai_compatible_schema(&tool.input_schema))
+                        scalarize_schema_types(&tool_parameters_schema(&tool.input_schema))
                     } else {
-                        openai_compatible_schema(&tool.input_schema)
+                        tool_parameters_schema(&tool.input_schema)
                     }
                 }}))
                 .collect::<Vec<_>>()
@@ -1394,6 +1394,22 @@ pub(crate) fn reference_free_schema(value: &Value) -> Value {
 /// OpenAI-compatible local runtimes. JSON Schema permits `true` as shorthand for
 /// an unconstrained schema, but LM Studio's automatic tool parser currently only
 /// accepts object-form schemas.
+/// Root `parameters` object for a tool. Strict servers (and MCP tools without
+/// arguments) require `properties` to be present on the root object.
+fn tool_parameters_schema(value: &Value) -> Value {
+    let mut schema = openai_compatible_schema(value);
+    if !schema.is_object() {
+        schema = json!({});
+    }
+    if let Some(object) = schema.as_object_mut() {
+        object.entry("type").or_insert_with(|| json!("object"));
+        if object.get("type") == Some(&json!("object")) {
+            object.entry("properties").or_insert_with(|| json!({}));
+        }
+    }
+    schema
+}
+
 fn openai_compatible_schema(value: &Value) -> Value {
     match value {
         Value::Bool(true) => json!({"type": "object"}),
@@ -2460,6 +2476,20 @@ mod tests {
             "provider error: 400: Unable to generate parser: Unrecognized schema: true"
         );
         assert!(openai_stream_error(&json!({"choices": []})).is_none());
+    }
+
+    #[test]
+    fn tool_parameters_schema_always_has_root_properties() {
+        for input in [
+            json!({"type": "object", "additionalProperties": true}),
+            json!({"type": "object"}),
+            json!({}),
+            json!(true),
+        ] {
+            let schema = tool_parameters_schema(&input);
+            assert_eq!(schema["type"], "object");
+            assert!(schema["properties"].is_object());
+        }
     }
 
     #[test]
