@@ -30,7 +30,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: windows-release
+          key: windows-release-2
+          cache-directories: target/sherpa-onnx-prebuilt
 
       - uses: actions/setup-node@v7
         with:
