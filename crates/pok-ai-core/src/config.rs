@@ -604,6 +604,40 @@ pub enum McpRisk {
     HighImpact,
 }
 
+/// The user's own Chrome or Edge, attached over its local DevTools port so
+/// the agent works in the sessions the user is signed in to (`user_browser`).
+/// Nothing is launched: the user starts the browser with
+/// `--remote-debugging-port`, and `pok-ai doctor` or the `user_browser_status`
+/// tool gives the exact command.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserBrowserConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// The browser's `--remote-debugging-port`, on 127.0.0.1.
+    #[serde(default = "default_user_browser_port")]
+    pub port: u16,
+    /// The `--user-data-dir` the suggested launch command names. Chrome 136
+    /// and later refuse remote debugging on the default profile, so the user
+    /// signs in to their sites once in this separate profile. Unset means
+    /// `<data_dir>/browser/profiles/personal`.
+    #[serde(default)]
+    pub user_data_dir: Option<PathBuf>,
+}
+
+impl Default for UserBrowserConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            port: default_user_browser_port(),
+            user_data_dir: None,
+        }
+    }
+}
+
+const fn default_user_browser_port() -> u16 {
+    9222
+}
+
 const fn default_mcp_startup_timeout_seconds() -> u64 {
     30
 }
@@ -670,6 +704,8 @@ pub struct Config {
     pub decision_router: DecisionRouterConfig,
     #[serde(default)]
     pub mcp: McpConfig,
+    #[serde(default)]
+    pub user_browser: UserBrowserConfig,
     /// Maximum planner turns that act on the computer per run (a
     /// `fast_actions` plan is one step). Unset means unlimited; benchmarks
     /// such as Windows Agent Arena use 30.
@@ -902,6 +938,7 @@ impl Default for Config {
             providers: default_providers(),
             decision_router: DecisionRouterConfig::default(),
             mcp: McpConfig::default(),
+            user_browser: UserBrowserConfig::default(),
             action_step_budget: None,
             standing_instructions: None,
         }
@@ -1258,6 +1295,29 @@ base_url = "https://models.example.test/v1"
 
         let invalid: Config = toml::from_str("input_text_inter_key_pause_ms = 251").unwrap();
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn the_users_browser_is_attachable_by_default_and_configurable() {
+        let defaulted: Config = toml::from_str("").unwrap();
+        assert!(defaulted.user_browser.enabled);
+        assert_eq!(defaulted.user_browser.port, 9222);
+        assert!(defaulted.user_browser.user_data_dir.is_none());
+
+        let configured: Config = toml::from_str(
+            "[user_browser]\nenabled = false\nport = 9333\nuser_data_dir = \"D:/Profiles/agent\"",
+        )
+        .unwrap();
+        assert!(!configured.user_browser.enabled);
+        assert_eq!(configured.user_browser.port, 9333);
+        assert_eq!(
+            configured.user_browser.user_data_dir,
+            Some(PathBuf::from("D:/Profiles/agent"))
+        );
+
+        let example: Config = toml::from_str(include_str!("../../../pok-ai.example.toml")).unwrap();
+        assert!(example.user_browser.enabled);
+        assert_eq!(example.user_browser.port, 9222);
     }
 
     #[test]

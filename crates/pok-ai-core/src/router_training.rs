@@ -81,6 +81,12 @@ impl TrainingRecorder {
             .any(|entry| haystack.contains(entry.as_str()));
     }
 
+    /// The agent is working in the user's own signed-in browser: nothing is
+    /// recorded about it, whatever the page, until the next `observe_window`.
+    pub fn observe_private_surface(&self) {
+        self.inner.lock().excluded_window = true;
+    }
+
     /// Record one request body (`{model, state, questions}`) and, when the
     /// backend answered, its answers. `source` is `router` for a real request
     /// or `grounding` for a question local evidence answered. Returns the
@@ -277,5 +283,8 @@ mod tests {
         assert!(records(&recorder).is_empty());
         recorder.observe_window("Settings", "SystemSettings.exe");
         assert!(recorder.question("router", &body, None).is_some());
+        // The user's own signed-in browser is never recorded.
+        recorder.observe_private_surface();
+        assert!(recorder.question("router", &body, None).is_none());
     }
 }

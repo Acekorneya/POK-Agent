@@ -69,7 +69,11 @@ touches one focused file. Child modules share their parent's imports
 Other core modules keep one file each: `brain.rs` (provider adapters),
 `decision.rs` (router contract and backends), `router_training.rs` (training
 log), `policy.rs`, `coding.rs`, `memory.rs`, `grounding.rs`, `platform.rs`,
-`agent_window.rs`, `browser.rs`, `config.rs`, `context.rs`, and `tool.rs`.
+`agent_window.rs`, `browser.rs` (the managed browser and the DevTools plumbing
+it shares), `user_browser.rs` (the user's own signed-in browser, attached over
+its DevTools port, with System 2's confirmation gate and System 1's click
+candidates; see `docs/USER-BROWSER.md`), `config.rs`, `context.rs`, and
+`tool.rs`.
 
 Voice input lives outside the core in `crates/pok-ai-voice`, since it is a
 dashboard feature, not an agent tool. Three threads keep captions live while

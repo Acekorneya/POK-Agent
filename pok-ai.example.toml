@@ -130,6 +130,18 @@ base_url = "https://api.anthropic.com/v1"
 data_boundary = "external_service"
 api_key_env = "ANTHROPIC_API_KEY"
 
+# Your own signed-in Chrome or Edge, attached over its DevTools port so the
+# agent can work in your accounts without exporting cookies (see
+# docs/USER-BROWSER.md). Start the browser with the command `pok-ai doctor`
+# prints. Deleting, buying, sending, and account changes there always ask you
+# first; the agent works in background tabs and never uses your mouse or keyboard.
+[user_browser]
+enabled = true
+port = 9222
+# The separate profile the launch command names (Chrome 136+ refuses remote
+# debugging on the default profile). Default: <data_dir>/browser/profiles/personal
+# user_data_dir = "D:\\Profiles\\agent"
+
 # Local Model Context Protocol servers. Each configured server is spawned over
 # stdio, its tools are added to the `mcp` capability family, and the model sees
 # them after `discover_tools(["mcp"])`. The desktop app's Settings → MCP page

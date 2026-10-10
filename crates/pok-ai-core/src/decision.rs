@@ -835,7 +835,7 @@ pub(crate) fn candidate_operation(candidate: &DecisionCandidate) -> String {
         "__blocked__" => "BLOCKED".into(),
         "managed_browser_open" | "browser_navigate" => "OPEN_URL".into(),
         "managed_browser_snapshot" | "capture_screen" => "CAPTURE".into(),
-        "managed_browser_click" | "click_target" => "CLICK".into(),
+        "managed_browser_click" | "user_browser_click" | "click_target" => "CLICK".into(),
         "managed_browser_type" => "TYPE_TEXT".into(),
         "managed_browser_select" => "SELECT".into(),
         "managed_browser_hover" => "HOVER".into(),
@@ -1272,10 +1272,14 @@ fn quote_description(description: &str) -> String {
 /// cheap/evidenced/comparative were all positive — the description alone
 /// never establishes that following a link is reversible. Scoped to browser
 /// interaction tools, which the offline suite does not exercise, so the
-/// validated suite behavior is unchanged.
+/// validated suite behavior is unchanged. User-browser clicks qualify only
+/// because every consequential one is withheld from System 1 beforehand.
 fn judge_action_class(tool: &str) -> Option<&'static str> {
     match tool {
-        "managed_browser_click" | "managed_browser_scroll" | "managed_browser_hover" => Some(
+        "managed_browser_click"
+        | "managed_browser_scroll"
+        | "managed_browser_hover"
+        | "user_browser_click" => Some(
             "in-page navigation: changes only the currently displayed page or scroll position \
              and can be undone with the browser Back action",
         ),

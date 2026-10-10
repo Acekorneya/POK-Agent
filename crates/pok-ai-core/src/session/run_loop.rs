@@ -2878,4 +2878,11 @@ pub(super) fn is_acting_tool(name: &str) -> bool {
             | "undo_edit"
             | "invoke_generated_tool"
     ) || name.starts_with("managed_browser_") && name != "managed_browser_snapshot"
+        || matches!(
+            name,
+            "user_browser_navigate"
+                | "user_browser_click"
+                | "user_browser_type"
+                | "user_browser_select"
+        )
 }
