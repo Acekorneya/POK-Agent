@@ -2356,6 +2356,11 @@ pub(crate) async fn release_worker(session_id: Uuid) {
     for (port, state) in lanes {
         let state = state.lock().await;
         for tab in &state.owned_tabs {
+            // A form the worker filled and did not send stays open: the user
+            // reviews it there, and submitting it is still their decision.
+            if state.filled_tabs.contains_key(tab) {
+                continue;
+            }
             crate::browser::close_tab(port, tab).await;
         }
     }
