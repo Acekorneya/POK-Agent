@@ -353,8 +353,11 @@ impl Role {
                 Self::Browse => {
                     MANAGED_BROWSER_TOOLS.contains(&tool) || user_browser || tool == "fast_actions"
                 }
+                // A browser window is an application too: a desktop agent
+                // given a page in the user's browser works there in its own tab.
                 Self::Desktop => {
                     MANAGED_BROWSER_TOOLS.contains(&tool)
+                        || user_browser
                         || DESKTOP_READ_TOOLS.contains(&tool)
                         || desktop_action
                 }
@@ -1339,7 +1342,7 @@ impl Tool for SwarmTool {
         "run_agents"
     }
     fn description(&self) -> &'static str {
-        "Run a swarm of agents at the same time, one per independent part of the work (as many as it needs, up to 16), and return each agent's report and the team board. Roles: research (web), browse (the user's signed-in browser), desktop (one application window each), scout (study an application or how to do something in it without changing anything; you then act), explore (read code or documents), code (edit and test in its own git worktree; returns a commit), review (check work), general. Agents share findings on a team board, focus on strong leads, and a strong lead recruits another agent. Use it when a task splits into parts that can be done in parallel; not for one quick step."
+        "Run a swarm of agents at the same time, one per independent part of the work (as many as it needs, up to 16), and return each agent's report and the team board. Roles: research (web), browse (pages and forms in the user's own signed-in browser, one tab each), desktop (one application window each), scout (study an application or how to do something in it without changing anything; you then act), explore (read code or documents), code (edit and test in its own git worktree; returns a commit), review (check work), general. Agents share findings on a team board, focus on strong leads, and a strong lead recruits another agent. Use it when a task splits into parts that can be done in parallel; not for one quick step."
     }
     fn input_schema(&self) -> Value {
         serde_json::to_value(schema_for!(RunAgentsArgs)).expect("schema serializes")
@@ -1368,6 +1371,30 @@ impl Tool for SwarmTool {
             return Err(PokError::Tool(format!(
                 "at most {MAX_AGENTS} agents run at once; group the parts into {MAX_AGENTS} or fewer"
             )));
+        }
+        // Workers have tabs of their own: the page the lead has open in the
+        // user's browser is named for them, so "the page already open" is
+        // found, not searched for.
+        if let Some(page) = crate::user_browser::lead_page().await {
+            for agent in args.agents.iter_mut().filter(|agent| {
+                matches!(agent.role, Role::Browse | Role::Desktop | Role::General)
+                    && !agent.task.contains(&page)
+                    && !agent.context.as_deref().unwrap_or_default().contains(&page)
+            }) {
+                let note = format!(
+                    "The lead has {page} open in its own tab of the user's browser; if your task is on that page or starts from it, open it in your tab with user_browser_navigate."
+                );
+                agent.context = Some(
+                    match agent
+                        .context
+                        .take()
+                        .filter(|context| !context.trim().is_empty())
+                    {
+                        Some(context) => format!("{context}\n{note}"),
+                        None => note,
+                    },
+                );
+            }
         }
         // Names identify agents on the board, so they are kept distinct.
         let mut seen = HashSet::new();
@@ -1602,6 +1629,8 @@ mod tests {
         assert!(Role::Desktop.allows("fast_actions"));
         assert!(!Role::Research.allows("user_browser_click"));
         assert!(Role::Browse.allows("user_browser_click"));
+        // A desktop agent handed a page in the user's browser can work there.
+        assert!(Role::Desktop.allows("user_browser_type"));
         assert!(Role::Explore.allows("read_file"));
         assert!(!Role::Explore.allows("write_file"));
         assert!(!Role::Review.allows("run_command"));

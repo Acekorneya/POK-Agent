@@ -486,6 +486,9 @@ impl Session {
             0
         };
         let mut swarm_hint_open = listed_parts >= 2;
+        // Looking around first is fine (a page, a file): the hint stays
+        // through a few direct actions, then the planner's choice stands.
+        let mut direct_actions = 0_u32;
         let brain_usage_at_start = self.brain_usage.snapshot();
         let mut workflow: Vec<Value> = Vec::new();
         let mut verified_goal_actions = BTreeMap::<String, Value>::new();
@@ -742,7 +745,7 @@ impl Session {
             let adaptive_guard = metrics.turns >= 4 || metrics.tool_calls >= 3;
             let swarm_hint = swarm_hint_open.then(|| {
                 format!(
-                    "this request lists {listed_parts} separate parts. Call run_agents now with one agent per part, all at once, then combine their reports; do a part yourself only when it is a single obvious step."
+                    "this request lists {listed_parts} separate parts. As soon as you know enough to describe each part (a quick look at the page or file is fine), give them to run_agents, one agent per part, all at once, with what each needs in its context; then combine their reports. Do a part yourself only when it is a single obvious step."
                 )
             });
             let task_reminder = active_task_reminder(
@@ -2214,29 +2217,56 @@ impl Session {
             let mut post_tool_batch_messages = Vec::new();
             for call in calls {
                 metrics.tool_calls += 1;
-                if call.name == "run_agents" || is_acting_tool(&call.name) {
+                if is_acting_tool(&call.name) {
+                    direct_actions += 1;
+                }
+                if call.name == "run_agents" || direct_actions >= SWARM_HINT_DIRECT_ACTIONS {
                     swarm_hint_open = false;
                 }
+                let mut discover_report = None;
                 if call.name == "discover_tools"
                     && let Some(groups) = call.arguments.get("groups").and_then(Value::as_array)
                 {
+                    // Say what really happened: a group that does not exist,
+                    // or that this agent has no tools for (a swarm worker's
+                    // role), is reported instead of claimed enabled.
+                    let installed = self
+                        .tools
+                        .names()
+                        .iter()
+                        .map(|name| crate::tool::tool_group(name))
+                        .collect::<HashSet<_>>();
+                    let (mut enabled, mut unknown, mut unavailable) =
+                        (Vec::new(), Vec::new(), Vec::new());
                     for group in groups.iter().filter_map(Value::as_str) {
-                        if matches!(
-                            group,
-                            "desktop"
-                                | "browser"
-                                | "system"
-                                | "coding"
-                                | "memory"
-                                | "archive"
-                                | "generated"
-                                | "subagent"
-                                | "mcp"
-                                | "other"
-                        ) {
+                        if !DISCOVERABLE_GROUPS.contains(&group) {
+                            unknown.push(group.to_owned());
+                        } else if installed.contains(group) {
                             self.active_tool_groups.insert(group.into());
+                            enabled.push(group.to_owned());
+                        } else {
+                            unavailable.push(group.to_owned());
                         }
                     }
+                    let mut report = json!({"enabled_for_next_turn": enabled});
+                    if !unknown.is_empty() {
+                        report["unknown_groups"] = json!(unknown);
+                        report["groups"] = json!(DISCOVERABLE_GROUPS);
+                        report["hint"] = json!(
+                            "Tool names are not groups: the user's own browser and the managed browser are in browser, files in coding, commands in system."
+                        );
+                    }
+                    if !unavailable.is_empty() {
+                        report["not_available_here"] = json!(unavailable);
+                        report["note"] = json!(
+                            if crate::swarm::is_worker(self.context.session_id) {
+                                "Your role in the swarm does not include these tools, and asking again will not add them. Finish what you can and say in your report that this part needs an agent with them."
+                            } else {
+                                "These tools are not installed here; do the task another way or say what is missing."
+                            }
+                        );
+                    }
+                    discover_report = Some(report);
                 }
                 self.emit(AgentEvent::ToolStarted {
                     call_id: call.id.clone(),
@@ -2421,6 +2451,11 @@ impl Session {
                         (signature, 0, Ok(value))
                     }
                 };
+                if let Some(report) = discover_report
+                    && result.is_ok()
+                {
+                    result = Ok(report);
+                }
                 if is_continuity_tool(&call.name)
                     && result
                         .as_ref()
@@ -2922,6 +2957,23 @@ impl Session {
 
 /// Tools that act on the computer. A planner turn calling any of them is one
 /// action step; observing, planning, and memory tools are not steps.
+/// The capability families discover_tools can enable.
+const DISCOVERABLE_GROUPS: [&str; 10] = [
+    "desktop",
+    "browser",
+    "system",
+    "coding",
+    "memory",
+    "archive",
+    "generated",
+    "subagent",
+    "mcp",
+    "other",
+];
+
+/// Direct actions after which a request's swarm hint is dropped.
+const SWARM_HINT_DIRECT_ACTIONS: u32 = 3;
+
 /// Why a raw navigation call is refused while System 1 does the motor work.
 pub(super) const LOCKED_FOR_SYSTEM_ONE: &str =
     "is locked while the fast decision router (System 1) is enabled";
