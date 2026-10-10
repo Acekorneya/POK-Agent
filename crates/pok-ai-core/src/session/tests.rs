@@ -2110,6 +2110,51 @@ fn a_small_reference_result_outlives_large_page_reads() {
 }
 
 #[test]
+fn a_read_the_task_works_from_outlives_small_page_results() {
+    // The resume read twice, then small page results: over budget, the
+    // earlier copy of the resume goes first, then the page results, and the
+    // latest copy of the resume stays.
+    let resume = "RESUME Jordan Avery jordan.avery@example.com";
+    let read = |id: usize| {
+        let mut cycle = read_file_cycle(0, resume);
+        cycle[0].tool_calls[0].id = format!("call-read-{id}");
+        cycle[1].tool_call_id = Some(format!("call-read-{id}"));
+        cycle
+    };
+    let mut messages = vec![
+        BrainMessage::text("system", "system"),
+        BrainMessage::text("user", "fill both applications from my resume"),
+    ];
+    messages.extend(read(0));
+    messages.extend(read(1));
+    for index in 1..19 {
+        let mut cycle = read_file_cycle(index, &format!("PAGE_{index}_{}", "x".repeat(1_500)));
+        cycle[0].tool_calls[0].name = "user_browser_tabs".into();
+        messages.extend(cycle);
+    }
+    let (bounded, _, actions) = bounded_context(&messages, 1, 6_800, 4_000, 1.0);
+    let tool_text = |id: &str| {
+        let message = bounded
+            .iter()
+            .find(|message| message.tool_call_id.as_deref() == Some(id))
+            .unwrap();
+        serde_json::to_string(&message.content).unwrap()
+    };
+    assert!(
+        actions
+            .iter()
+            .any(|action| action.starts_with("compacted_tool_results")),
+        "{actions:?}"
+    );
+    assert!(!tool_text("call-read-0").contains("RESUME"));
+    assert!(
+        tool_text("call-read-1").contains("RESUME"),
+        "the resume was compacted"
+    );
+    assert!(!tool_text("call-1").contains("PAGE_1_"));
+}
+
+#[test]
 fn bounded_context_compacts_oldest_tool_results_only_over_budget() {
     let mut messages = vec![
         BrainMessage::text("system", "system"),

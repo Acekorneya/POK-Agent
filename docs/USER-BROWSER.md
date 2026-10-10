@@ -78,6 +78,11 @@ it, and close it afterwards if other software on the machine is not trusted.
   so the browser opens the tab, and the agent continues there. It follows
   only a tab opened by its own tab: a tab you open at the same moment is
   never taken over.
+- **It keeps track of the forms it fills.** A filled form that is not sent
+  keeps its tab: the next page opens in a new one. While the agent fills
+  forms, every turn lists each form tab with what is filled and what is
+  still empty, read from the pages, and before it reports the task done it
+  is asked once about any form it left with empty fields.
 - **It can read the whole page.** `user_browser_extract` returns the URL,
   title, visible text, and every visible control with the id to act on, and
   with `include_html` the page's HTML (scripts and styles removed, each

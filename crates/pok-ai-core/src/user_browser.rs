@@ -69,6 +69,25 @@ struct UserBrowserState {
     /// Tabs holding a form the agent filled and did not submit, by address:
     /// opening another page goes to a new tab, so the filled form stays.
     filled_tabs: HashMap<String, String>,
+    /// The form fields on each tab the agent has had open, as its latest read
+    /// of that tab showed them: the run's record of what is filled where.
+    forms: HashMap<String, FormPage>,
+}
+
+/// The fields of a form on one page, read from the page itself.
+#[derive(Debug, Clone, PartialEq)]
+struct FormPage {
+    url: String,
+    title: String,
+    fields: Vec<FormField>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct FormField {
+    label: String,
+    filled: bool,
+    /// A check box: unchecked can be the right answer, so it is not "empty".
+    check_box: bool,
 }
 
 pub struct UserBrowser {
@@ -858,6 +877,8 @@ impl UserBrowser {
                     .await
                     .map_err(|error| PokError::Tool(format!("could not close the tab: {error}")))?;
                 state.owned_tabs.remove(&tab.id);
+                state.filled_tabs.remove(&tab.id);
+                state.forms.remove(&tab.id);
                 if let Some(connection) = state.connection.as_mut()
                     && connection.page_target.as_deref() == Some(tab.id.as_str())
                 {
@@ -1835,7 +1856,9 @@ impl Tool for NavigateTool {
     async fn execute(&self, arguments: Value, context: &ToolContext) -> Result<Value> {
         allowed(context, self.name())?;
         let args: NavigateArgs = serde_json::from_value(arguments)?;
-        self.0.navigate(context, &args.url).await
+        let result = self.0.navigate(context, &args.url).await;
+        self.0.note_form(context).await;
+        result
     }
 }
 
@@ -1856,9 +1879,12 @@ impl Tool for ClickTool {
     async fn execute(&self, arguments: Value, context: &ToolContext) -> Result<Value> {
         allowed(context, self.name())?;
         let args: ClickArgs = serde_json::from_value(arguments)?;
-        self.0
+        let result = self
+            .0
             .act(context, self.name(), &args.target, Action::Click)
-            .await
+            .await;
+        self.0.note_form(context).await;
+        result
     }
 }
 
@@ -1879,7 +1905,8 @@ impl Tool for TypeTool {
     async fn execute(&self, arguments: Value, context: &ToolContext) -> Result<Value> {
         allowed(context, self.name())?;
         let args: TypeArgs = serde_json::from_value(arguments)?;
-        self.0
+        let result = self
+            .0
             .act(
                 context,
                 self.name(),
@@ -1889,7 +1916,9 @@ impl Tool for TypeTool {
                     submit: args.submit,
                 },
             )
-            .await
+            .await;
+        self.0.note_form(context).await;
+        result
     }
 }
 
@@ -1910,7 +1939,8 @@ impl Tool for SelectTool {
     async fn execute(&self, arguments: Value, context: &ToolContext) -> Result<Value> {
         allowed(context, self.name())?;
         let args: SelectArgs = serde_json::from_value(arguments)?;
-        self.0
+        let result = self
+            .0
             .act(
                 context,
                 self.name(),
@@ -1919,7 +1949,9 @@ impl Tool for SelectTool {
                     option: &args.option,
                 },
             )
-            .await
+            .await;
+        self.0.note_form(context).await;
+        result
     }
 }
 
@@ -1940,7 +1972,8 @@ impl Tool for ExtractTool {
     async fn execute(&self, arguments: Value, context: &ToolContext) -> Result<Value> {
         allowed(context, self.name())?;
         let args: ExtractArgs = serde_json::from_value(arguments)?;
-        self.0
+        let result = self
+            .0
             .extract(
                 context,
                 args.selector.as_deref(),
@@ -1952,7 +1985,9 @@ impl Tool for ExtractTool {
                     )
                 }),
             )
-            .await
+            .await;
+        self.0.note_form(context).await;
+        result
     }
 }
 
@@ -2000,9 +2035,12 @@ impl Tool for TabsTool {
     async fn execute(&self, arguments: Value, context: &ToolContext) -> Result<Value> {
         allowed(context, self.name())?;
         let args: TabsArgs = serde_json::from_value(arguments)?;
-        self.0
+        let result = self
+            .0
             .tabs_action(context, args.action, args.tab_id.as_deref())
-            .await
+            .await;
+        self.0.note_form(context).await;
+        result
     }
 }
 
@@ -2066,6 +2104,213 @@ impl Tool for WaitForTool {
             )
             .await
     }
+}
+
+impl UserBrowser {
+    /// Record the form in the agent's tab as the page now shows it.
+    async fn note_form(&self, context: &ToolContext) {
+        let state = self.state(context.session_id);
+        let mut state = state.lock().await;
+        let Some((tab, form)) = state.connection.as_ref().and_then(|connection| {
+            Some((
+                connection.page_target.clone()?,
+                connection.last_snapshot.as_ref().map(form_page),
+            ))
+        }) else {
+            return;
+        };
+        match form.flatten() {
+            Some(form) => {
+                state.forms.insert(tab, form);
+            }
+            None => {
+                state.forms.remove(&tab);
+            }
+        }
+    }
+}
+
+/// The form on a page read: its fields to fill (not search boxes, buttons,
+/// radio buttons, or password fields), when there are at least two.
+fn form_page(snapshot: &Value) -> Option<FormPage> {
+    let text = |value: &Value, key: &str| {
+        value
+            .get(key)
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .trim()
+            .to_owned()
+    };
+    let fields = snapshot
+        .get("elements")?
+        .as_array()?
+        .iter()
+        .filter_map(|element| {
+            let input_type = element
+                .get("input_type")
+                .and_then(Value::as_str)
+                .unwrap_or("text");
+            if !matches!(
+                element.get("tag").and_then(Value::as_str),
+                Some("input" | "textarea" | "select")
+            ) || matches!(
+                input_type,
+                "hidden"
+                    | "submit"
+                    | "button"
+                    | "reset"
+                    | "image"
+                    | "file"
+                    | "radio"
+                    | "search"
+                    | "password"
+            ) || element.get("search").and_then(Value::as_bool) == Some(true)
+                || element.get("sensitive").and_then(Value::as_bool) == Some(true)
+            {
+                return None;
+            }
+            // A list's accessible name ends with its options' labels.
+            let options = element
+                .get("options")
+                .and_then(Value::as_array)
+                .map(|options| {
+                    options
+                        .iter()
+                        .filter_map(|option| option.get("label")?.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default();
+            let name = text(element, "name");
+            let label = name
+                .strip_suffix(options.as_str())
+                .filter(|_| !options.is_empty())
+                .unwrap_or(&name)
+                .trim()
+                .chars()
+                .take(80)
+                .collect::<String>();
+            if label.is_empty() {
+                return None;
+            }
+            let check_box = input_type == "checkbox";
+            let filled = if check_box {
+                element.get("checked").and_then(Value::as_bool) == Some(true)
+            } else {
+                !text(element, "value").is_empty()
+            };
+            Some(FormField {
+                label,
+                filled,
+                check_box,
+            })
+        })
+        .collect::<Vec<_>>();
+    (fields.len() >= 2).then(|| FormPage {
+        url: text(snapshot, "url"),
+        title: text(snapshot, "title"),
+        fields,
+    })
+}
+
+/// What a form holds, in a line: what is filled, and by name what is not.
+fn describe_form(form: &FormPage) -> String {
+    let (check_boxes, entries): (Vec<_>, Vec<_>) =
+        form.fields.iter().partition(|field| field.check_box);
+    let filled = entries.iter().filter(|field| field.filled).count();
+    let empty = entries
+        .iter()
+        .filter(|field| !field.filled)
+        .map(|field| field.label.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
+    let mut line = if empty.is_empty() {
+        format!("all {} fields filled", entries.len())
+    } else if filled == 0 {
+        format!("not started; empty: {empty}")
+    } else {
+        format!(
+            "{filled} of {} fields filled; empty: {empty}",
+            entries.len()
+        )
+    };
+    let unchecked = check_boxes
+        .iter()
+        .filter(|field| !field.filled)
+        .map(|field| field.label.as_str())
+        .collect::<Vec<_>>();
+    if !unchecked.is_empty() {
+        line.push_str(&format!("; unchecked: {}", unchecked.join("; ")));
+    }
+    line
+}
+
+/// The forms in the agent's tabs, one line each, while it is filling forms.
+/// `unfinished` keeps only forms with empty fields that it filled part of or
+/// opened itself.
+async fn form_lines(session: Uuid, unfinished: bool) -> Vec<String> {
+    let Some(browser) = active() else {
+        return Vec::new();
+    };
+    let state = browser.state(session);
+    let state = state.lock().await;
+    if state.filled_tabs.is_empty() {
+        return Vec::new();
+    }
+    let here = state
+        .connection
+        .as_ref()
+        .and_then(|connection| connection.page_target.as_deref());
+    let mut forms = state
+        .forms
+        .iter()
+        .filter(|(tab, form)| {
+            !unfinished
+                || ((state.filled_tabs.contains_key(*tab) || state.owned_tabs.contains(*tab))
+                    && form
+                        .fields
+                        .iter()
+                        .any(|field| !field.check_box && !field.filled))
+        })
+        .collect::<Vec<_>>();
+    forms.sort_by(|left, right| left.1.url.cmp(&right.1.url));
+    forms
+        .into_iter()
+        .map(|(tab, form)| {
+            format!(
+                "- \"{}\" ({}, tab_id {tab}{}): {}",
+                form.title,
+                form.url,
+                if here == Some(tab.as_str()) {
+                    ", you are here"
+                } else {
+                    ""
+                },
+                describe_form(form)
+            )
+        })
+        .collect()
+}
+
+/// What the forms in the agent's tabs hold, read from the pages, for the turn
+/// reminder while it fills forms: weaker models otherwise lose track of
+/// which tab still needs what, switch back and forth, and report forms done
+/// that are not.
+pub(crate) async fn form_notes(session: Uuid) -> Option<String> {
+    let lines = form_lines(session, false).await;
+    (!lines.is_empty()).then(|| {
+        format!(
+            "FORMS, as the pages show them (nothing sent):\n{}",
+            lines.join("\n")
+        )
+    })
+}
+
+/// The forms still missing entries, checked before the agent reports the
+/// task finished.
+pub(crate) async fn unfinished_forms(session: Uuid) -> Option<String> {
+    let lines = form_lines(session, true).await;
+    (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
 /// The page the main agent last had open in its tab of the user's browser,
@@ -2190,6 +2435,36 @@ mod tests {
 
     fn flagged(role: &str, name: &str, url: &str) -> Option<Consequence> {
         guardrail::click(&element("b1", role, name), url).map(|(consequence, _)| consequence)
+    }
+
+    #[test]
+    fn a_form_is_read_from_the_page_as_filled_and_empty_fields() {
+        let page = json!({
+            "url": "https://jobs.example/apply",
+            "title": "Apply: Platform Engineer",
+            "elements": [
+                {"tag": "input", "input_type": "search", "name": "Search jobs", "value": ""},
+                {"tag": "input", "input_type": "text", "name": "Full name", "value": "Jordan Avery"},
+                {"tag": "input", "input_type": "email", "name": "Email", "value": ""},
+                {"tag": "select", "name": "Years Choose 0-2 3-5", "value": "",
+                 "options": [{"label": "Choose"}, {"label": "0-2"}, {"label": "3-5"}]},
+                {"tag": "input", "input_type": "checkbox", "name": "Remote", "checked": false},
+                {"tag": "input", "input_type": "password", "name": "Password", "value": ""},
+                {"tag": "textarea", "name": "Why us?", "value": "Because"},
+                {"tag": "button", "name": "Submit application"}
+            ]
+        });
+        let form = form_page(&page).expect("a form");
+        assert_eq!(form.fields.len(), 5);
+        assert_eq!(
+            describe_form(&form),
+            "2 of 4 fields filled; empty: Email; Years; unchecked: Remote"
+        );
+        // A page with one search box is not a form.
+        let search = json!({"url": "u", "title": "t", "elements": [
+            {"tag": "input", "input_type": "search", "name": "Search", "value": ""}
+        ]});
+        assert!(form_page(&search).is_none());
     }
 
     #[test]
@@ -2661,6 +2936,12 @@ mod tests {
             .await
             .unwrap();
         assert!(back.to_string().contains("kept value"), "{back}");
+        // The turn reminder's record of the form, read from the page.
+        let notes = form_notes(context.session_id).await.unwrap_or_default();
+        assert!(
+            notes.contains(&format!("tab_id {form_tab}, you are here")),
+            "{notes}"
+        );
         for tab in [form_tab.as_str(), next["tab"]["tab_id"].as_str().unwrap()] {
             let _ = call(
                 "user_browser_tabs",
@@ -2668,6 +2949,7 @@ mod tests {
             )
             .await;
         }
+        assert!(form_notes(context.session_id).await.is_none());
     }
 
     /// Scrolling, waiting, and paging in a background tab of a real browser:
