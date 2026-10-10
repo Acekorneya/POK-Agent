@@ -2276,6 +2276,32 @@ impl Session {
                     PreCallDecision::Execute {
                         signature,
                         prior_attempts,
+                    } if navigation_locked
+                        && DELEGATED_NAVIGATION_TOOLS.contains(&call.name.as_str()) =>
+                    {
+                        // A locked tool is not offered, but a model that read
+                        // its name in the catalog can still call it: System 1
+                        // does the motor work, so the step goes to fast_actions.
+                        increment_metric(&mut metrics, "locked_navigation_redirected", 1);
+                        (
+                            signature,
+                            prior_attempts,
+                            Err(PokError::Tool(format!(
+                                "{} {LOCKED_FOR_SYSTEM_ONE}. Put this step in fast_actions instead: a subgoal, the quoted target label, done_when, and allowed_operations [\"{}\"]. Raw navigation comes back only after fast_actions hands a step back.",
+                                call.name,
+                                if call.name.starts_with("user_browser_") {
+                                    "user_browser_click"
+                                } else if call.name.starts_with("managed_browser_") {
+                                    "managed_browser_click"
+                                } else {
+                                    "click"
+                                }
+                            ))),
+                        )
+                    }
+                    PreCallDecision::Execute {
+                        signature,
+                        prior_attempts,
                     } if call.name == "execute_action_batch"
                         && self.delegated_decision_router()
                         && self.raw_navigation_unlocked == 0
@@ -2287,9 +2313,9 @@ impl Session {
                         (
                             signature,
                             prior_attempts,
-                            Err(PokError::Tool(
-                                "navigation-only action batches are unavailable while the fast decision router is enabled; use fast_actions with the target labels (batches that type text or press keys are still allowed)".into(),
-                            )),
+                            Err(PokError::Tool(format!(
+                                "navigation-only action batches are unavailable: {LOCKED_FOR_SYSTEM_ONE}; use fast_actions with the target labels (batches that type text or press keys are still allowed)"
+                            ))),
                         )
                     }
                     PreCallDecision::Execute {
@@ -2553,7 +2579,11 @@ impl Session {
                     unchanged_plan_streak = 0;
                 }
                 if let Err(error) = &result {
-                    increment_metric(&mut metrics, "tool_errors", 1);
+                    // Sending a step to System 1 is a correction, not a failed
+                    // action, so it does not count against learning the run.
+                    if !redirected_to_system_one(error) {
+                        increment_metric(&mut metrics, "tool_errors", 1);
+                    }
                     self.log(
                         "attempt_failure_attributed",
                         json!({
@@ -2892,6 +2922,15 @@ impl Session {
 
 /// Tools that act on the computer. A planner turn calling any of them is one
 /// action step; observing, planning, and memory tools are not steps.
+/// Why a raw navigation call is refused while System 1 does the motor work.
+pub(super) const LOCKED_FOR_SYSTEM_ONE: &str =
+    "is locked while the fast decision router (System 1) is enabled";
+
+/// Whether a tool error only sent the step to System 1 (`fast_actions`).
+pub(super) fn redirected_to_system_one(error: &PokError) -> bool {
+    error.to_string().contains(LOCKED_FOR_SYSTEM_ONE)
+}
+
 pub(super) fn is_acting_tool(name: &str) -> bool {
     matches!(
         name,

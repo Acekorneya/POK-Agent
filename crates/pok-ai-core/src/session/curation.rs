@@ -43,6 +43,12 @@ pub(super) fn workflow_step(name: &str, arguments: &Value, result: &Value) -> Op
         "managed_browser_type",
         "managed_browser_select",
         "managed_browser_scroll",
+        "user_browser_navigate",
+        "user_browser_extract",
+        "user_browser_click",
+        "user_browser_type",
+        "user_browser_select",
+        "user_browser_scroll",
     ];
     if name == "fast_actions" {
         return Some(fast_actions_workflow_step(arguments, result));
@@ -117,7 +123,9 @@ pub(super) fn workflow_step(name: &str, arguments: &Value, result: &Value) -> Op
             + usize::from(result.pointer("/state_change/focus_changed").and_then(Value::as_bool).unwrap_or(false))
             + result.pointer("/state_change/selected_changed").and_then(Value::as_array).map_or(0, Vec::len)
             + usize::from(result.pointer("/state_change/focused_control_changed").and_then(Value::as_bool).unwrap_or(false)),
-        "page_fingerprint": result.get("fingerprint").filter(|_| name.starts_with("managed_browser_")),
+        "page_fingerprint": result
+            .get("fingerprint")
+            .filter(|_| name.starts_with("managed_browser_") || name.starts_with("user_browser_")),
         "submission_status": result.pointer("/submission/status"),
         // A command whose goal the runtime verified (for example a file
         // written and read back) is outcome evidence without a UI change.
@@ -128,8 +136,9 @@ pub(super) fn workflow_step(name: &str, arguments: &Value, result: &Value) -> Op
     }))
 }
 
-/// Add a workflow step. A managed-browser action that leaves a different page
-/// than the previous browser step saw counts as a state change.
+/// Add a workflow step. A browser action (managed browser or the user's own)
+/// that leaves a different page than the previous browser step saw counts as
+/// a state change; reading a page does not.
 pub(super) fn push_workflow_step(workflow: &mut Vec<Value>, mut step: Value) {
     if let Some(fingerprint) = step.get("page_fingerprint").and_then(Value::as_str) {
         let previous = workflow
@@ -139,7 +148,17 @@ pub(super) fn push_workflow_step(workflow: &mut Vec<Value>, mut step: Value) {
         let acted = step
             .get("tool")
             .and_then(Value::as_str)
-            .is_some_and(|tool| tool != "managed_browser_snapshot");
+            .is_some_and(|tool| {
+                !matches!(
+                    tool,
+                    "managed_browser_snapshot"
+                        | "user_browser_extract"
+                        | "user_browser_screenshot"
+                        | "user_browser_wait_for"
+                        | "user_browser_tabs"
+                        | "user_browser_status"
+                )
+            });
         if acted && previous.is_some_and(|previous| previous != fingerprint) {
             step["state_change_count"] = json!(1);
         }
@@ -315,7 +334,23 @@ pub(super) fn sanitize_workflow_arguments(name: &str, arguments: &Value) -> Valu
             );
         }
     }
-    if name == "browser_navigate" {
+    // A list choice and a control named by its text in the user's browser
+    // are task values, like typed text.
+    if name.starts_with("user_browser_") || name.starts_with("managed_browser_") {
+        for (key, placeholder) in [
+            ("option", "<CURRENT_VALUE>"),
+            ("value", "<CURRENT_VALUE>"),
+            ("target", "<CURRENT_UI_LABEL>"),
+        ] {
+            if object.contains_key(key) {
+                object.insert(key.into(), Value::String(placeholder.into()));
+            }
+        }
+    }
+    if matches!(
+        name,
+        "browser_navigate" | "user_browser_navigate" | "managed_browser_open"
+    ) {
         for key in ["query_or_url", "url"] {
             if object.contains_key(key) {
                 object.insert(key.into(), Value::String("<CURRENT_DESTINATION>".into()));
@@ -426,6 +461,11 @@ pub(super) fn qualify_workflow(
                             | "managed_browser_type"
                             | "managed_browser_select"
                             | "managed_browser_scroll"
+                            | "user_browser_navigate"
+                            | "user_browser_click"
+                            | "user_browser_type"
+                            | "user_browser_select"
+                            | "user_browser_scroll"
                     )
                 )
         })
@@ -458,6 +498,11 @@ pub(super) fn qualify_workflow(
                             | "managed_browser_type"
                             | "managed_browser_select"
                             | "managed_browser_scroll"
+                            | "user_browser_navigate"
+                            | "user_browser_click"
+                            | "user_browser_type"
+                            | "user_browser_select"
+                            | "user_browser_scroll"
                     )
                 )
         })
@@ -1104,6 +1149,18 @@ fn procedure_step(step: &Value) -> Option<ProcedureStep> {
         }
         "managed_browser_select" => "Choose the current task value in a managed-browser list.",
         "managed_browser_scroll" => "Scroll the managed-browser page.",
+        "user_browser_navigate" => {
+            "Open `<CURRENT_DESTINATION>` in the agent's tab of the user's browser."
+        }
+        "user_browser_extract" => "Read the current page in the user's browser.",
+        "user_browser_click" => {
+            "Click the freshly resolved `<CURRENT_UI_LABEL>` control in the user's browser."
+        }
+        "user_browser_type" => {
+            "Type the current task text into a freshly resolved field in the user's browser."
+        }
+        "user_browser_select" => "Choose the current task value in a list in the user's browser.",
+        "user_browser_scroll" => "Scroll the page in the user's browser.",
         _ => return None,
     };
     Some(ProcedureStep {

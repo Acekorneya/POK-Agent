@@ -669,6 +669,15 @@ pub(super) fn delegated_catalog(catalog: String, navigation_locked: bool) -> Str
         .join("\n")
 }
 
+/// The text inside one extra layer of quotes, when a whole value was quoted
+/// again around already escaped quotes; None when it is plain or a single
+/// quoted label such as `"Firefox"`.
+pub(super) fn unwrap_double_quoted(text: &str) -> Option<String> {
+    let trimmed = text.trim();
+    let inner = trimmed.strip_prefix('"')?.strip_suffix('"')?;
+    inner.contains("\\\"").then(|| inner.replace("\\\"", "\""))
+}
+
 pub(super) const DELEGATED_NAVIGATION_TOOLS: [&str; 6] = [
     "click_target",
     "scroll_view",
@@ -897,6 +906,16 @@ pub(super) fn repair_fast_plan(node: &mut Value, top_level: bool) {
             {
                 *steps = Value::Array(vec![steps.take()]);
             }
+        }
+    }
+    // A condition or hint quoted twice over (`"heading \"Mozilla\" is
+    // visible"` with the outer quotes kept) is read as the inner text, so its
+    // quoted labels can still be checked locally.
+    for key in ["target_hint", "done_when", "goal"] {
+        if let Some(text) = object.get(key).and_then(Value::as_str)
+            && let Some(inner) = unwrap_double_quoted(text)
+        {
+            object.insert(key.into(), json!(inner));
         }
     }
     // A list given inside a list (`"input": [[...]]`, left by an unwrapped

@@ -160,4 +160,8 @@ first, and an agent whose action you decline reports it instead of retrying.
   are outside the page and cannot be operated; `user_browser_select` sets list
   values directly.
 - Shadow DOM and same-origin frames are read; cross-origin frames are not.
-- Muscle memory (motor programs) does not record user-browser steps yet.
+- Muscle memory records opening a page and clicking controls by label in your
+  browser, and System 1 replays that path on the same or a similar request
+  (a page the request named is filled in from the new request). Typing and
+  list choices there are not recorded yet, and a page address with a query or
+  anything private-looking ends the recording.

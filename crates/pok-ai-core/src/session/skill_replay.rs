@@ -159,22 +159,6 @@ impl Session {
             .map(|program| program_nodes(program, &skill.title, &skill.task_signature, request))
             .unwrap_or_default();
         let from_program = !plan.is_empty();
-        let describe = |node: &Value| {
-            let mut parts = Vec::new();
-            if let Some(hint) = node.get("target_hint").and_then(Value::as_str) {
-                parts.push(format!("target_hint {hint}"));
-            }
-            if let Some(input) = node.get("input").and_then(Value::as_array) {
-                parts.push(format!("input of {} keys and texts", input.len()));
-            }
-            parts.push(format!(
-                "done_when {}",
-                node.get("done_when")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-            ));
-            parts.join("; ")
-        };
         let skipped = if skill.success_count == 0 {
             Some("unverified")
         } else if trust < SKILL_REPLAY_MIN_TRUST {
@@ -201,6 +185,68 @@ impl Session {
             record["reason"] = json!(reason);
             self.log("skill_replay_skipped", record)?;
             return Ok(0);
+        }
+        // A program for the user's own browser: System 1 opens its page in
+        // the agent's tab there and clicks through the recorded path.
+        if let Some(program) = skill.program.as_ref().filter(|_| from_program)
+            && program_opens_page(program)
+        {
+            let page = program_page(program, request);
+            let reason = if page.is_none() {
+                Some("page_not_in_request")
+            } else if !self.tools.contains("user_browser_navigate") {
+                Some("user_browser_unavailable")
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                let mut record = base;
+                record["reason"] = json!(reason);
+                self.log("skill_replay_skipped", record)?;
+                return Ok(0);
+            }
+            let page = page.unwrap_or_default();
+            let arguments = json!({"url": page});
+            let opened = self
+                .tools
+                .call("user_browser_navigate", arguments.clone(), &self.context)
+                .await;
+            match &opened {
+                Err(PokError::Cancelled) => return Err(PokError::Cancelled),
+                Err(error) => {
+                    let mut record = base;
+                    record["reason"] = json!(format!("opening the page failed: {error}"));
+                    self.log("skill_replay_skipped", record)?;
+                    return Ok(0);
+                }
+                Ok(value) => {
+                    if qualifies_as_fresh_evidence("user_browser_navigate", value, true) {
+                        self.decision_router_fresh_evidence = true;
+                    }
+                    if let Some(step) = workflow_step("user_browser_navigate", &arguments, value) {
+                        push_workflow_step(workflow, step);
+                    }
+                }
+            }
+            self.record_motor("user_browser_navigate", &arguments, &opened);
+            let place = format!(
+                "in the agent's tab of the user's browser ({})",
+                truncate_chars(&page, 200)
+            );
+            let mut record = base;
+            record["page"] = json!(page);
+            return self
+                .run_replay_plan(
+                    skill,
+                    &plan,
+                    from_program,
+                    &place,
+                    Some(format!("user_browser_navigate {page}")),
+                    record,
+                    metrics,
+                    workflow,
+                )
+                .await;
         }
         // Act on the skill's application, preferring the foreground window;
         // opening it when it is not running is part of the skill.
@@ -365,6 +411,60 @@ impl Session {
                 return Err(error);
             }
         }
+        let place = format!(
+            "in window \"{}\" ({})",
+            truncate_chars(&window.title, 120),
+            window.process_name
+        );
+        let opened_line = opened
+            .as_ref()
+            .map(|name| format!("open_application \"{name}\""));
+        let mut record = base;
+        record["window"] = json!({"title": window.title, "application": window.process_name});
+        record["opened"] = json!(opened);
+        record["load_waits"] = json!(waits);
+        self.run_replay_plan(
+            skill,
+            &plan,
+            from_program,
+            &place,
+            opened_line,
+            record,
+            metrics,
+            workflow,
+        )
+        .await
+    }
+
+    /// Run a replay plan through System 1 and tell the planner what it did.
+    #[allow(clippy::too_many_arguments)]
+    async fn run_replay_plan(
+        &mut self,
+        skill: &ProcedureRecord,
+        plan: &[Value],
+        from_program: bool,
+        place: &str,
+        opened_line: Option<String>,
+        mut record: Value,
+        metrics: &mut RunMetrics,
+        workflow: &mut Vec<Value>,
+    ) -> Result<u32> {
+        let describe = |node: &Value| {
+            let mut parts = Vec::new();
+            if let Some(hint) = node.get("target_hint").and_then(Value::as_str) {
+                parts.push(format!("target_hint {hint}"));
+            }
+            if let Some(input) = node.get("input").and_then(Value::as_array) {
+                parts.push(format!("input of {} keys and texts", input.len()));
+            }
+            parts.push(format!(
+                "done_when {}",
+                node.get("done_when")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+            ));
+            parts.join("; ")
+        };
         let mut arguments = plan[0].clone();
         if arguments.get("allowed_operations").is_none() {
             arguments["allowed_operations"] = json!(["click"]);
@@ -428,8 +528,8 @@ impl Session {
             .and_then(|node| node.get("reason").and_then(Value::as_str))
             .map(|reason| format!("\nIt stopped because: {}", truncate_chars(reason, 300)))
             .unwrap_or_default();
-        let lines = match &opened {
-            Some(name) => format!("0. open_application \"{name}\" -> done\n{lines}"),
+        let lines = match &opened_line {
+            Some(opened) => format!("0. {opened} -> done\n{lines}"),
             None => lines,
         };
         let next = if completed == plan.len() {
@@ -442,17 +542,11 @@ impl Session {
         self.messages.push(BrainMessage::text_with_origin(
             "system",
             format!(
-                "<system-reminder>System 1 replayed the opening steps of saved skill \"{}\" in window \"{}\" ({}) before this turn:\n{lines}{stop_reason}\n{next}</system-reminder>",
+                "<system-reminder>System 1 replayed the opening steps of saved skill \"{}\" {place} before this turn:\n{lines}{stop_reason}\n{next}</system-reminder>",
                 truncate_chars(&skill.title, 120),
-                truncate_chars(&window.title, 120),
-                window.process_name,
             ),
             MessageOrigin::SystemReminder,
         ));
-        let mut record = base;
-        record["window"] = json!({"title": window.title, "application": window.process_name});
-        record["opened"] = json!(opened);
-        record["load_waits"] = json!(waits);
         record["steps"] = json!(plan.len());
         record["mode"] = json!(if from_program {
             "program"
