@@ -479,6 +479,17 @@ impl UserBrowser {
         {
             state.owned_tabs.insert(id);
         }
+        // The control's label, so a verified run can be replayed by label
+        // (motor programs) on a page whose element ids differ.
+        if let Some(label) = resolved
+            .element
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|label| !label.trim().is_empty())
+            && let Some(action) = result.get_mut("action").and_then(Value::as_object_mut)
+        {
+            action.insert("label".into(), json!(label));
+        }
         Ok(self.decorate(result, state))
     }
 

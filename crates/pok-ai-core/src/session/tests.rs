@@ -2635,6 +2635,19 @@ fn dynamic_completion_policy_keeps_only_narrow_guards() {
     assert!(substantive_candidate_answer(
         "The captured weather results show a mostly clear evening with an overnight low near 85 degrees and an active excessive heat warning."
     ));
+    // Short direct answers count; acknowledgements and refusals do not.
+    assert!(substantive_candidate_answer(
+        "Firefox's initial release date is November 9, 2004."
+    ));
+    assert!(substantive_candidate_answer("It is 42."));
+    assert!(substantive_candidate_answer(
+        "The form asks for four fields."
+    ));
+    assert!(!substantive_candidate_answer("Done."));
+    assert!(!substantive_candidate_answer("OK"));
+    assert!(!substantive_candidate_answer(
+        "I cannot open that page, sorry."
+    ));
     assert_eq!(
         request_for_classification("  Also,   please tell me the time "),
         "tell me the time"
@@ -4629,6 +4642,20 @@ async fn fast_actions_offers_only_allowed_operations() {
 }
 
 #[test]
+fn a_condition_quoted_twice_over_is_read_as_its_inner_text() {
+    assert_eq!(
+        unwrap_double_quoted(r#""heading \"Mozilla\" is visible""#).as_deref(),
+        Some(r#"heading "Mozilla" is visible"#)
+    );
+    // A single quoted label, or plain text, is left as it is.
+    assert_eq!(unwrap_double_quoted(r#""Firefox""#), None);
+    assert_eq!(
+        unwrap_double_quoted(r#"heading "Mozilla" is visible"#),
+        None
+    );
+}
+
+#[test]
 fn delegated_catalog_marks_withheld_navigation_tools_locked() {
     let catalog = "- managed_browser_click [browser; active]: Click\n- managed_browser_select [browser; active]: Select".to_string();
     let locked = delegated_catalog(catalog.clone(), true);
@@ -5335,6 +5362,26 @@ fn a_delegated_plan_becomes_a_replayable_skill() {
 }
 
 #[test]
+fn clicks_in_the_users_browser_that_change_the_page_are_learnable() {
+    let page = |fingerprint: &str| json!({"fingerprint": fingerprint, "url": "https://example.test/", "title": "Example"});
+    let mut workflow = Vec::new();
+    for (tool, fingerprint) in [
+        ("user_browser_navigate", "page-a"),
+        ("user_browser_extract", "page-b"),
+        ("user_browser_click", "page-c"),
+    ] {
+        push_workflow_step(
+            &mut workflow,
+            workflow_step(tool, &json!({}), &page(fingerprint)).unwrap(),
+        );
+    }
+    // Reading the page is not a change; the click to a new page is.
+    assert_eq!(workflow[1]["state_change_count"], 0);
+    assert_eq!(workflow[2]["state_change_count"], 1);
+    assert!(qualify_workflow(&workflow, &[]).eligible);
+}
+
+#[test]
 fn browser_clicks_that_change_the_page_make_a_learnable_workflow() {
     let page = |fingerprint: &str| json!({"fingerprint": fingerprint, "url": "https://example.test/", "title": "Example"});
     let mut workflow = Vec::new();
@@ -5656,6 +5703,78 @@ async fn the_run_stops_acting_when_the_step_budget_is_used() {
     assert!(result.answer.contains("step budget"), "{}", result.answer);
     assert_eq!(brain.tool_requests.load(Ordering::SeqCst), 2);
     assert_eq!(harness.clicks.lock().len(), 2);
+}
+
+/// Calls click_target on its first turn whether or not it was offered, as a
+/// model that read the tool's name in the catalog does.
+struct CallsLockedClickBrain {
+    requests: AtomicU64,
+    offered_click: AtomicU64,
+}
+
+#[async_trait]
+impl Brain for CallsLockedClickBrain {
+    async fn list_models(&self) -> Result<Vec<String>> {
+        Ok(vec!["mock".into()])
+    }
+    fn stream(&self, request: BrainRequest) -> crate::brain::BrainStream {
+        if request.tools.iter().any(|tool| tool.name == "click_target") {
+            self.offered_click.fetch_add(1, Ordering::SeqCst);
+        }
+        let events = if self.requests.fetch_add(1, Ordering::SeqCst) == 0 {
+            vec![
+                Ok(BrainEvent::ToolCall {
+                    call: CompletedToolCall {
+                        id: "locked-click".into(),
+                        name: "click_target".into(),
+                        arguments: json!({"target_id": "t1", "expected_label": "general"}),
+                    },
+                }),
+                Ok(BrainEvent::Finished {
+                    reason: Some("tool_calls".into()),
+                }),
+            ]
+        } else {
+            vec![
+                Ok(BrainEvent::TextDelta {
+                    text: "The click has to go through fast_actions.".into(),
+                }),
+                Ok(BrainEvent::Finished {
+                    reason: Some("stop".into()),
+                }),
+            ]
+        };
+        Box::pin(futures::stream::iter(events))
+    }
+}
+
+#[tokio::test]
+async fn a_locked_navigation_tool_called_anyway_goes_to_system_one() {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        vec![fast_link("t1", "general")],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let brain = Arc::new(CallsLockedClickBrain {
+        requests: AtomicU64::new(0),
+        offered_click: AtomicU64::new(0),
+    });
+    harness.session.brain = brain.clone();
+    harness
+        .session
+        .run("Open the general channel")
+        .await
+        .unwrap();
+    // Not offered, and not performed when called anyway.
+    assert_eq!(brain.offered_click.load(Ordering::SeqCst), 0);
+    assert!(harness.clicks.lock().is_empty());
+    let redirected = harness.session.messages.iter().any(|message| {
+        message.role == "tool"
+            && message.content.iter().any(|part| {
+                matches!(part, MessageContent::Text { text } if text.contains("is locked while the fast decision router") && text.contains("fast_actions"))
+            })
+    });
+    assert!(redirected, "{:?}", harness.session.messages);
 }
 
 #[test]
@@ -7035,6 +7154,77 @@ fn a_program_keeps_request_text_only_as_a_fingerprint() {
     assert!(!program.to_string().contains("Example Report"));
     // Fewer than two repeatable steps is not a program.
     assert!(program_from_tape(&[json!({"stop": "run_command"})], "anything").is_none());
+}
+
+#[test]
+fn a_run_in_the_users_browser_becomes_a_program_system_one_replays() {
+    let request = "In my browser, open https://en.wikipedia.org/wiki/Rust_(programming_language) and go to the Mozilla article, then Firefox";
+    // Opening a page and clicking controls by label are motor steps.
+    let tape = [
+        motor_steps(
+            "user_browser_navigate",
+            &json!({"url": "https://en.wikipedia.org/wiki/Rust_(programming_language)"}),
+            &json!({"url": "https://en.wikipedia.org/wiki/Rust_(programming_language)"}),
+        ),
+        motor_steps(
+            "user_browser_click",
+            &json!({"target": "b366"}),
+            &json!({"action": {"operation": "click", "target_id": "b366", "label": "Mozilla"}}),
+        ),
+        motor_steps(
+            "user_browser_click",
+            &json!({"target": "b119"}),
+            &json!({"action": {"operation": "click", "target_id": "b119", "label": "Firefox"}}),
+        ),
+        // Reading leaves no step.
+        motor_steps("user_browser_extract", &json!({}), &json!({"text": "..."})),
+    ]
+    .concat();
+    assert_eq!(tape.len(), 3);
+    assert_eq!(tape[1], json!({"browser_click": "Mozilla"}));
+    let program = program_from_tape(&tape, request).unwrap();
+    // The page came from the request, so it is a slot, not a stored address.
+    assert!(program["steps"][0].get("browser_open_request").is_some());
+    assert!(program_opens_page(&program));
+    assert_eq!(
+        program_page(&program, request).as_deref(),
+        Some("https://en.wikipedia.org/wiki/Rust_(programming_language)")
+    );
+    // The clicks become one System 1 plan in the user's browser.
+    let nodes = program_nodes(
+        &program,
+        "Rust to Firefox",
+        &task_signature(request),
+        request,
+    );
+    assert_eq!(nodes.len(), 2);
+    assert_eq!(nodes[0]["target_hint"], "\"Mozilla\"");
+    assert_eq!(
+        nodes[0]["allowed_operations"],
+        json!(["user_browser_click"])
+    );
+    assert_eq!(nodes[0]["done_when"], "\"Firefox\" is visible");
+    // A similar request opens its own page in the same slot.
+    let other = "In my browser, open https://en.wikipedia.org/wiki/Go_(programming_language) and go to the Mozilla article, then Firefox";
+    assert_eq!(
+        program_page(&program, other).as_deref(),
+        Some("https://en.wikipedia.org/wiki/Go_(programming_language)")
+    );
+    // An address the agent found itself with a query is not kept.
+    let private = program_from_tape(
+        &[
+            json!({"browser_open": "https://mail.example.com/inbox?message=8812"}),
+            json!({"browser_click": "Reply"}),
+            json!({"browser_click": "Send"}),
+        ],
+        "Reply to the latest message",
+    );
+    assert!(private.is_none());
+    // A click without a label cannot be repeated by label.
+    assert_eq!(
+        motor_steps("user_browser_click", &json!({}), &json!({"action": {}})),
+        vec![json!({"stop": "user_browser_click"})]
+    );
 }
 
 #[test]

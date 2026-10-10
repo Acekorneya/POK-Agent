@@ -128,8 +128,55 @@ pub(super) fn motor_steps(tool: &str, arguments: &Value, result: &Value) -> Vec<
                 })
                 .collect()
         }
+        // The user's own browser: opening a page and clicking a control by
+        // its label replay through System 1; typing and choosing there do
+        // not yet.
+        "user_browser_navigate" => arguments
+            .get("url")
+            .and_then(Value::as_str)
+            .filter(|url| url.starts_with("http"))
+            .map_or_else(
+                || vec![json!({"stop": tool})],
+                |url| vec![json!({"browser_open": url})],
+            ),
+        "user_browser_click" => action
+            .get("label")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|label| !label.is_empty())
+            .map_or_else(
+                || vec![json!({"stop": tool})],
+                |label| vec![json!({"browser_click": label})],
+            ),
         _ => vec![json!({"stop": tool})],
     }
+}
+
+/// Where a value the request supplied sits in it: its fingerprint and the
+/// words around it, which locate the same slot in a similar request that
+/// asks for another value ("Add Paris to ..."). None when the request does
+/// not contain the value.
+fn request_slot(value: &str, request: &str) -> Option<Value> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let request_lower = request.to_lowercase();
+    let at = request_lower.find(&trimmed.to_lowercase())?;
+    let words = |text: &str| {
+        text.split(|character: char| !character.is_alphanumeric())
+            .filter(|word| !word.is_empty())
+            .map(str::to_owned)
+            .collect::<Vec<_>>()
+    };
+    let before = words(&request_lower[..at]);
+    let after = words(&request_lower[at + trimmed.to_lowercase().len()..]);
+    Some(json!({
+        "chars": trimmed.chars().count(),
+        "sha256": text_fingerprint(trimmed),
+        "before": before[before.len().saturating_sub(2)..],
+        "after": &after[..after.len().min(2)],
+    }))
 }
 
 fn text_fingerprint(text: &str) -> String {
@@ -141,37 +188,30 @@ fn text_fingerprint(text: &str) -> String {
 /// request) and private-looking text ends the program. `None` when fewer than
 /// two steps could be repeated.
 pub(super) fn program_from_tape(tape: &[Value], request: &str) -> Option<Value> {
-    let request_lower = request.to_lowercase();
     let steps = tape
         .iter()
         .map(|step| {
+            // A page the request named is a slot, so a similar request opens
+            // its own page; any other address is kept as recorded.
+            if let Some(url) = step.get("browser_open").and_then(Value::as_str) {
+                return match request_slot(url, request) {
+                    Some(slot) => json!({"browser_open_request": slot}),
+                    // An address with a query or fragment (a mailbox message,
+                    // a search, an account page) can carry private values.
+                    None if url.contains(['?', '#'])
+                        || looks_private(url)
+                        || memory_text_may_be_sensitive(url) =>
+                    {
+                        json!({"stop": "private_text"})
+                    }
+                    None => step.clone(),
+                };
+            }
             let Some(text) = step.get("text").and_then(Value::as_str) else {
                 return step.clone();
             };
-            let trimmed = text.trim();
-            let found = (!trimmed.is_empty())
-                .then(|| request_lower.find(&trimmed.to_lowercase()))
-                .flatten();
-            if let Some(at) = found {
-                // The words around the value locate its slot in a similar
-                // request that asks for another value ("Add Paris to ...").
-                let words = |text: &str| {
-                    text.split(|character: char| !character.is_alphanumeric())
-                        .filter(|word| !word.is_empty())
-                        .map(str::to_owned)
-                        .collect::<Vec<_>>()
-                };
-                let before = words(&request_lower[..at]);
-                let after = words(&request_lower[at + trimmed.to_lowercase().len()..]);
-                json!({
-                    "request_text": {
-                        "chars": trimmed.chars().count(),
-                        "sha256": text_fingerprint(trimmed),
-                        "before": before[before.len().saturating_sub(2)..],
-                        "after": &after[..after.len().min(2)],
-                    },
-                    "replace": step.get("replace"),
-                })
+            if let Some(slot) = request_slot(text, request) {
+                json!({"request_text": slot, "replace": step.get("replace")})
             } else if text.chars().count() > MOTOR_TEXT_LIMIT
                 || looks_private(text)
                 || memory_text_may_be_sensitive(text)
@@ -271,12 +311,28 @@ pub(super) fn program_nodes(
     let original_words = signature_words(original_request);
     let request_words = signature_words(request);
     let mut nodes: Vec<(Option<String>, Option<&'static str>, Vec<Value>)> = Vec::new();
-    for step in program
+    let steps = program
         .get("steps")
         .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
+        .map(Vec::as_slice)
+        .unwrap_or_default();
+    // A page opened first is opened by the replay itself (program_page).
+    let skip = usize::from(steps.first().is_some_and(opens_page));
+    for step in &steps[skip..] {
+        if let Some(label) = step.get("browser_click").and_then(Value::as_str) {
+            if !fits_request(&[label.to_owned()], &original_words, &request_words) {
+                break;
+            }
+            nodes.push((
+                Some(label.to_owned()),
+                Some("user_browser_click"),
+                Vec::new(),
+            ));
+            continue;
+        }
+        if opens_page(step) {
+            break;
+        }
         if let Some(label) = step.get("click").and_then(Value::as_str) {
             if !fits_request(&[label.to_owned()], &original_words, &request_words) {
                 break;
@@ -348,6 +404,43 @@ pub(super) fn program_nodes(
             node
         })
         .collect()
+}
+
+/// Whether a program starts by opening a page in the user's browser.
+pub(super) fn program_opens_page(program: &Value) -> bool {
+    program
+        .get("steps")
+        .and_then(Value::as_array)
+        .and_then(|steps| steps.first())
+        .is_some_and(opens_page)
+}
+
+fn opens_page(step: &Value) -> bool {
+    step.get("browser_open").is_some() || step.get("browser_open_request").is_some()
+}
+
+/// The page a program for the user's browser opens first, filled from this
+/// request when the recorded page came from the request. None for a desktop
+/// program, or when this request does not name a page in that place.
+pub(super) fn program_page(program: &Value, request: &str) -> Option<String> {
+    let first = program.get("steps")?.as_array()?.first()?;
+    if let Some(url) = first.get("browser_open").and_then(Value::as_str) {
+        return Some(url.to_owned());
+    }
+    let found = resolve_request_text(first.get("browser_open_request")?, request)?;
+    // The whole address as written in the request: a slot can stop at
+    // punctuation inside it.
+    let url = request
+        .find(&found)
+        .and_then(|at| request[at..].split_whitespace().next())
+        .unwrap_or(&found);
+    // Sentence punctuation after the address is not part of it; a closing
+    // parenthesis is, when it closes one in the address (Wikipedia titles).
+    let mut url = url.trim_end_matches(['.', ',', ';']).to_owned();
+    while url.ends_with(')') && url.matches(')').count() > url.matches('(').count() {
+        url.pop();
+    }
+    url.starts_with("http").then_some(url)
 }
 
 impl Session {

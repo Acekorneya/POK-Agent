@@ -392,9 +392,15 @@ pub(super) fn is_clarification_request(text: &str) -> bool {
     explicit_dependency || short_direct_question
 }
 
+/// Whether a final answer says something: a short direct answer ("Firefox
+/// was released on November 9, 2004.") counts, a bare acknowledgement
+/// ("Done.") or a refusal does not.
 pub(super) fn substantive_candidate_answer(text: &str) -> bool {
     let trimmed = text.trim();
-    trimmed.chars().count() >= 80
+    let words = trimmed.split_whitespace().count();
+    let length = trimmed.chars().count();
+    ((words >= 4 && length >= 16)
+        || (length >= 4 && trimmed.chars().any(|character| character.is_ascii_digit())))
         && ![
             "i can't",
             "i cannot",
