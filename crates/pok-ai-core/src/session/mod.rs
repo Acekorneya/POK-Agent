@@ -259,6 +259,9 @@ pub struct Session {
     terminal_logged: bool,
     response_max_tokens: u32,
     active_tool_groups: BTreeSet<String>,
+    /// Groups fixed at construction (a swarm worker's role), kept for every
+    /// run instead of the groups inferred from its prompt.
+    fixed_tool_groups: Option<BTreeSet<String>>,
     decision_router: Option<Arc<dyn DecisionRouter>>,
     decision_router_config: Option<crate::config::DecisionRouterConfig>,
     /// Opt-in log of router questions and proven answers for training.
@@ -493,6 +496,7 @@ impl Session {
             last_model_message_hashes: Vec::new(),
             terminal_logged: false,
             response_max_tokens,
+            fixed_tool_groups: None,
             active_tool_groups: BTreeSet::from([
                 "control".into(),
                 "desktop".into(),
@@ -709,6 +713,7 @@ impl Session {
         S: Into<String>,
     {
         self.active_tool_groups = groups.into_iter().map(Into::into).collect();
+        self.fixed_tool_groups = Some(self.active_tool_groups.clone());
         self
     }
 

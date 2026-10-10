@@ -22,7 +22,10 @@ impl Session {
         self.raw_navigation_unlocked = 0;
         self.messages
             .retain(|message| message.origin != MessageOrigin::RetrievedContext);
-        self.active_tool_groups = inferred_tool_groups(&prompt);
+        self.active_tool_groups = self
+            .fixed_tool_groups
+            .clone()
+            .unwrap_or_else(|| inferred_tool_groups(&prompt));
         // The fixed prompt from the previous run may include schemas the new
         // request no longer activates; recompute it before the first turn.
         self.last_fixed_prompt_tokens = 0;
@@ -486,6 +489,13 @@ impl Session {
             0
         };
         let mut swarm_hint_open = listed_parts >= 2;
+        // A request for the user's own browser is a constraint for the whole
+        // run: weaker models otherwise drift to the managed browser.
+        let user_browser_note = (self.tools.contains("user_browser_navigate")
+            && requests_user_browser(&prompt))
+        .then_some(
+            "BROWSER: the user asked for their own browser. Work there with the user_browser tools (their signed-in session, in the agent's own background tab), not the managed browser, and give swarm agents that work in it the browse role.",
+        );
         // Looking around first is fine (a page, a file): the hint stays
         // through a few direct actions, then the planner's choice stands.
         let mut direct_actions = 0_u32;
@@ -745,7 +755,7 @@ impl Session {
             let adaptive_guard = metrics.turns >= 4 || metrics.tool_calls >= 3;
             let swarm_hint = swarm_hint_open.then(|| {
                 format!(
-                    "this request lists {listed_parts} separate parts. As soon as you know enough to describe each part (a quick look at the page or file is fine), give them to run_agents, one agent per part, all at once, with what each needs in its context; then combine their reports. Do a part yourself only when it is a single obvious step."
+                    "SWARM: this request lists {listed_parts} separate parts. As soon as you know enough to describe each part (a quick look at the page or file is fine), give them to run_agents, one agent per part, all at once, with what each needs in its context; then combine their reports. Do a part yourself only when it is a single obvious step."
                 )
             });
             let task_reminder = active_task_reminder(
@@ -756,7 +766,15 @@ impl Session {
                     self.tools.compact_catalog(&self.active_tool_groups),
                     navigation_locked,
                 ),
-                swarm_hint.as_deref(),
+                {
+                    let notes = swarm_hint
+                        .into_iter()
+                        .chain(user_browser_note.map(str::to_owned))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    (!notes.is_empty()).then_some(notes)
+                }
+                .as_deref(),
             );
             let system_chars = self
                 .messages
