@@ -130,10 +130,11 @@ base_url = "https://api.anthropic.com/v1"
 data_boundary = "external_service"
 api_key_env = "ANTHROPIC_API_KEY"
 
-# OpenCode Zen: an OpenAI-compatible gateway with several free models (their
-# IDs end in -free; `pok-ai models --provider opencode` lists what is
-# available). Built in, like OpenRouter: set OPENCODE_API_KEY or save the key
-# in the desktop app.
+# OpenCode Zen: an OpenAI-compatible gateway (`pok-ai models --provider
+# opencode` lists its models). Its paid models work with credits on your Zen
+# account; its free models are served only to the OpenCode app itself and
+# refuse other clients. Built in, like OpenRouter: set OPENCODE_API_KEY or
+# save the key in the desktop app.
 [providers.opencode]
 protocol = "openai_compatible"
 base_url = "https://opencode.ai/zen/v1"

@@ -922,8 +922,8 @@ fn default_providers() -> BTreeMap<String, ProviderConfig> {
             },
         ),
         (
-            // OpenCode Zen: an OpenAI-compatible gateway with several free
-            // models (their IDs end in `-free`).
+            // OpenCode Zen: an OpenAI-compatible gateway (paid models; its
+            // free tier is served only to the OpenCode app itself).
             "opencode".into(),
             ProviderConfig {
                 protocol: ProviderProtocol::OpenaiCompatible,

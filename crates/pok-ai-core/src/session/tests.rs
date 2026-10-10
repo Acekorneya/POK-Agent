@@ -338,6 +338,45 @@ fn channel_state() -> VerifiedState {
 }
 
 #[test]
+fn requests_that_list_parts_are_put_to_the_swarm() {
+    assert_eq!(
+        listed_request_parts(
+            "Three things: (1) open the feed; (2) read the form; (3) search the web."
+        ),
+        3
+    );
+    assert_eq!(
+        listed_request_parts("Please:\n1. Check mail\n2. Book a room"),
+        2
+    );
+    assert_eq!(
+        listed_request_parts("Compare:\n- pricing pages\n- the docs\n- reviews"),
+        3
+    );
+    // One part, a version number, or a function call is not a list.
+    assert_eq!(listed_request_parts("(1) open Notepad"), 0);
+    assert_eq!(listed_request_parts("Install version 1.2 and call f(1)"), 0);
+    assert_eq!(
+        listed_request_parts("Open the settings and turn on dark mode"),
+        0
+    );
+
+    let state = ActiveTaskState {
+        root_request: "(1) a (2) b".into(),
+        ..ActiveTaskState::default()
+    };
+    let text = |hint: Option<&str>| match active_task_reminder(&state, None, false, "", hint)
+        .content
+        .remove(0)
+    {
+        MessageContent::Text { text } => text,
+        MessageContent::ImagePng { .. } => panic!("expected a text reminder"),
+    };
+    assert!(text(Some("call run_agents now")).contains("SWARM: call run_agents now"));
+    assert!(!text(None).contains("SWARM:"));
+}
+
+#[test]
 fn stale_model_plan_is_overridden_by_verified_state() {
     let state = ActiveTaskState {
         root_request: "Find WorldofAI's latest video".into(),
@@ -349,6 +388,7 @@ fn stale_model_plan_is_overridden_by_verified_state() {
         Some(&channel_state()),
         true,
         "- run_command [system; inactive]: Run a complete shell command",
+        None,
     );
     let MessageContent::Text { text } = &reminder.content[0] else {
         panic!("expected text reminder");
@@ -2576,6 +2616,7 @@ fn active_task_reminder_keeps_latest_request_authoritative() {
         None,
         true,
         "- capture_screen [desktop; active]: Capture the selected window",
+        None,
     );
     assert_eq!(reminder.origin, MessageOrigin::SystemReminder);
     let text = match reminder.content.first().expect("text reminder") {
