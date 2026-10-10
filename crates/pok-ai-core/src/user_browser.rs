@@ -579,18 +579,34 @@ impl UserBrowser {
             .cloned()
             .unwrap_or(Value::Null);
         tokio::time::sleep(Duration::from_millis(500)).await;
-        if moved.get("hidden").and_then(Value::as_bool) == Some(true) {
+        let at = moved.get("at").and_then(Value::as_u64);
+        if moved.get("hidden").and_then(Value::as_bool) == Some(true)
+            && at.is_some()
+            && at != moved.get("from").and_then(Value::as_u64)
+        {
             // A background tab does not run the rendering steps that fire
-            // visibility observers (lazy images, infinite feeds); a capture
-            // renders it once without showing it, then content can load.
-            let _ = ManagedBrowser::cdp(
-                connection,
-                "Page.captureScreenshot",
-                json!({"format": "jpeg", "quality": 1, "captureBeyondViewport": true}),
+            // visibility observers (lazy images, infinite feeds); a capture of
+            // the visible area renders it once without showing it, so what a
+            // person scrolling there would see can load, and no more. The
+            // browser draws a background tab only when something moved, so a
+            // scroll that did not move is not rendered, and a capture that
+            // does not come back in time is left.
+            let clip = json!({
+                "x": 0, "y": at, "scale": 1,
+                "width": moved.get("width").and_then(Value::as_u64).unwrap_or(1280),
+                "height": moved.get("view").and_then(Value::as_u64).unwrap_or(800),
+            });
+            let _ = tokio::time::timeout(
+                Duration::from_secs(3),
+                ManagedBrowser::cdp(
+                    connection,
+                    "Page.captureScreenshot",
+                    json!({"format": "jpeg", "quality": 1, "captureBeyondViewport": true, "clip": clip}),
+                ),
             )
             .await;
             tokio::time::sleep(Duration::from_millis(700)).await;
-            if let Some(at) = moved.get("at").and_then(Value::as_u64) {
+            if let Some(at) = at {
                 restore_scroll(connection, at).await;
             }
         }
@@ -1063,7 +1079,7 @@ const SCROLL_SCRIPT: &str = r#"(() => {
   if (amount === 'end') scrollTo(0, direction === 'up' ? 0 : height);
   else scrollBy(0, (direction === 'up' ? -1 : 1) * innerHeight * (amount === 'page' ? 0.85 : 0.35));
   for (const target of [window, document]) target.dispatchEvent(new Event('scroll'));
-  return {from, at: Math.round(scrollY), height, hidden: document.visibilityState !== 'visible'};
+  return {from, at: Math.round(scrollY), height, width: innerWidth, view: innerHeight, hidden: document.visibilityState !== 'visible'};
 })()"#;
 
 /// Put a background tab back at `y` after a capture that rendered it: the
@@ -1401,6 +1417,7 @@ pub(crate) mod guardrail {
         let (label, text) = label_words(element);
         let search = element.get("input_type").and_then(Value::as_str) == Some("search")
             || element.get("role").and_then(Value::as_str) == Some("searchbox")
+            || element.get("search").and_then(Value::as_bool) == Some(true)
             || first(&text, &["search", "find", "filter", "look up", "lookup"]).is_some();
         if search {
             return None;
@@ -2205,6 +2222,9 @@ mod tests {
         assert!(guardrail::submit(&element("b1", "textbox", "Search mail"), page).is_none());
         let search = json!({"id": "b1", "role": "textbox", "name": "q", "input_type": "search"});
         assert!(guardrail::submit(&search, page).is_none());
+        // An unlabeled box the page marks as a search (its form, landmark, or name).
+        let unlabeled = json!({"id": "b3", "role": "textbox", "name": "", "input_type": "text", "search": true});
+        assert!(guardrail::submit(&unlabeled, "https://duckduckgo.com/").is_none());
         assert_eq!(
             guardrail::submit(&element("b2", "textbox", "Message"), page)
                 .map(|(consequence, _)| consequence),

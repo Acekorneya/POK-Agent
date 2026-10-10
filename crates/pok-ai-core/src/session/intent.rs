@@ -530,6 +530,44 @@ pub(super) fn requests_current_screen_observation(request: &str) -> bool {
     .any(|phrase| request.contains(phrase))
 }
 
+/// How many separate parts a request lists: numbered parts ("(1) ... (2)",
+/// "1) ... 2)", "1. ... 2.") or bullet lines. Zero when it lists none.
+pub(super) fn listed_request_parts(request: &str) -> usize {
+    let at_start = |index: usize| {
+        index == 0
+            || request[..index]
+                .chars()
+                .next_back()
+                .is_some_and(|character| character.is_whitespace() || character == ':')
+    };
+    let numbered = (1..=16)
+        .take_while(|number| {
+            [
+                format!("({number})"),
+                format!("{number})"),
+                format!("{number}. "),
+            ]
+            .iter()
+            .any(|marker| {
+                request
+                    .match_indices(marker.as_str())
+                    .any(|(index, _)| at_start(index))
+            })
+        })
+        .count();
+    let bullets = request
+        .lines()
+        .filter(|line| {
+            let line = line.trim_start();
+            ["- ", "* ", "• "]
+                .iter()
+                .any(|bullet| line.starts_with(bullet))
+        })
+        .count();
+    let parts = numbered.max(bullets);
+    if parts >= 2 { parts } else { 0 }
+}
+
 pub(super) fn request_for_classification(request: &str) -> String {
     let mut normalized = request
         .split_whitespace()

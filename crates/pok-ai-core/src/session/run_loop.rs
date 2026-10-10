@@ -478,6 +478,14 @@ impl Session {
         }
         self.persist_conversation("active")?;
         let mut metrics = RunMetrics::default();
+        // A request that lists separate parts is put to the swarm, until the
+        // planner starts one or starts acting itself.
+        let listed_parts = if self.tools.contains("run_agents") {
+            listed_request_parts(&prompt)
+        } else {
+            0
+        };
+        let mut swarm_hint_open = listed_parts >= 2;
         let brain_usage_at_start = self.brain_usage.snapshot();
         let mut workflow: Vec<Value> = Vec::new();
         let mut verified_goal_actions = BTreeMap::<String, Value>::new();
@@ -732,6 +740,11 @@ impl Session {
             let schema_chars =
                 serde_json::to_string(&definitions).map_or(0, |definitions| definitions.len());
             let adaptive_guard = metrics.turns >= 4 || metrics.tool_calls >= 3;
+            let swarm_hint = swarm_hint_open.then(|| {
+                format!(
+                    "this request lists {listed_parts} separate parts. Call run_agents now with one agent per part, all at once, then combine their reports; do a part yourself only when it is a single obvious step."
+                )
+            });
             let task_reminder = active_task_reminder(
                 &self.context.active_task.lock(),
                 self.continuity.current.as_ref(),
@@ -740,6 +753,7 @@ impl Session {
                     self.tools.compact_catalog(&self.active_tool_groups),
                     navigation_locked,
                 ),
+                swarm_hint.as_deref(),
             );
             let system_chars = self
                 .messages
@@ -2200,6 +2214,9 @@ impl Session {
             let mut post_tool_batch_messages = Vec::new();
             for call in calls {
                 metrics.tool_calls += 1;
+                if call.name == "run_agents" || is_acting_tool(&call.name) {
+                    swarm_hint_open = false;
+                }
                 if call.name == "discover_tools"
                     && let Some(groups) = call.arguments.get("groups").and_then(Value::as_array)
                 {

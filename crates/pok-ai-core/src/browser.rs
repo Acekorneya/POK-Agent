@@ -51,6 +51,13 @@ const SNAPSHOT_SCRIPT: &str = r#"(() => {
       if (actionable || label.trim()) {
         const inputType = tag === 'input' ? String(el.type || 'text').toLowerCase() : null;
         const sensitive = inputType === 'password' || el.autocomplete === 'current-password' || el.autocomplete === 'new-password';
+        // A search box often has no visible label (DuckDuckGo, many shops):
+        // its search form, landmark, or field name says what it is.
+        const fieldName = `${el.getAttribute('name') || ''} ${el.id || ''}`;
+        const search = (tag === 'input' || tag === 'textarea') && (inputType === 'search' || role === 'searchbox' ||
+          !!el.closest('[role=search], search') || el.form?.getAttribute('role') === 'search' ||
+          /^(q|query|s|k|keywords?|term|search_query)$/i.test(el.getAttribute('name') || '') ||
+          /search/i.test(fieldName) || /search/i.test(el.form?.getAttribute('action') || ''));
         if (!ids.has(el)) ids.set(el, `b${root.__pokBrowserNextId++}`);
         const guard = JSON.stringify([location.href, role, String(label).replace(/\s+/g,' ').trim().slice(0,300),
           'value' in el && !sensitive ? String(el.value).slice(0,300) : null, 'checked' in el ? !!el.checked : null,
@@ -64,7 +71,7 @@ const SNAPSHOT_SCRIPT: &str = r#"(() => {
           checked: 'checked' in el ? !!el.checked : null,
           disabled: !!el.disabled || el.getAttribute('aria-disabled') === 'true',
           selected: 'selected' in el ? !!el.selected : null,
-          actionable, guard,
+          actionable, guard, ...(search ? {search: true} : {}),
           bounds: {x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height)}
         });
       }

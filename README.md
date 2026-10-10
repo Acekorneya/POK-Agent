@@ -231,7 +231,7 @@ verification, safety boundary, first look, and learned skills. What a router add
 cost: plan trees that run many steps per planner call, and muscle-memory replays of verified
 runs. Without it, each action is one planner call. Any OpenAI-compatible or Anthropic provider
 with tool use works (vision recommended), including local models in LM Studio or Ollama and
-hosted gateways such as OpenRouter and OpenCode Zen, both of which offer free models.
+hosted gateways such as OpenRouter (which has free models) and OpenCode Zen.
 
 ## Current MVP boundaries
 
