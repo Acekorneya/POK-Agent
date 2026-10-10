@@ -456,6 +456,27 @@ pub(super) fn requests_live_information(request: &str) -> bool {
                 .any(|marker| request.contains(marker)))
 }
 
+/// Whether the user asked for their own (signed-in) browser.
+pub(super) fn requests_user_browser(request: &str) -> bool {
+    let request = request.to_ascii_lowercase();
+    [
+        "my browser",
+        "my own browser",
+        "my chrome",
+        "my edge",
+        "my signed-in",
+        "my signed in",
+        "where i'm signed in",
+        "where i am signed in",
+        "where i'm logged in",
+        "where i am logged in",
+        "my logged-in",
+        "my logged in",
+    ]
+    .iter()
+    .any(|term| request.contains(term))
+}
+
 pub(super) fn requests_managed_web_search(request: &str) -> bool {
     let request = request_for_classification(request);
     [

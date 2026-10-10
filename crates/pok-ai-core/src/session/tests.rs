@@ -372,8 +372,11 @@ fn requests_that_list_parts_are_put_to_the_swarm() {
         MessageContent::Text { text } => text,
         MessageContent::ImagePng { .. } => panic!("expected a text reminder"),
     };
-    assert!(text(Some("call run_agents now")).contains("SWARM: call run_agents now"));
+    assert!(text(Some("SWARM: call run_agents now")).contains("SWARM: call run_agents now"));
     assert!(!text(None).contains("SWARM:"));
+    assert!(requests_user_browser("Fill the form in my browser"));
+    assert!(requests_user_browser("Check my Chrome for the order"));
+    assert!(!requests_user_browser("Open a browser and search the web"));
 }
 
 #[test]
