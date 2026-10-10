@@ -139,6 +139,12 @@ base_url = "https://openrouter.ai/api/v1"
 data_boundary = "external_service"
 api_key_env = "OPENROUTER_API_KEY"
 
+[providers.opencode]
+protocol = "openai_compatible"
+base_url = "https://opencode.ai/zen/v1"
+data_boundary = "external_service"
+api_key_env = "OPENCODE_API_KEY"
+
 [providers.groq]
 protocol = "openai_compatible"
 base_url = "https://api.groq.com/openai/v1"

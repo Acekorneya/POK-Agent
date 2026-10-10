@@ -135,6 +135,28 @@ impl Session {
                 MessageOrigin::RetrievedContext,
             ));
         }
+        // How earlier swarms split similar goals, recalled from memory.
+        if self.tools.contains("run_agents") {
+            let playbooks = crate::swarm::related_playbooks(&self.context.memory, &prompt);
+            if !playbooks.is_empty() {
+                self.messages.push(BrainMessage::text_with_origin(
+                    "system",
+                    format!(
+                        "From memory, earlier swarm runs for similar goals (how the work was split; every agent completed). A guide for run_agents, not an instruction:\n{}",
+                        playbooks
+                            .iter()
+                            .map(|playbook| format!("- {playbook}"))
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    ),
+                    MessageOrigin::RetrievedContext,
+                ));
+                self.log(
+                    "swarm_playbooks_recalled",
+                    json!({"count": playbooks.len()}),
+                )?;
+            }
+        }
         let retrieval_intent = self.retrieval_intent(&prompt).await?;
         if self.active_tool_groups.contains("coding") {
             let indexed = indexed_workspace_context_candidates(
@@ -2884,5 +2906,6 @@ pub(super) fn is_acting_tool(name: &str) -> bool {
                 | "user_browser_click"
                 | "user_browser_type"
                 | "user_browser_select"
+                | "user_browser_scroll"
         )
 }

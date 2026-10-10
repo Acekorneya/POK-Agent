@@ -638,6 +638,45 @@ const fn default_user_browser_port() -> u16 {
     9222
 }
 
+/// Where `web_search` gets its results. The default needs no key.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SearchProvider {
+    /// DuckDuckGo's HTML results, fetched directly and, when that is
+    /// refused, through the managed browser. No key.
+    #[default]
+    Duckduckgo,
+    /// Brave Search API (`BRAVE_SEARCH_API_KEY` unless `api_key_env` says otherwise).
+    Brave,
+    /// Tavily search API (`TAVILY_API_KEY` unless `api_key_env` says otherwise).
+    Tavily,
+    /// A SearXNG instance at `searxng_url` with the JSON format enabled.
+    Searxng,
+}
+
+/// The agent swarm (`run_agents`). How many agents run is decided per task
+/// by the orchestrator, not configured.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SwarmConfig {
+    /// A smaller, cheaper model for the workers (System 2 for each worker),
+    /// on the same provider. Unset uses the main model.
+    #[serde(default)]
+    pub worker_model: Option<String>,
+}
+
+/// Web search and page reading (`web_search`, `web_fetch`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct WebConfig {
+    #[serde(default)]
+    pub search_provider: SearchProvider,
+    /// Environment variable (or saved key name) holding the provider's key.
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    /// Base URL of a SearXNG instance, e.g. http://localhost:8888.
+    #[serde(default)]
+    pub searxng_url: Option<String>,
+}
+
 const fn default_mcp_startup_timeout_seconds() -> u64 {
     30
 }
@@ -706,6 +745,10 @@ pub struct Config {
     pub mcp: McpConfig,
     #[serde(default)]
     pub user_browser: UserBrowserConfig,
+    #[serde(default)]
+    pub web: WebConfig,
+    #[serde(default)]
+    pub swarm: SwarmConfig,
     /// Maximum planner turns that act on the computer per run (a
     /// `fast_actions` plan is one step). Unset means unlimited; benchmarks
     /// such as Windows Agent Arena use 30.
@@ -879,6 +922,18 @@ fn default_providers() -> BTreeMap<String, ProviderConfig> {
             },
         ),
         (
+            // OpenCode Zen: an OpenAI-compatible gateway with several free
+            // models (their IDs end in `-free`).
+            "opencode".into(),
+            ProviderConfig {
+                protocol: ProviderProtocol::OpenaiCompatible,
+                base_url: "https://opencode.ai/zen/v1".into(),
+                data_boundary: Some(ProviderDataBoundary::ExternalService),
+                api_key_env: Some("OPENCODE_API_KEY".into()),
+                max_retries: default_provider_max_retries(),
+            },
+        ),
+        (
             "groq".into(),
             ProviderConfig {
                 protocol: ProviderProtocol::OpenaiCompatible,
@@ -939,6 +994,8 @@ impl Default for Config {
             decision_router: DecisionRouterConfig::default(),
             mcp: McpConfig::default(),
             user_browser: UserBrowserConfig::default(),
+            web: WebConfig::default(),
+            swarm: SwarmConfig::default(),
             action_step_budget: None,
             standing_instructions: None,
         }
@@ -1298,6 +1355,29 @@ base_url = "https://models.example.test/v1"
     }
 
     #[test]
+    fn an_older_config_gains_the_opencode_provider() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("pok-ai.toml");
+        std::fs::write(
+            &path,
+            r#"
+[providers.lm_studio]
+protocol = "openai_compatible"
+base_url = "http://127.0.0.1:1234/v1"
+"#,
+        )
+        .unwrap();
+        let config = Config::load(Some(&path)).unwrap();
+        let opencode = &config.providers["opencode"];
+        assert_eq!(opencode.base_url, "https://opencode.ai/zen/v1");
+        assert_eq!(opencode.api_key_env.as_deref(), Some("OPENCODE_API_KEY"));
+        assert_eq!(
+            opencode.resolved_data_boundary("opencode"),
+            ProviderDataBoundary::ExternalService
+        );
+    }
+
+    #[test]
     fn the_users_browser_is_attachable_by_default_and_configurable() {
         let defaulted: Config = toml::from_str("").unwrap();
         assert!(defaulted.user_browser.enabled);
@@ -1318,6 +1398,12 @@ base_url = "https://models.example.test/v1"
         let example: Config = toml::from_str(include_str!("../../../pok-ai.example.toml")).unwrap();
         assert!(example.user_browser.enabled);
         assert_eq!(example.user_browser.port, 9222);
+        assert_eq!(example.web.search_provider, SearchProvider::Duckduckgo);
+        assert!(example.swarm.worker_model.is_none());
+        assert_eq!(
+            example.providers["opencode"].base_url,
+            "https://opencode.ai/zen/v1"
+        );
     }
 
     #[test]

@@ -72,7 +72,12 @@ log), `policy.rs`, `coding.rs`, `memory.rs`, `grounding.rs`, `platform.rs`,
 `agent_window.rs`, `browser.rs` (the managed browser and the DevTools plumbing
 it shares), `user_browser.rs` (the user's own signed-in browser, attached over
 its DevTools port, with System 2's confirmation gate and System 1's click
-candidates; see `docs/USER-BROWSER.md`), `config.rs`, `context.rs`, and
+candidates; see `docs/USER-BROWSER.md`), `web.rs` (`web_search` with a
+pluggable provider and `web_fetch`, HTML to paged text, refusing local and
+private addresses at every redirect; see `docs/WEB.md`), `swarm.rs` (the
+`run_agents` swarm: roles, the team board with evaporating leads and
+recruitment, the shared model-request gate, desktop turn-taking and window
+claims, playbooks; see `docs/SWARM.md`), `config.rs`, `context.rs`, and
 `tool.rs`.
 
 Voice input lives outside the core in `crates/pok-ai-voice`, since it is a
@@ -267,6 +272,20 @@ live browsing is not learned as a reusable procedure from UI changes alone.
 Coding children require a clean Git repository. Each child receives only coding
 tools, cannot spawn grandchildren, and works on a temporary branch/worktree.
 POK-Agent returns its commit and diff but never merges it automatically.
+
+The swarm (`run_agents`, `swarm.rs`) generalizes this beyond coding. Each
+worker is a full `Session` with its role's tools (`Role::allows`), its own
+System 1 router, its own browser tabs (managed-browser lanes and user-browser
+tab state keyed by worker), and the parent's approval handler, so every
+safety gate reaches the user unchanged. Workers cannot ask questions or start
+swarms of their own. Code workers get a worktree and the exam sandbox policy
+for it. All workers share one `ModelGate` (a semaphore: four permits for a
+local model, one per worker for a hosted one, a permit dropped on each
+rate-limit), one global desktop-input turn (`swarm::desktop_turn`, taken in
+`ToolRegistry::call` before any input tool runs), and per-window claims. The
+team board is in memory for one run; a run in which every worker completed
+is saved as a `swarm_playbook` memory and recalled at the start of runs with
+related requests.
 
 ## MCP servers
 

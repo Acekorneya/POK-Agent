@@ -125,6 +125,11 @@ pub(crate) struct BrowserConnection {
     /// False for the user's own browser, attached over its DevTools port
     /// (see `user_browser`); true for the isolated profile launched here.
     managed: bool,
+    /// Act only in a tab this connection opened or was given: the user's
+    /// browser, and each swarm worker's lane of the managed browser.
+    own_tabs_only: bool,
+    /// Tabs this connection opened, closed when a swarm worker finishes.
+    opened_tabs: Vec<String>,
 }
 
 impl BrowserConnection {
@@ -137,6 +142,8 @@ impl BrowserConnection {
             target_guards: HashMap::new(),
             last_snapshot: None,
             managed: true,
+            own_tabs_only: false,
+            opened_tabs: Vec::new(),
         }
     }
 
@@ -144,8 +151,96 @@ impl BrowserConnection {
     pub(crate) fn user(port: u16) -> Self {
         Self {
             managed: false,
+            own_tabs_only: true,
             ..Self::attached(None, port)
         }
+    }
+}
+
+/// The browser-wide DevTools WebSocket (tab creation, the target list).
+async fn browser_endpoint(port: u16) -> Result<String> {
+    let version = devtools_http_client()?
+        .get(format!("http://127.0.0.1:{port}/json/version"))
+        .send()
+        .await
+        .map_err(|error| {
+            PokError::Tool(format!(
+                "the browser's DevTools endpoint did not answer: {error}"
+            ))
+        })?
+        .json::<Value>()
+        .await
+        .map_err(|error| PokError::Tool(format!("invalid DevTools version answer: {error}")))?;
+    version
+        .get("webSocketDebuggerUrl")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .ok_or_else(|| PokError::Tool("the browser gave no DevTools endpoint".into()))
+}
+
+/// Tabs opened by `opener` (a link with a new-tab target, `window.open`),
+/// `rel=noopener` included.
+async fn tabs_opened_by(port: u16, opener: &str) -> Result<Vec<String>> {
+    let endpoint = browser_endpoint(port).await?;
+    let targets = tokio::time::timeout(
+        CDP_OPERATION_TIMEOUT,
+        cdp_call(&endpoint, "Target.getTargets", json!({})),
+    )
+    .await
+    .map_err(|_| PokError::Tool("the browser did not list its tabs in time".into()))??;
+    Ok(targets
+        .get("targetInfos")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|target| target.get("type").and_then(Value::as_str) == Some("page"))
+        .filter(|target| target.get("openerId").and_then(Value::as_str) == Some(opener))
+        .filter_map(|target| Some(target.get("targetId")?.as_str()?.to_owned()))
+        .collect())
+}
+
+/// Open a tab behind the current one through the browser's DevTools
+/// endpoint, and wait until the browser lists it.
+pub(crate) async fn open_background_tab(port: u16) -> Result<String> {
+    let endpoint = browser_endpoint(port).await?;
+    let created = tokio::time::timeout(
+        CDP_OPERATION_TIMEOUT,
+        cdp_call(
+            &endpoint,
+            "Target.createTarget",
+            json!({"url": "about:blank", "background": true}),
+        ),
+    )
+    .await
+    .map_err(|_| PokError::Tool("the browser did not open a tab in time".into()))??;
+    let id = created
+        .get("targetId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| PokError::Tool("the browser opened no tab".into()))?
+        .to_owned();
+    // The new tab can take a moment to appear in the tab listing.
+    for _ in 0..20 {
+        if ManagedBrowser::page_targets(port)
+            .await?
+            .iter()
+            .any(|(tab, _, _)| *tab == id)
+        {
+            return Ok(id);
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    Err(PokError::Tool(
+        "the browser opened a tab but does not list it".into(),
+    ))
+}
+
+/// Close one tab; a tab already gone is not an error.
+pub(crate) async fn close_tab(port: u16, id: &str) {
+    if let Ok(client) = devtools_http_client() {
+        let _ = client
+            .get(format!("http://127.0.0.1:{port}/json/close/{id}"))
+            .send()
+            .await;
     }
 }
 
@@ -171,6 +266,10 @@ pub struct ManagedBrowser {
     profile_dir: PathBuf,
     executable_override: Option<PathBuf>,
     state: Mutex<Option<BrowserConnection>>,
+    /// The main agent's browser for this data folder, when this one is a
+    /// swarm worker's lane: the worker attaches to the browser that one
+    /// started and works only in tabs it opens.
+    primary: Option<Arc<ManagedBrowser>>,
 }
 
 impl ManagedBrowser {
@@ -179,10 +278,14 @@ impl ManagedBrowser {
             profile_dir: data_dir.join("browser").join("profiles").join("default"),
             executable_override: std::env::var_os("POK_AI_BROWSER_EXECUTABLE").map(PathBuf::from),
             state: Mutex::new(None),
+            primary: None,
         }
     }
 
     async fn ensure_started(&self) -> Result<()> {
+        if let Some(primary) = &self.primary {
+            return self.attach_lane(primary).await;
+        }
         let mut state = self.state.lock().await;
         let client = devtools_http_client()?;
         if let Some(connection) = state.as_mut() {
@@ -234,6 +337,50 @@ impl ManagedBrowser {
         Err(PokError::Tool(format!(
             "{error}. Do not retry the managed browser in this turn; instead open the page in the user's own browser (run_command `Start-Process \"<url>\"`, or open_application) and read it with the desktop tools (activate_window, capture_screen)."
         )))
+    }
+
+    /// A worker's lane: the browser is launched (once) by the main agent's
+    /// instance, which owns the process, so a finishing worker never closes
+    /// the browser the others use.
+    async fn attach_lane(&self, primary: &ManagedBrowser) -> Result<()> {
+        let mut state = self.state.lock().await;
+        let client = devtools_http_client()?;
+        if let Some(connection) = state.as_ref()
+            && devtools_ready(&client, connection.port).await
+        {
+            return Ok(());
+        }
+        Box::pin(primary.ensure_started()).await?;
+        let port = primary
+            .state
+            .lock()
+            .await
+            .as_ref()
+            .map(|connection| connection.port)
+            .ok_or_else(|| PokError::Tool("managed browser is not running".into()))?;
+        let mut connection = BrowserConnection::attached(None, port);
+        connection.own_tabs_only = true;
+        *state = Some(connection);
+        Ok(())
+    }
+
+    /// Give a worker's lane its own tab the first time it opens a page.
+    async fn ensure_own_tab(connection: &mut BrowserConnection) -> Result<()> {
+        if !connection.managed || !connection.own_tabs_only {
+            return Ok(());
+        }
+        let open = Self::page_targets(connection.port).await?;
+        if connection
+            .page_target
+            .as_ref()
+            .is_some_and(|id| open.iter().any(|(tab, _, _)| tab == id))
+        {
+            return Ok(());
+        }
+        let id = open_background_tab(connection.port).await?;
+        connection.opened_tabs.push(id.clone());
+        connection.page_target = Some(id);
+        Ok(())
     }
 
     /// The DevTools port of a browser already running with this profile, when
@@ -346,11 +493,13 @@ impl ManagedBrowser {
             .and_then(|id| pages.iter().find(|(page_id, _, _)| page_id == id));
         // In the user's own browser the agent never picks a tab by itself:
         // falling back would mean acting in a tab the user is using.
-        if !connection.managed && pinned.is_none() {
+        if connection.own_tabs_only && pinned.is_none() {
             connection.page_target = None;
-            return Err(PokError::Tool(
-                "the agent has no open tab in the user's browser (it was closed or none was chosen); open one with user_browser_navigate or choose one with user_browser_tabs".into(),
-            ));
+            return Err(PokError::Tool(if connection.managed {
+                "this agent has no open tab of its own in the managed browser yet; open a page with managed_browser_open first".into()
+            } else {
+                "the agent has no open tab in the user's browser (it was closed or none was chosen); open one with user_browser_navigate or choose one with user_browser_tabs".into()
+            }));
         }
         let (id, socket, _) = pinned
             .or_else(|| pages.iter().find(|(_, _, url)| url.starts_with("http")))
@@ -443,6 +592,7 @@ impl ManagedBrowser {
         self.ensure_started().await?;
         let mut state = self.state.lock().await;
         let connection = state.as_mut().expect("browser started");
+        Self::ensure_own_tab(connection).await?;
         Self::cdp(connection, "Page.navigate", json!({"url": parsed.as_str()})).await?;
         tokio::time::sleep(Duration::from_millis(400)).await;
         Self::snapshot_locked(connection).await
@@ -486,11 +636,11 @@ impl ManagedBrowser {
         let operation_json = serde_json::to_string(operation)?;
         let value_json = serde_json::to_string(value.unwrap_or_default())?;
         let guard = serde_json::to_string(&expected_guard)?;
-        // The user's browser draws only the tab in front, and drops native
-        // pointer and key input sent to a background tab (it is not queued:
-        // nothing fires later when the tab is shown). There the action is
-        // performed with page events instead.
-        let page_events = !connection.managed;
+        // A browser draws only the tab in front, and drops native pointer and
+        // key input sent to a background tab (it is not queued: nothing fires
+        // later when the tab is shown). In a background tab (the user's
+        // browser, or a swarm worker's tab) the action is performed with
+        // page events instead.
         let expression = format!(
             r#"(() => {{
           const ids = globalThis.__pokBrowserIds;
@@ -527,7 +677,7 @@ impl ManagedBrowser {
           }};
           // Date, time, color, and range inputs do not take typed text.
           if (op === 'type' && ['date','time','datetime-local','month','week','color','range'].includes(inputType)) {{ el.focus(); setValue(v); return {{ok:true,x,y,filled:true}}; }}
-          if ({page_events} && document.visibilityState !== 'visible') {{
+          if (document.visibilityState !== 'visible') {{
             const hit = document.elementFromPoint(x, y) || el;
             const at = {{bubbles:true, cancelable:true, composed:true, view:window, clientX:x, clientY:y}};
             const pointer = {{...at, pointerId:1, pointerType:'mouse', isPrimary:true}};
@@ -565,10 +715,19 @@ impl ManagedBrowser {
           return {{ok:true,x,y}};
         }})()"#
         );
+        // The tabs open before the action: in a background tab the page
+        // performs a click itself, so a tab it opens exists once it returns.
+        let before = if operation == "click" {
+            Self::page_targets(connection.port).await?
+        } else {
+            Vec::new()
+        };
+        // As a user's click: without it, a page-event click on a link that
+        // opens a new tab is dropped by the popup blocker.
         let result = Self::cdp(
             connection,
             "Runtime.evaluate",
-            json!({"expression": expression, "returnByValue": true}),
+            json!({"expression": expression, "returnByValue": true, "userGesture": true}),
         )
         .await?;
         if result.pointer("/result/value/ok").and_then(Value::as_bool) != Some(true) {
@@ -600,7 +759,7 @@ impl ManagedBrowser {
             == Some(true);
         match operation {
             "click" => {
-                let before = Self::page_targets(connection.port).await?;
+                let opener = connection.page_target.clone();
                 for event in ["mousePressed", "mouseReleased"]
                     .into_iter()
                     .filter(|_| !performed)
@@ -614,14 +773,20 @@ impl ManagedBrowser {
                     )
                     .await?;
                 }
-                // A link that opens a new tab: continue in that tab.
+                // A link that opens a new tab: continue in that tab. Only a
+                // tab this one opened: a tab the user or another swarm worker
+                // opens meanwhile is never taken over.
                 tokio::time::sleep(Duration::from_millis(400)).await;
-                if let Some((id, _, _)) = Self::page_targets(connection.port)
-                    .await?
-                    .into_iter()
-                    .rev()
-                    .find(|(id, _, _)| !before.iter().any(|(known, _, _)| known == id))
+                if let Some(opener) = opener
+                    && let Some(id) = tabs_opened_by(connection.port, &opener)
+                        .await?
+                        .into_iter()
+                        .rev()
+                        .find(|id| !before.iter().any(|(known, _, _)| known == id))
                 {
+                    if connection.managed && connection.own_tabs_only {
+                        connection.opened_tabs.push(id.clone());
+                    }
                     connection.page_target = Some(id);
                 }
             }
@@ -1059,15 +1224,71 @@ pub(crate) fn chromium_candidates() -> Vec<PathBuf> {
     found
 }
 
-static BROWSERS: OnceLock<SyncMutex<HashMap<PathBuf, Arc<ManagedBrowser>>>> = OnceLock::new();
+/// Managed browsers by data folder and, for a swarm worker, its session: one
+/// browser process per data folder, one tab per worker.
+type BrowserKey = (PathBuf, Option<Uuid>);
+static BROWSERS: OnceLock<SyncMutex<HashMap<BrowserKey, Arc<ManagedBrowser>>>> = OnceLock::new();
 
 fn browser(context: &ToolContext) -> Arc<ManagedBrowser> {
     let browsers = BROWSERS.get_or_init(Default::default);
     let mut browsers = browsers.lock();
-    browsers
-        .entry(context.data_dir.clone())
+    let primary = browsers
+        .entry((context.data_dir.clone(), None))
         .or_insert_with(|| Arc::new(ManagedBrowser::new(&context.data_dir)))
+        .clone();
+    if !crate::swarm::is_worker(context.session_id) {
+        return primary;
+    }
+    browsers
+        .entry((context.data_dir.clone(), Some(context.session_id)))
+        .or_insert_with(|| {
+            Arc::new(ManagedBrowser {
+                primary: Some(primary),
+                ..ManagedBrowser::new(&context.data_dir)
+            })
+        })
         .clone()
+}
+
+/// Open `url` in this agent's managed-browser tab and evaluate `script`
+/// there, returning its value.
+pub(crate) async fn open_and_evaluate(
+    context: &ToolContext,
+    url: &str,
+    script: &str,
+) -> Result<Value> {
+    let managed = browser(context);
+    managed.navigate(url).await?;
+    let mut state = managed.state.lock().await;
+    let connection = state.as_mut().expect("browser started");
+    let result = ManagedBrowser::cdp(
+        connection,
+        "Runtime.evaluate",
+        json!({"expression": script, "returnByValue": true}),
+    )
+    .await?;
+    Ok(result
+        .pointer("/result/value")
+        .cloned()
+        .unwrap_or(Value::Null))
+}
+
+/// Close the tabs a finished swarm worker opened in the managed browser
+/// and forget its lane. The browser itself keeps running.
+pub(crate) async fn release_worker(data_dir: &Path, session_id: Uuid) {
+    let lane = BROWSERS
+        .get_or_init(Default::default)
+        .lock()
+        .remove(&(data_dir.to_path_buf(), Some(session_id)));
+    let Some(lane) = lane else {
+        return;
+    };
+    let state = lane.state.lock().await;
+    if let Some(connection) = state.as_ref() {
+        for tab in &connection.opened_tabs {
+            close_tab(connection.port, tab).await;
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1345,6 +1566,112 @@ mod tests {
         let error = browser.ensure_started().await.unwrap_err().to_string();
         assert!(error.contains("Start-Process"), "{error}");
         assert!(!error.contains("tool error: tool error"), "{error}");
+    }
+
+    /// Two swarm workers drive their own tabs of one managed browser at the
+    /// same time. Set POK_AI_BROWSER_EXECUTABLE, POK_AI_LANE_A_URL, and
+    /// POK_AI_LANE_B_URL (pages with "Mark A" / "Mark B" buttons).
+    #[tokio::test]
+    #[ignore = "needs a Chromium; set POK_AI_BROWSER_EXECUTABLE, POK_AI_LANE_A_URL, POK_AI_LANE_B_URL"]
+    async fn swarm_workers_get_their_own_managed_tabs() {
+        let a = std::env::var("POK_AI_LANE_A_URL").expect("POK_AI_LANE_A_URL");
+        let b = std::env::var("POK_AI_LANE_B_URL").expect("POK_AI_LANE_B_URL");
+        let data = tempfile::tempdir().unwrap();
+        let platform = Arc::new(crate::platform::MockDesktop::default());
+        let main = crate::builtins::tests::mock_input_context(platform.clone(), &data);
+        let first = crate::builtins::tests::mock_input_context(platform.clone(), &data);
+        let second = crate::builtins::tests::mock_input_context(platform, &data);
+        // The main agent's browser is running with a page of its own.
+        browser(&main).navigate(&a).await.unwrap();
+        crate::swarm::set_test_worker(first.session_id, Some("worker a"));
+        crate::swarm::set_test_worker(second.session_id, Some("worker b"));
+        let (lane_a, lane_b) = (browser(&first), browser(&second));
+        let (page_a, page_b) = tokio::join!(lane_a.navigate(&a), lane_b.navigate(&b));
+        let (page_a, page_b) = (page_a.unwrap(), page_b.unwrap());
+        assert_eq!(page_a["title"], "Lane A");
+        assert_eq!(page_b["title"], "Lane B");
+        let tab = |context: &ToolContext| {
+            let managed = browser(context);
+            async move {
+                managed
+                    .state
+                    .lock()
+                    .await
+                    .as_ref()
+                    .unwrap()
+                    .page_target
+                    .clone()
+                    .unwrap()
+            }
+        };
+        let control = |page: &Value, role: &str, name: &str| {
+            page["elements"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|element| element["role"] == role && element["name"] == name)
+                .map(|element| element["id"].as_str().unwrap().to_owned())
+                .unwrap()
+        };
+        let mut registry = ToolRegistry::new();
+        register_managed_browser_tools(&mut registry);
+        let click = |page: &Value, role: &str, name: &str| json!({"snapshot_id": page["snapshot_id"], "target_id": control(page, role, name)});
+        let (clicked_a, clicked_b) = tokio::join!(
+            registry.call(
+                "managed_browser_click",
+                click(&page_a, "button", "Mark A"),
+                &first
+            ),
+            registry.call(
+                "managed_browser_click",
+                click(&page_b, "button", "Mark B"),
+                &second
+            ),
+        );
+        let (clicked_a, clicked_b) = (clicked_a.unwrap(), clicked_b.unwrap());
+        assert_eq!(clicked_a["title"], "Lane A clicked");
+        assert_eq!(clicked_b["title"], "Lane B clicked");
+        // A link that opens a new tab, from a background tab: the worker
+        // follows it, and not a tab someone else opens at the same moment.
+        let port = browser(&main).state.lock().await.as_ref().unwrap().port;
+        let first_tab = tab(&first).await;
+        let (followed, other) = tokio::join!(
+            registry.call(
+                "managed_browser_click",
+                click(&clicked_a, "link", "Open B"),
+                &first
+            ),
+            async {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                open_background_tab(port).await.unwrap()
+            },
+        );
+        let followed = followed.unwrap();
+        assert!(
+            followed["url"]
+                .as_str()
+                .unwrap()
+                .ends_with("lane-b.html?from=a"),
+            "{followed}"
+        );
+        let popup = tab(&first).await;
+        assert_ne!(popup, other);
+        let (main_tab, tab_a, tab_b) = (tab(&main).await, popup, tab(&second).await);
+        assert!(main_tab != tab_a && tab_a != tab_b && main_tab != tab_b);
+        // A finished worker's tab is closed; the main agent's stays.
+        release_worker(data.path(), first.session_id).await;
+        release_worker(data.path(), second.session_id).await;
+        crate::swarm::set_test_worker(first.session_id, None);
+        crate::swarm::set_test_worker(second.session_id, None);
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let open = ManagedBrowser::page_targets(port).await.unwrap();
+        assert!(open.iter().any(|(id, _, _)| *id == main_tab));
+        assert!(
+            !open
+                .iter()
+                .any(|(id, _, _)| [&first_tab, &tab_a, &tab_b].contains(&id))
+        );
+        close_tab(port, &other).await;
     }
 
     #[test]

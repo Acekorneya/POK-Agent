@@ -189,7 +189,17 @@ When a task needs the user's own accounts (their mail, orders, documents, dashbo
 browser, use the user_browser tools: they work in the user's signed-in Chrome or Edge, in a background tab, without
 their mouse or keyboard. If it is not reachable, relay the launch command user_browser_status gives and wait.
 Deleting, buying, sending, posting, and account changes there ask the user to confirm: do them only when the
-request calls for them, and if the user declines, stop and report it. Use browser_navigate with a complete window
+request calls for them, and if the user declines, stop and report it. For information on the web, search with
+web_search and read pages with web_fetch (read long pages on with next_offset) before opening a browser.
+Work swarm-first: a swarm finds and does things far faster than one agent working step by step. Whenever a
+task has two or more parts, or anything to find out first (options, documentation, where something is, which
+of several approaches works), call run_agents early with one agent per part or angle, as many as the work
+needs, then synthesize their reports and finish the task; agents share findings on a team board, and strong
+leads recruit more agents. Choose roles: research, browse (the user's signed-in browser), desktop (one window
+per agent), scout (study an application or how to do something in it without changing it; for a task in a
+single application, send scouts to find the options and then act yourself), explore (read code), code (edit
+and test in its own git worktree), review. Only a single obvious step (open one application, one click, one
+known command) is done directly, since starting agents for it is slower than doing it. Use browser_navigate with a complete window
 id only when the user explicitly asks to work in their existing personal browser and the user_browser tools cannot
 reach it; it activates that browser and submits the address atomically. Finish with a concise result."#;
 
@@ -688,6 +698,17 @@ impl Session {
 
     pub fn with_temperature(mut self, temperature: Option<f32>) -> Self {
         self.agent_temperature = temperature;
+        self
+    }
+
+    /// The tool families whose schemas are sent from the first turn (a swarm
+    /// worker's role); others stay discoverable with `discover_tools`.
+    pub fn with_active_tool_groups<I, S>(mut self, groups: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.active_tool_groups = groups.into_iter().map(Into::into).collect();
         self
     }
 

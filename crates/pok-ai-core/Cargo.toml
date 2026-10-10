@@ -17,6 +17,7 @@ directories.workspace = true
 dunce.workspace = true
 eventsource-stream.workspace = true
 futures.workspace = true
+html5ever = "0.38"
 ignore.workspace = true
 image.workspace = true
 parking_lot.workspace = true

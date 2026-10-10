@@ -185,6 +185,11 @@ pub(super) fn project_browser_snapshot_for_model(value: &Value) -> Value {
         "tab",
         "html_chars",
         "html_truncated",
+        "text_offset",
+        "next_offset",
+        "total_chars",
+        "scroll",
+        "waited_ms",
         "_pok_continuity",
     ] {
         if let Some(item) = value.get(key) {
@@ -195,6 +200,18 @@ pub(super) fn project_browser_snapshot_for_model(value: &Value) -> Value {
         if let Some(text) = value.get(key).and_then(Value::as_str) {
             projected.insert(key.into(), Value::String(truncate_chars(text, limit)));
         }
+    }
+    // Shortened page text continues where the shortened part ends, so
+    // reading on with next_offset skips nothing.
+    if let Some(text) = value.get("text").and_then(Value::as_str)
+        && text.chars().count() > 6_000
+        && value.get("total_chars").is_some()
+    {
+        let offset = value
+            .get("text_offset")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        projected.insert("next_offset".into(), json!(offset + 6_000));
     }
     projected.insert("elements".into(), Value::Array(compact));
     let user_profile = value.get("user_profile").and_then(Value::as_bool) == Some(true);
@@ -217,14 +234,21 @@ pub(super) fn project_browser_snapshot_for_model(value: &Value) -> Value {
 
 pub(super) fn project_tool_result_for_model(name: &str, mut value: Value) -> Value {
     // A harness warning always reaches the model, however the rest is cut.
-    let warning = value
-        .as_object_mut()
-        .and_then(|object| object.remove("open_document_warning"));
+    // So do teammates' notes in a swarm.
+    let kept = ["open_document_warning", "_pok_team"]
+        .into_iter()
+        .filter_map(|key| {
+            value
+                .as_object_mut()
+                .and_then(|object| object.remove(key))
+                .map(|item| (key, item))
+        })
+        .collect::<Vec<_>>();
     let mut projected = project_tool_result_body(name, value);
-    if let Some(warning) = warning
-        && let Some(object) = projected.as_object_mut()
-    {
-        object.insert("open_document_warning".into(), warning);
+    if let Some(object) = projected.as_object_mut() {
+        for (key, item) in kept {
+            object.insert(key.into(), item);
+        }
     }
     projected
 }
@@ -717,6 +741,10 @@ pub(super) fn is_grounding_evidence_tool(name: &str) -> bool {
             | "user_browser_extract"
             | "user_browser_screenshot"
             | "user_browser_tabs"
+            | "user_browser_scroll"
+            | "user_browser_wait_for"
+            | "web_search"
+            | "web_fetch"
             | "capture_screen"
             | "inspect_screen_region"
             | "scroll_view"

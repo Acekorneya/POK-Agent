@@ -194,7 +194,7 @@ impl Tool for SpawnSubagentTool {
     }
 }
 
-fn git_output<const N: usize>(cwd: &Path, args: [&str; N]) -> Result<String> {
+pub(crate) fn git_output<const N: usize>(cwd: &Path, args: [&str; N]) -> Result<String> {
     let mut command = Command::new("git");
     command.current_dir(cwd).args(args);
     process_window::hide_std(&mut command);
@@ -208,7 +208,7 @@ fn git_output<const N: usize>(cwd: &Path, args: [&str; N]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn git_status(command: &mut Command, operation: &str) -> Result<()> {
+pub(crate) fn git_status(command: &mut Command, operation: &str) -> Result<()> {
     process_window::hide_std(command);
     let output = command.output()?;
     if !output.status.success() {

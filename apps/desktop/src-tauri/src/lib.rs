@@ -2321,6 +2321,30 @@ async fn run_prompt(
             &user_browser_config,
             &data_dir,
         );
+        let (web_config, swarm_config, swarm_instructions) = {
+            let config = runtime.config.lock();
+            (
+                config.web.clone(),
+                config.swarm.clone(),
+                config.standing_instructions.clone(),
+            )
+        };
+        pok_ai_core::web::register_web_tools(&mut tools, &web_config);
+        pok_ai_core::swarm::register_swarm_tool(
+            &mut tools,
+            pok_ai_core::swarm::SwarmTemplate {
+                brain: brain.clone(),
+                model: model.clone(),
+                worker_model: swarm_config.worker_model,
+                decision_router: decision_router_config.clone(),
+                user_browser: user_browser_config.clone(),
+                web: web_config,
+                temperature: agent_temperature.value(),
+                standing_instructions: swarm_instructions,
+                local_model: provider_config.resolved_data_boundary(&provider)
+                    == ProviderDataBoundary::LocalDevice,
+            },
+        );
         tools.register(SpawnSubagentTool::new(brain.clone(), &model));
         let stored_mcp = pok_ai_core::mcp::McpServerStore::open(&data_dir).load();
         let merged_mcp = pok_ai_core::mcp::merge_servers(&mcp_config, &stored_mcp);

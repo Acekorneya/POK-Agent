@@ -130,6 +130,16 @@ base_url = "https://api.anthropic.com/v1"
 data_boundary = "external_service"
 api_key_env = "ANTHROPIC_API_KEY"
 
+# OpenCode Zen: an OpenAI-compatible gateway with several free models (their
+# IDs end in -free; `pok-ai models --provider opencode` lists what is
+# available). Built in, like OpenRouter: set OPENCODE_API_KEY or save the key
+# in the desktop app.
+[providers.opencode]
+protocol = "openai_compatible"
+base_url = "https://opencode.ai/zen/v1"
+data_boundary = "external_service"
+api_key_env = "OPENCODE_API_KEY"
+
 # Your own signed-in Chrome or Edge, attached over its DevTools port so the
 # agent can work in your accounts without exporting cookies (see
 # docs/USER-BROWSER.md). Start the browser with the command `pok-ai doctor`
@@ -141,6 +151,17 @@ port = 9222
 # The separate profile the launch command names (Chrome 136+ refuses remote
 # debugging on the default profile). Default: <data_dir>/browser/profiles/personal
 # user_data_dir = "D:\\Profiles\\agent"
+
+# Web search and page reading (docs/WEB.md). The default needs no key.
+[web]
+search_provider = "duckduckgo"   # or "brave", "tavily", "searxng"
+# api_key_env = "BRAVE_SEARCH_API_KEY"   # Brave and Tavily; this is Brave's default
+# searxng_url = "http://localhost:8888"  # for "searxng" (JSON format enabled)
+
+# The agent swarm (docs/SWARM.md). How many agents run is decided per task.
+[swarm]
+# A smaller, cheaper model for the workers, on the same provider.
+# worker_model = "qwen3-4b"
 
 # Local Model Context Protocol servers. Each configured server is spawned over
 # stdio, its tools are added to the `mcp` capability family, and the model sees

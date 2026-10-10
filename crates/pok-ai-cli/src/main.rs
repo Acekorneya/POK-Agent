@@ -526,6 +526,22 @@ async fn run_cli() -> anyhow::Result<()> {
                 &config.user_browser,
                 &config.data_dir,
             );
+            pok_ai_core::web::register_web_tools(&mut tools, &config.web);
+            pok_ai_core::swarm::register_swarm_tool(
+                &mut tools,
+                pok_ai_core::swarm::SwarmTemplate {
+                    brain: brain.clone(),
+                    model: model.clone(),
+                    worker_model: config.swarm.worker_model.clone(),
+                    decision_router: decision_router_config.clone(),
+                    user_browser: config.user_browser.clone(),
+                    web: config.web.clone(),
+                    temperature: config.agent_temperature.value(),
+                    standing_instructions: config.standing_instructions.clone(),
+                    local_model: provider_config.resolved_data_boundary(&provider_name)
+                        == pok_ai_core::config::ProviderDataBoundary::LocalDevice,
+                },
+            );
             let mcp_registration =
                 pok_ai_core::mcp::register_mcp_tools(&mut tools, &config.mcp).await;
             for warning in &mcp_registration.warnings {

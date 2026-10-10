@@ -534,6 +534,11 @@ function describeTool(name: string, rawArguments: unknown): Pick<LiveActivity, "
     user_browser_extract: { phase: "reading", label: "Reading a page in your browser", detail: detail("selector") },
     user_browser_screenshot: { phase: "reading", label: "Looking at a page in your browser" },
     user_browser_tabs: { phase: "reading", label: "Checking your browser tabs", detail: detail("action") },
+    user_browser_scroll: { phase: "reading", label: "Scrolling a page in your browser", detail: detail("direction") },
+    user_browser_wait_for: { phase: "reading", label: "Waiting for a page in your browser", detail: detail("text", "selector") },
+    web_search: { phase: "reading", label: "Searching the web", detail: detail("query") },
+    web_fetch: { phase: "reading", label: "Reading a web page", detail: detail("url") },
+    run_agents: { phase: "acting", label: "Running a swarm of agents", detail: detail("goal") },
     activate_window: { phase: "navigating", label: "Switching to a window", detail: detail("title", "window_id") },
     open_application: { phase: "navigating", label: "Opening an application", detail: detail("name") },
     fast_actions: { phase: "acting", label: "Carrying out the plan", detail: detail("goal", "target_hint") },
@@ -775,7 +780,7 @@ function ModelPicker({ models, value, onChange, disabled }: {
 
 const PROVIDER_LABELS: Record<string, string> = {
   lm_studio: "LM Studio", ollama: "Ollama", openai: "OpenAI", anthropic: "Anthropic", gemini: "Google Gemini",
-  openrouter: "OpenRouter", groq: "Groq", xai: "xAI",
+  openrouter: "OpenRouter", opencode: "OpenCode Zen", groq: "Groq", xai: "xAI",
 };
 function providerLabel(provider: string) {
   return PROVIDER_LABELS[provider.toLowerCase()] ?? provider.replaceAll("_", " ");
@@ -805,6 +810,7 @@ const PROVIDER_URLS: Record<string, { name: string; url: string }> = {
     url: "https://console.anthropic.com/settings/keys",
   },
   openrouter: { name: "OpenRouter API Keys", url: "https://openrouter.ai/keys" },
+  opencode: { name: "OpenCode Zen API Keys", url: "https://opencode.ai/auth" },
   groq: { name: "Groq Console Keys", url: "https://console.groq.com/keys" },
   lm_studio: { name: "LM Studio Official Site", url: "https://lmstudio.ai" },
   ollama: { name: "Ollama Official Site", url: "https://ollama.com" },
