@@ -21,10 +21,15 @@ pub enum FastOperation {
     ActivateWindow,
     BrowserClick,
     BrowserScroll,
+    /// Click in the agent's tab of the user's own signed-in browser (the
+    /// page opened with user_browser_navigate). Controls that delete, buy,
+    /// send, or change account settings are never clicked by System 1; a
+    /// step that names one comes back as commit_required.
+    UserBrowserClick,
 }
 
 impl FastOperation {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Click,
         Self::DoubleClick,
         Self::RightClick,
@@ -34,6 +39,7 @@ impl FastOperation {
         Self::ActivateWindow,
         Self::BrowserClick,
         Self::BrowserScroll,
+        Self::UserBrowserClick,
     ];
 
     /// The harness tool a candidate must use to belong to this operation.
@@ -46,6 +52,7 @@ impl FastOperation {
             Self::ActivateWindow => "activate_window",
             Self::BrowserClick => "managed_browser_click",
             Self::BrowserScroll => "managed_browser_scroll",
+            Self::UserBrowserClick => "user_browser_click",
         }
     }
 }
@@ -82,7 +89,8 @@ pub struct FastActionsArgs {
     #[schemars(length(min = 1, max = 300))]
     pub done_when: String,
     /// Operations the run may use. Defaults to click and browser_click only;
-    /// list scroll or activate_window explicitly when the subgoal needs them.
+    /// list scroll or activate_window explicitly when the subgoal needs them,
+    /// and user_browser_click for the user's own signed-in browser.
     #[serde(default)]
     pub allowed_operations: Vec<FastOperation>,
     /// Maximum actions per subgoal before returning to you (1-20, default 6).
@@ -201,7 +209,7 @@ impl Tool for FastActionsTool {
     }
 
     fn description(&self) -> &'static str {
-        "Run a plan of up to 64 steps, the whole path you already know (clicks, double-clicks to open folders or files, right-clicks, hovers, drags between two quoted labels, scrolls, window switches, managed-browser clicks, and keyboard input you write) with the fast decision model instead of issuing each action yourself. Quote exact visible labels in target_hint and done_when so they are checked locally. A step's input lists keys (\"Ctrl+Shift+F5\", \"Enter\") and text to enter in order, into the target_hint field or the focused control; you write every key and character, System 1 performs them and checks done_when. Chain steps with then, choose between alternatives with branches (\"otherwise\" as default), handle popups with on_interrupt, forbid targets with avoid, and read values with read. It never chooses text itself or commits consequential clicks. Returns status per step (done, unverified, uncertain, uncertain_branch, interrupted, popup (a dialog the plan did not expect, with its title, text, and buttons), stalled, no_candidates, budget_exhausted, unavailable), the executed steps (each with changed: what it visibly did), what_changed for the last action, read values, and the newest observation. Trust changed and what_changed instead of capturing again just to check that an action worked. Ambient notices (a tip, an update reminder, a rating prompt) with a Not now, Skip, Close, or similar button are put away automatically and listed in dismissed_popups; popups about data, money, access, or errors still come back as popup."
+        "Run a plan of up to 64 steps, the whole path you already know (clicks, double-clicks to open folders or files, right-clicks, hovers, drags between two quoted labels, scrolls, window switches, managed-browser clicks, clicks in the user's own browser (user_browser_click), and keyboard input you write) with the fast decision model instead of issuing each action yourself. Quote exact visible labels in target_hint and done_when so they are checked locally. A step's input lists keys (\"Ctrl+Shift+F5\", \"Enter\") and text to enter in order, into the target_hint field or the focused control; you write every key and character, System 1 performs them and checks done_when. Chain steps with then, choose between alternatives with branches (\"otherwise\" as default), handle popups with on_interrupt, forbid targets with avoid, and read values with read. It never chooses text itself or commits consequential clicks. Returns status per step (done, unverified, uncertain, uncertain_branch, interrupted, popup (a dialog the plan did not expect, with its title, text, and buttons), stalled, no_candidates, budget_exhausted, unavailable), the executed steps (each with changed: what it visibly did), what_changed for the last action, read values, and the newest observation. Trust changed and what_changed instead of capturing again just to check that an action worked. Ambient notices (a tip, an update reminder, a rating prompt) with a Not now, Skip, Close, or similar button are put away automatically and listed in dismissed_popups; popups about data, money, access, or errors still come back as popup."
     }
 
     fn input_schema(&self) -> Value {

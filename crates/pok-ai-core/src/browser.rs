@@ -89,7 +89,7 @@ const DEVTOOLS_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 const DEVTOOLS_HTTP_TIMEOUT: Duration = Duration::from_millis(750);
 const CDP_OPERATION_TIMEOUT: Duration = Duration::from_secs(10);
 
-fn devtools_http_client() -> Result<reqwest::Client> {
+pub(crate) fn devtools_http_client() -> Result<reqwest::Client> {
     reqwest::Client::builder()
         .no_proxy()
         .connect_timeout(Duration::from_millis(500))
@@ -98,7 +98,7 @@ fn devtools_http_client() -> Result<reqwest::Client> {
         .map_err(|error| PokError::Tool(format!("failed to configure DevTools client: {error}")))
 }
 
-struct BrowserConnection {
+pub(crate) struct BrowserConnection {
     // Chromium's multi-process architecture spawns renderer, GPU, utility,
     // and network-service processes as children of the browser process we
     // launch; those children are never visible to a plain `tokio::process::Child`
@@ -114,14 +114,17 @@ struct BrowserConnection {
     /// with this profile (left open by an earlier session); it is alive while
     /// its DevTools endpoint answers.
     child: Option<Box<dyn ChildWrapper>>,
-    port: u16,
+    pub(crate) port: u16,
     /// The tab every DevTools call goes to. A restored or reused profile can
     /// hold several tabs whose listing order changes, so the first tab used
     /// is kept, and a click that opens a new tab moves here to it.
-    page_target: Option<String>,
-    snapshot_id: Option<String>,
+    pub(crate) page_target: Option<String>,
+    pub(crate) snapshot_id: Option<String>,
     target_guards: HashMap<String, String>,
-    last_snapshot: Option<Value>,
+    pub(crate) last_snapshot: Option<Value>,
+    /// False for the user's own browser, attached over its DevTools port
+    /// (see `user_browser`); true for the isolated profile launched here.
+    managed: bool,
 }
 
 impl BrowserConnection {
@@ -133,6 +136,15 @@ impl BrowserConnection {
             snapshot_id: None,
             target_guards: HashMap::new(),
             last_snapshot: None,
+            managed: true,
+        }
+    }
+
+    /// The user's own running browser. It is never launched or closed here.
+    pub(crate) fn user(port: u16) -> Self {
+        Self {
+            managed: false,
+            ..Self::attached(None, port)
         }
     }
 }
@@ -299,7 +311,7 @@ impl ManagedBrowser {
     }
 
     /// Open tabs as (target id, DevTools WebSocket URL, page URL).
-    async fn page_targets(port: u16) -> Result<Vec<(String, String, String)>> {
+    pub(crate) async fn page_targets(port: u16) -> Result<Vec<(String, String, String)>> {
         let pages = devtools_http_client()?
             .get(format!("http://127.0.0.1:{port}/json/list"))
             .send()
@@ -332,6 +344,14 @@ impl ManagedBrowser {
             .page_target
             .as_ref()
             .and_then(|id| pages.iter().find(|(page_id, _, _)| page_id == id));
+        // In the user's own browser the agent never picks a tab by itself:
+        // falling back would mean acting in a tab the user is using.
+        if !connection.managed && pinned.is_none() {
+            connection.page_target = None;
+            return Err(PokError::Tool(
+                "the agent has no open tab in the user's browser (it was closed or none was chosen); open one with user_browser_navigate or choose one with user_browser_tabs".into(),
+            ));
+        }
         let (id, socket, _) = pinned
             .or_else(|| pages.iter().find(|(_, _, url)| url.starts_with("http")))
             .or_else(|| pages.first())
@@ -340,7 +360,11 @@ impl ManagedBrowser {
         Ok(socket.clone())
     }
 
-    async fn cdp(connection: &mut BrowserConnection, method: &str, params: Value) -> Result<Value> {
+    pub(crate) async fn cdp(
+        connection: &mut BrowserConnection,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
         match tokio::time::timeout(
             CDP_OPERATION_TIMEOUT,
             Self::cdp_inner(connection, method, params),
@@ -361,40 +385,10 @@ impl ManagedBrowser {
         params: Value,
     ) -> Result<Value> {
         let endpoint = Self::page_websocket(connection).await?;
-        let (mut socket, _) = connect_async(endpoint)
-            .await
-            .map_err(|error| PokError::Tool(format!("CDP connection failed: {error}")))?;
-        socket
-            .send(Message::Text(
-                serde_json::to_string(&json!({"id": 1, "method": method, "params": params}))?
-                    .into(),
-            ))
-            .await
-            .map_err(|error| PokError::Tool(format!("CDP request failed: {error}")))?;
-        while let Some(message) = socket.next().await {
-            let message =
-                message.map_err(|error| PokError::Tool(format!("CDP response failed: {error}")))?;
-            let Some(text) = (match message {
-                Message::Text(text) => Some(text),
-                _ => None,
-            }) else {
-                continue;
-            };
-            let value: Value = serde_json::from_str(&text)?;
-            if value.get("id").and_then(Value::as_u64) != Some(1) {
-                continue;
-            }
-            if let Some(error) = value.get("error") {
-                return Err(PokError::Tool(format!("CDP {method} failed: {error}")));
-            }
-            return Ok(value.get("result").cloned().unwrap_or(Value::Null));
-        }
-        Err(PokError::Tool(
-            "CDP connection closed without a response".into(),
-        ))
+        cdp_call(&endpoint, method, params).await
     }
 
-    async fn snapshot_locked(connection: &mut BrowserConnection) -> Result<Value> {
+    pub(crate) async fn snapshot_locked(connection: &mut BrowserConnection) -> Result<Value> {
         let result = Self::cdp(
             connection,
             "Runtime.evaluate",
@@ -423,7 +417,10 @@ impl ManagedBrowser {
         connection.snapshot_id = Some(snapshot_id.clone());
         page["snapshot_id"] = json!(snapshot_id);
         page["fingerprint"] = json!(fingerprint);
-        page["managed_profile"] = json!(true);
+        page["managed_profile"] = json!(connection.managed);
+        if !connection.managed {
+            page["user_profile"] = json!(true);
+        }
         connection.last_snapshot = Some(page.clone());
         Ok(page)
     }
@@ -461,6 +458,20 @@ impl ManagedBrowser {
         self.ensure_started().await?;
         let mut state = self.state.lock().await;
         let connection = state.as_mut().expect("browser started");
+        Self::act_locked(connection, snapshot_id, target_id, operation, value).await
+    }
+
+    /// Perform one freshness- and semantics-checked action on a snapshot
+    /// target, then return the settled snapshot. Input goes to the page,
+    /// never through the system cursor or keyboard: native DevTools input,
+    /// or page events in a background tab of the user's own browser.
+    pub(crate) async fn act_locked(
+        connection: &mut BrowserConnection,
+        snapshot_id: &str,
+        target_id: &str,
+        operation: &str,
+        value: Option<&str>,
+    ) -> Result<Value> {
         let Some(expected_guard) = connection
             .target_guards
             .get(target_id)
@@ -475,6 +486,11 @@ impl ManagedBrowser {
         let operation_json = serde_json::to_string(operation)?;
         let value_json = serde_json::to_string(value.unwrap_or_default())?;
         let guard = serde_json::to_string(&expected_guard)?;
+        // The user's browser draws only the tab in front, and drops native
+        // pointer and key input sent to a background tab (it is not queued:
+        // nothing fires later when the tab is shown). There the action is
+        // performed with page events instead.
+        let page_events = !connection.managed;
         let expression = format!(
             r#"(() => {{
           const ids = globalThis.__pokBrowserIds;
@@ -502,8 +518,49 @@ impl ManagedBrowser {
           const op = {operation_json}; const v = {value_json};
           const inputType = el.tagName === 'INPUT' ? String(el.type || 'text').toLowerCase() : '';
           if (op === 'type' && (inputType === 'password' || el.autocomplete === 'current-password' || el.autocomplete === 'new-password')) return {{ok:false, reason:'password-field typing is prohibited'}};
+          // The prototype setter, not `el.value =`, so frameworks that track
+          // the value on the element (React) still see the change.
+          const setValue = (next) => {{
+            const proto = el instanceof HTMLSelectElement ? HTMLSelectElement.prototype : el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+            Object.getOwnPropertyDescriptor(proto, 'value').set.call(el, next);
+            el.dispatchEvent(new Event('input', {{bubbles:true}})); el.dispatchEvent(new Event('change', {{bubbles:true}}));
+          }};
+          // Date, time, color, and range inputs do not take typed text.
+          if (op === 'type' && ['date','time','datetime-local','month','week','color','range'].includes(inputType)) {{ el.focus(); setValue(v); return {{ok:true,x,y,filled:true}}; }}
+          if ({page_events} && document.visibilityState !== 'visible') {{
+            const hit = document.elementFromPoint(x, y) || el;
+            const at = {{bubbles:true, cancelable:true, composed:true, view:window, clientX:x, clientY:y}};
+            const pointer = {{...at, pointerId:1, pointerType:'mouse', isPrimary:true}};
+            if (op === 'click' || op === 'hover') {{
+              hit.dispatchEvent(new PointerEvent('pointerover', pointer)); hit.dispatchEvent(new MouseEvent('mouseover', at));
+              el.dispatchEvent(new MouseEvent('mouseenter', {{...at, bubbles:false}}));
+              hit.dispatchEvent(new PointerEvent('pointermove', pointer)); hit.dispatchEvent(new MouseEvent('mousemove', at));
+            }}
+            if (op === 'click') {{
+              hit.dispatchEvent(new PointerEvent('pointerdown', {{...pointer, button:0, buttons:1}})); hit.dispatchEvent(new MouseEvent('mousedown', {{...at, button:0, buttons:1}}));
+              if (typeof el.focus === 'function') el.focus({{preventScroll:true}});
+              hit.dispatchEvent(new PointerEvent('pointerup', {{...pointer, button:0}})); hit.dispatchEvent(new MouseEvent('mouseup', {{...at, button:0}}));
+              // An icon's SVG has no click(); its click event bubbles to the
+              // button or link around it.
+              if (typeof hit.click === 'function') hit.click(); else hit.dispatchEvent(new MouseEvent('click', {{...at, button:0, detail:1}}));
+              return {{ok:true,x,y,page_events:true}};
+            }}
+            if (op === 'hover') return {{ok:true,x,y,page_events:true}};
+            if (op === 'type') {{
+              el.focus();
+              if (typeof el.select === 'function') el.select();
+              else {{ const range = document.createRange(); range.selectNodeContents(el); const selection = getSelection(); selection.removeAllRanges(); selection.addRange(range); }}
+              return {{ok:true,x,y,page_events:true}};
+            }}
+          }}
           if (op === 'type') el.focus();
-          else if (op === 'select') {{ el.value = v; el.dispatchEvent(new Event('input', {{bubbles:true}})); el.dispatchEvent(new Event('change', {{bubbles:true}})); }}
+          else if (op === 'select') {{
+            if (!(el instanceof HTMLSelectElement)) return {{ok:false, reason:'target is not a list (select); click it and then click the option instead'}};
+            const norm = s => String(s).replace(/\s+/g,' ').trim().toLowerCase();
+            const option = Array.from(el.options).find(o => o.value === v) || Array.from(el.options).find(o => norm(o.textContent) === norm(v));
+            if (!option) return {{ok:false, reason:'no option has that value or label'}};
+            setValue(option.value);
+          }}
           else if (op !== 'click' && op !== 'hover') return {{ok:false, reason:'unsupported operation'}};
           return {{ok:true,x,y}};
         }})()"#
@@ -516,7 +573,12 @@ impl ManagedBrowser {
         .await?;
         if result.pointer("/result/value/ok").and_then(Value::as_bool) != Some(true) {
             return Err(PokError::Tool(format!(
-                "managed browser action was rejected: {}",
+                "{} action was rejected: {}",
+                if connection.managed {
+                    "managed browser"
+                } else {
+                    "browser"
+                },
                 result
                     .pointer("/result/value/reason")
                     .and_then(Value::as_str)
@@ -531,10 +593,18 @@ impl ManagedBrowser {
             .pointer("/result/value/y")
             .and_then(Value::as_f64)
             .unwrap_or_default();
+        // The page already performed the action with page events.
+        let performed = result
+            .pointer("/result/value/page_events")
+            .and_then(Value::as_bool)
+            == Some(true);
         match operation {
             "click" => {
                 let before = Self::page_targets(connection.port).await?;
-                for event in ["mousePressed", "mouseReleased"] {
+                for event in ["mousePressed", "mouseReleased"]
+                    .into_iter()
+                    .filter(|_| !performed)
+                {
                     Self::cdp(
                         connection,
                         "Input.dispatchMouseEvent",
@@ -555,6 +625,7 @@ impl ManagedBrowser {
                     connection.page_target = Some(id);
                 }
             }
+            "hover" if performed => {}
             "hover" => {
                 Self::cdp(
                     connection,
@@ -565,18 +636,27 @@ impl ManagedBrowser {
                 )
                 .await?;
             }
+            "type"
+                if result
+                    .pointer("/result/value/filled")
+                    .and_then(Value::as_bool)
+                    == Some(true) => {}
             "type" => {
-                Self::cdp(connection, "Input.dispatchKeyEvent", json!({
-                    "type": "keyDown", "key": "a", "code": "KeyA", "modifiers": 2, "commands": ["selectAll"]
-                })).await?;
-                Self::cdp(
-                    connection,
-                    "Input.dispatchKeyEvent",
-                    json!({
-                        "type": "keyUp", "key": "a", "code": "KeyA", "modifiers": 2
-                    }),
-                )
-                .await?;
+                // In a background tab the page selected the field's content;
+                // text insertion still reaches it there.
+                if !performed {
+                    Self::cdp(connection, "Input.dispatchKeyEvent", json!({
+                        "type": "keyDown", "key": "a", "code": "KeyA", "modifiers": 2, "commands": ["selectAll"]
+                    })).await?;
+                    Self::cdp(
+                        connection,
+                        "Input.dispatchKeyEvent",
+                        json!({
+                            "type": "keyUp", "key": "a", "code": "KeyA", "modifiers": 2
+                        }),
+                    )
+                    .await?;
+                }
                 Self::cdp(
                     connection,
                     "Input.insertText",
@@ -588,10 +668,90 @@ impl ManagedBrowser {
             _ => unreachable!("validated above"),
         }
         tokio::time::sleep(Duration::from_millis(400)).await;
-        let mut snapshot = Self::snapshot_locked(connection).await?;
-        snapshot["action"] = json!({"operation": operation, "target_id": target_id, "ok": true});
-        Ok(snapshot)
+        let mut action = json!({"operation": operation, "target_id": target_id, "ok": true});
+        if performed {
+            action["background_tab"] = json!(true);
+        }
+        Ok(Self::snapshot_after_action(connection, action).await)
     }
+
+    /// A snapshot once a page has settled. A navigation replaces the page
+    /// while it is read, so a failed read is retried; with `wait_for_load`,
+    /// so is a page still loading. Gives up after about three seconds.
+    pub(crate) async fn settled_snapshot(
+        connection: &mut BrowserConnection,
+        wait_for_load: bool,
+    ) -> Result<Value> {
+        let mut snapshot = Self::snapshot_locked(connection).await;
+        for _ in 0..7 {
+            let settled = match &snapshot {
+                Ok(page) => {
+                    !wait_for_load || page.get("loading").and_then(Value::as_bool) != Some(true)
+                }
+                Err(_) => false,
+            };
+            if settled {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            snapshot = Self::snapshot_locked(connection).await;
+        }
+        snapshot
+    }
+
+    /// The page after an action that already happened. A page that cannot be
+    /// read yet must not report the action as failed, or it could be repeated.
+    pub(crate) async fn snapshot_after_action(
+        connection: &mut BrowserConnection,
+        action: Value,
+    ) -> Value {
+        let wait_for_load = !connection.managed;
+        match Self::settled_snapshot(connection, wait_for_load).await {
+            Ok(mut snapshot) => {
+                snapshot["action"] = action;
+                snapshot
+            }
+            Err(error) => json!({
+                "action": action,
+                "snapshot_error": error.to_string(),
+                "next": "The action was performed but the page could not be read afterwards. Read the page again before acting further; do not repeat the action.",
+            }),
+        }
+    }
+}
+
+/// One DevTools request on a page or browser WebSocket endpoint.
+pub(crate) async fn cdp_call(endpoint: &str, method: &str, params: Value) -> Result<Value> {
+    let (mut socket, _) = connect_async(endpoint)
+        .await
+        .map_err(|error| PokError::Tool(format!("CDP connection failed: {error}")))?;
+    socket
+        .send(Message::Text(
+            serde_json::to_string(&json!({"id": 1, "method": method, "params": params}))?.into(),
+        ))
+        .await
+        .map_err(|error| PokError::Tool(format!("CDP request failed: {error}")))?;
+    while let Some(message) = socket.next().await {
+        let message =
+            message.map_err(|error| PokError::Tool(format!("CDP response failed: {error}")))?;
+        let Some(text) = (match message {
+            Message::Text(text) => Some(text),
+            _ => None,
+        }) else {
+            continue;
+        };
+        let value: Value = serde_json::from_str(&text)?;
+        if value.get("id").and_then(Value::as_u64) != Some(1) {
+            continue;
+        }
+        if let Some(error) = value.get("error") {
+            return Err(PokError::Tool(format!("CDP {method} failed: {error}")));
+        }
+        return Ok(value.get("result").cloned().unwrap_or(Value::Null));
+    }
+    Err(PokError::Tool(
+        "CDP connection closed without a response".into(),
+    ))
 }
 
 /// Bound a snapshot element's accessible name for decision descriptions. A
@@ -599,7 +759,7 @@ impl ManagedBrowser {
 /// mid-word-truncated page-text blob, and the cross-model judge answered
 /// `reversible: unknown` because it could not tell what the action was.
 /// Keep a readable label so evidence/reversibility questions are answerable.
-fn bounded_label(label: &str) -> String {
+pub(crate) fn bounded_label(label: &str) -> String {
     let normalized = label.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut result = String::new();
     for word in normalized.split(' ') {
@@ -815,12 +975,14 @@ pub async fn decision_candidates(
 pub async fn decision_state(context: &ToolContext) -> Value {
     let managed = browser(context);
     let state = managed.state.lock().await;
-    let Some(snapshot) = state
+    state
         .as_ref()
         .and_then(|connection| connection.last_snapshot.as_ref())
-    else {
-        return json!({});
-    };
+        .map_or_else(|| json!({}), snapshot_decision_state)
+}
+
+/// The bounded decision projection of one page snapshot.
+pub(crate) fn snapshot_decision_state(snapshot: &Value) -> Value {
     let safe = |text: &str, limit: usize| {
         if crate::decision::outbound_text_may_be_sensitive(text) {
             "[withheld]".into()
@@ -870,7 +1032,7 @@ fn explicit_http_url(value: &str) -> Option<String> {
 }
 
 /// Installed Chromium browsers to try, Edge first, then Chrome.
-fn chromium_candidates() -> Vec<PathBuf> {
+pub(crate) fn chromium_candidates() -> Vec<PathBuf> {
     #[cfg_attr(not(windows), allow(unused_mut))]
     let mut found = Vec::new();
     #[cfg(windows)]

@@ -185,8 +185,13 @@ personal identifiers when they are irrelevant, but preserve exact values when th
 For context menus, use click_target with button `right` directly from a fresh capture;
 do not select first or invent mouse-button-down actions. For ordinary web work, prefer the isolated
 managed_browser tools: they return structured DOM evidence and use freshness-checked native browser input.
-Use browser_navigate with a complete window id only when the user explicitly asks to work in their existing
-personal browser; it activates that browser and submits the address atomically. Finish with a concise result."#;
+When a task needs the user's own accounts (their mail, orders, documents, dashboards) or they ask for their own
+browser, use the user_browser tools: they work in the user's signed-in Chrome or Edge, in a background tab, without
+their mouse or keyboard. If it is not reachable, relay the launch command user_browser_status gives and wait.
+Deleting, buying, sending, posting, and account changes there ask the user to confirm: do them only when the
+request calls for them, and if the user declines, stop and report it. Use browser_navigate with a complete window
+id only when the user explicitly asks to work in their existing personal browser and the user_browser tools cannot
+reach it; it activates that browser and submits the address atomically. Finish with a concise result."#;
 
 const TEXT_ONLY_GROUNDING_NOTE: &str = "This model does not accept images. Desktop captures are still processed locally and represented as compact numbered OCR/UI Automation targets. Use click_target whenever possible and do not ask for image input.";
 const MAX_UNCHANGED_PLAN_UPDATES: u32 = 3;
@@ -269,6 +274,9 @@ pub struct Session {
     /// Delegated mode withholds raw navigation tools until a `fast_actions`
     /// run hands control back without completing its subgoal.
     raw_navigation_unlocked: u8,
+    /// Whether the running `fast_actions` plan acts in the user's own
+    /// browser, so System 1 reads that page rather than the managed one.
+    fast_user_browser: bool,
     /// A step System 1 handed back, waiting for the primary model's
     /// resolving action to become a training label (see `record_handback`).
     pending_handback: Option<Value>,
@@ -500,6 +508,7 @@ impl Session {
             decision_router_refinement: DecisionRefinementState::default(),
             decision_router_launched_applications: HashSet::new(),
             raw_navigation_unlocked: 0,
+            fast_user_browser: false,
             pending_handback: None,
             skill_replay_active: false,
             motor_tape: Vec::new(),

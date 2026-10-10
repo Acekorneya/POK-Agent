@@ -521,6 +521,11 @@ async fn run_cli() -> anyhow::Result<()> {
             let platform = pok_ai_windows::desktop_platform(config.background_desktop_work);
             let mut tools = standard_tools(brain.clone(), &model);
             pok_ai_core::generated_tools::register_generated_tool_tools(&mut tools);
+            pok_ai_core::user_browser::register_user_browser_tools(
+                &mut tools,
+                &config.user_browser,
+                &config.data_dir,
+            );
             let mcp_registration =
                 pok_ai_core::mcp::register_mcp_tools(&mut tools, &config.mcp).await;
             for warning in &mcp_registration.warnings {
@@ -838,6 +843,10 @@ async fn doctor(config: &Config) -> Result<()> {
     }
     let memory = MemoryStore::open(config.data_dir.join("memory"))?;
     println!("Memory: {}", memory.root().display());
+    println!(
+        "{}",
+        pok_ai_core::user_browser::health_check(&config.user_browser, &config.data_dir).await
+    );
     Ok(())
 }
 

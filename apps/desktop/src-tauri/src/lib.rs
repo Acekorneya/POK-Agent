@@ -2092,6 +2092,7 @@ async fn run_prompt(
         agent_temperature,
         mut decision_router_config,
         mcp_config,
+        user_browser_config,
     ) = {
         let config = runtime.config.lock();
         if config.prompt_token_target.is_some() {
@@ -2122,6 +2123,7 @@ async fn run_prompt(
             config.agent_temperature,
             config.decision_router.clone(),
             config.mcp.clone(),
+            config.user_browser.clone(),
         )
     };
     let legacy_requested_decision_router = pending_snapshot
@@ -2314,6 +2316,11 @@ async fn run_prompt(
         register_desktop_tools(&mut tools);
         register_memory_tools(&mut tools);
         register_generated_tool_tools(&mut tools);
+        pok_ai_core::user_browser::register_user_browser_tools(
+            &mut tools,
+            &user_browser_config,
+            &data_dir,
+        );
         tools.register(SpawnSubagentTool::new(brain.clone(), &model));
         let stored_mcp = pok_ai_core::mcp::McpServerStore::open(&data_dir).load();
         let merged_mcp = pok_ai_core::mcp::merge_servers(&mcp_config, &stored_mcp);

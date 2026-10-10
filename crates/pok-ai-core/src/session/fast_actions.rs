@@ -24,6 +24,26 @@ pub(super) struct FastPlan {
     pub(super) total_nodes: usize,
 }
 
+impl FastPlan {
+    /// Whether any step acts in the user's own browser.
+    pub(super) fn uses_user_browser(&self) -> bool {
+        fn acts_there(node: &FastPlanNode) -> bool {
+            node.allowed.contains(&FastOperation::UserBrowserClick)
+                || node
+                    .branches
+                    .iter()
+                    .flat_map(|(_, nodes)| nodes)
+                    .any(acts_there)
+        }
+        self.chain.iter().any(acts_there)
+            || self
+                .branches
+                .iter()
+                .flat_map(|(_, nodes)| nodes)
+                .any(acts_there)
+    }
+}
+
 /// State shared by every node of one `fast_actions` call.
 pub(super) struct FastRunContext {
     pub(super) interrupts: Vec<crate::builtins::FastInterrupt>,
@@ -649,12 +669,13 @@ pub(super) fn delegated_catalog(catalog: String, navigation_locked: bool) -> Str
         .join("\n")
 }
 
-pub(super) const DELEGATED_NAVIGATION_TOOLS: [&str; 5] = [
+pub(super) const DELEGATED_NAVIGATION_TOOLS: [&str; 6] = [
     "click_target",
     "scroll_view",
     "activate_window",
     "managed_browser_click",
     "managed_browser_scroll",
+    "user_browser_click",
 ];
 
 /// Primary-model turns that may use raw navigation after `fast_actions`
@@ -1116,6 +1137,12 @@ impl Session {
                 ))
             })?;
         let plan = FastPlan::from_args(&args)?;
+        self.fast_user_browser = plan.uses_user_browser();
+        if self.fast_user_browser
+            && let Some(recorder) = &self.training
+        {
+            recorder.observe_private_surface();
+        }
         increment_metric(metrics, "fast_actions_runs", 1);
         // A new plan supersedes a hand-back still waiting for its resolution.
         self.pending_handback = None;
@@ -1253,13 +1280,13 @@ impl Session {
         }
         if self.raw_navigation_unlocked > 0 {
             result["next"] = json!(
-                "raw navigation tools (click_target, scroll_view, activate_window, managed_browser_click, managed_browser_scroll) are available for two turns; finish this subgoal with them from the observation below, then return to fast_actions"
+                "raw navigation tools (click_target, scroll_view, activate_window, managed_browser_click, managed_browser_scroll, user_browser_click) are available for two turns; finish this subgoal with them from the observation below, then return to fast_actions"
             );
         }
         // Read the values the planner asked for straight from grounded
         // evidence, beside the screen they came from.
         if !args.read.is_empty() && matches!(status.as_str(), "done" | "unverified") {
-            let browser_state = crate::browser::decision_state(&self.context).await;
+            let browser_state = self.fast_browser_state().await;
             let has_page = browser_state
                 .as_object()
                 .is_some_and(|state| !state.is_empty());
@@ -1800,12 +1827,22 @@ impl Session {
         Ok(result)
     }
 
+    /// The web page System 1 reads: the agent's tab of the user's own
+    /// browser while the plan acts there, else the managed browser's page.
+    pub(super) async fn fast_browser_state(&self) -> Value {
+        if self.fast_user_browser {
+            crate::user_browser::decision_state().await
+        } else {
+            crate::browser::decision_state(&self.context).await
+        }
+    }
+
     /// Evidence for local condition checks and the bounded state a fast
     /// model sees when a condition quotes nothing: the desktop observation
-    /// and, when present, the managed-browser page.
+    /// and, when present, the browser page.
     pub(super) async fn fast_condition_context(&self, query: &str) -> (String, Value) {
         let observation = self.context.latest_observation.lock().clone();
-        let browser_state = crate::browser::decision_state(&self.context).await;
+        let browser_state = self.fast_browser_state().await;
         let mut evidence = crate::decision::page_evidence_text(&browser_state);
         let mut state = json!({});
         let page = fast_page_evidence(&browser_state);
@@ -2057,12 +2094,14 @@ impl Session {
             .iter()
             .map(|operation| operation.tool())
             .collect::<HashSet<_>>();
-        let browser_allowed = allowed.iter().any(|operation| {
+        let managed_browser_allowed = allowed.iter().any(|operation| {
             matches!(
                 operation,
                 FastOperation::BrowserClick | FastOperation::BrowserScroll
             )
         });
+        let user_browser_allowed = allowed.contains(&FastOperation::UserBrowserClick);
+        let browser_allowed = managed_browser_allowed || user_browser_allowed;
         let desktop_allowed = allowed.iter().any(|operation| {
             matches!(
                 operation,
@@ -2130,7 +2169,7 @@ impl Session {
                 .get_or_insert_with(|| PopupBaseline::of(observation.as_ref()))
                 .clone();
             let browser_state = if browser_allowed {
-                crate::browser::decision_state(&self.context).await
+                self.fast_browser_state().await
             } else {
                 json!({})
             };
@@ -2291,7 +2330,11 @@ impl Session {
             let unchanged_since_start = *start_evidence == evidence;
             let unchanged_since_last = last_step_evidence.as_ref() == Some(&evidence);
             last_step_evidence = Some(evidence.clone());
-            if let Some(recorder) = &self.training {
+            if let Some(recorder) = &self.training
+                && self.fast_user_browser
+            {
+                recorder.observe_private_surface();
+            } else if let Some(recorder) = &self.training {
                 let window_info = observation
                     .as_ref()
                     .and_then(|observation| observation.foreground_window.as_ref());
@@ -2579,10 +2622,14 @@ impl Session {
                     &format!("{goal} {hint}"),
                 ));
             }
-            if browser_allowed {
+            if managed_browser_allowed {
                 candidates.extend(
                     crate::browser::decision_candidates(&self.context, &goal, &hint, limit).await,
                 );
+            }
+            if user_browser_allowed {
+                candidates
+                    .extend(crate::user_browser::decision_candidates(&goal, &hint, limit).await);
             }
             // A quoted target may be any reliably grounded control (a button,
             // for example), not only the navigation controls offered above.
@@ -2652,6 +2699,11 @@ impl Session {
                         .into_iter()
                         .filter(|candidate| candidate.tool == "managed_browser_click"),
                 );
+                if user_browser_allowed {
+                    candidates.extend(
+                        crate::user_browser::decision_candidates(interrupt, interrupt, limit).await,
+                    );
+                }
             }
             candidates.retain(|candidate| {
                 candidate.kind == DecisionCandidateKind::Action
@@ -2666,10 +2718,14 @@ impl Session {
             });
             // The commit that completes the user's request (save, send,
             // submit, ...) stays with the primary model and its commit
-            // review. Hold it back, but keep it ready to hand over.
+            // review. Hold it back, but keep it ready to hand over. In the
+            // user's own browser so does every control that deletes, buys,
+            // sends, or changes account settings: System 2 performs it once
+            // the user has confirmed.
             let (held_commits, remaining): (Vec<_>, Vec<_>) =
                 candidates.into_iter().partition(|candidate| {
                     requested_commit_label(&root_request, &candidate.description).is_some()
+                        || crate::user_browser::needs_confirmation(candidate)
                 });
             candidates = remaining;
             let named_commit = if interrupt_hint.is_none() {
@@ -2686,8 +2742,12 @@ impl Session {
                 settle_completion!();
                 status = "commit_required";
                 reason = Some(
-                    "the step that completes the request is a commit, which you confirm: call this tool with these arguments"
-                        .into(),
+                    if crate::user_browser::needs_confirmation(&commit) {
+                        "this control in the user's own browser deletes, buys, sends, or changes account settings, so System 1 never clicks it: when the request calls for it, call this tool with these arguments and the user is asked to confirm"
+                    } else {
+                        "the step that completes the request is a commit, which you confirm: call this tool with these arguments"
+                    }
+                    .into(),
                 );
                 alternatives = vec![json!({
                     "tool": commit.tool,

@@ -198,6 +198,14 @@ thresholds are acted on. Anything uncertain, stalled, or consequential (sending,
 deleting) hands back to the planner with the new screen. Verified runs record their exact actions
 as a motor program, which System 1 replays the next time.
 
+**Your own signed-in browser.** Besides its isolated managed browser, the agent can attach to
+the Chrome or Edge you are already logged in to (started with `--remote-debugging-port`; `pok-ai
+doctor` prints the exact command) and work in your mail, orders, and dashboards without exporting
+any cookies. It works in background tabs it opens, never through your mouse or keyboard, so you
+keep working meanwhile. System 1 can navigate there through `fast_actions`, while deleting, buying,
+sending, or changing account settings always waits for your confirmation, enforced by System 2 in
+Rust. See [`docs/USER-BROWSER.md`](docs/USER-BROWSER.md).
+
 **Without a router (the default)**, POK-Agent is a complete computer-use and coding agent on its
 own, exactly as before System 1 was added. The router is optional (`[decision_router]
 enabled = false` out of the box). The planner sees the grounded screen and calls the desktop,
@@ -606,7 +614,10 @@ use optimized dependencies so screenshot resizing and PNG encoding remain respon
 `tauri dev`. Input
 automation still rejects elevated windows, password controls, stale captures,
 and coordinates outside the selected window or monitor. Desktop overviews never
-authorize input. Exam automation is limited to disposable fixture
+authorize input. In your own signed-in browser, any click, submission, or navigation that deletes,
+buys, sends, posts, changes account settings, or signs out waits for your confirmation in every
+policy mode, password fields are never filled, and only tabs the agent opened are navigated away
+or closed. Exam automation is limited to disposable fixture
 repositories and the titled POK-Agent exam window. Every run writes a JSONL trace
 and artifacts under `%LOCALAPPDATA%\POK-Ai`.
 

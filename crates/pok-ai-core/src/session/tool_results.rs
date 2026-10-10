@@ -181,16 +181,23 @@ pub(super) fn project_browser_snapshot_for_model(value: &Value) -> Value {
         "title",
         "loading",
         "fingerprint",
+        "action",
+        "tab",
+        "html_chars",
+        "html_truncated",
         "_pok_continuity",
     ] {
         if let Some(item) = value.get(key) {
             projected.insert(key.into(), item.clone());
         }
     }
-    if let Some(text) = value.get("text").and_then(Value::as_str) {
-        projected.insert("text".into(), Value::String(truncate_chars(text, 6_000)));
+    for (key, limit) in [("text", 6_000), ("section_text", 6_000), ("html", 16_000)] {
+        if let Some(text) = value.get(key).and_then(Value::as_str) {
+            projected.insert(key.into(), Value::String(truncate_chars(text, limit)));
+        }
     }
     projected.insert("elements".into(), Value::Array(compact));
+    let user_profile = value.get("user_profile").and_then(Value::as_bool) == Some(true);
     projected.insert(
         "model_projection".into(),
         json!({
@@ -198,7 +205,11 @@ pub(super) fn project_browser_snapshot_for_model(value: &Value) -> Value {
             "elements_total": elements.len(),
             "actionable_total": actionable.len(),
             "actionable_shown": actionable.len().min(ELEMENTS),
-            "reason": "Only actionable elements are listed; use snapshot_id and an element id to act."
+            "reason": if user_profile {
+                "Only actionable elements are listed; act with an element id as target."
+            } else {
+                "Only actionable elements are listed; use snapshot_id and an element id to act."
+            }
         }),
     );
     Value::Object(projected)
@@ -699,6 +710,13 @@ pub(super) fn is_grounding_evidence_tool(name: &str) -> bool {
             | "managed_browser_select"
             | "managed_browser_hover"
             | "managed_browser_scroll"
+            | "user_browser_navigate"
+            | "user_browser_click"
+            | "user_browser_type"
+            | "user_browser_select"
+            | "user_browser_extract"
+            | "user_browser_screenshot"
+            | "user_browser_tabs"
             | "capture_screen"
             | "inspect_screen_region"
             | "scroll_view"

@@ -4762,6 +4762,49 @@ async fn the_requested_commit_is_handed_back_ready_to_confirm() {
 }
 
 #[tokio::test]
+async fn system_one_hands_a_send_in_the_users_browser_back_to_system_two() {
+    // The request never says "send", so only the user-browser guardrail
+    // holds the button back: System 2 performs it once the user confirms.
+    crate::user_browser::install_test_page(json!({
+        "snapshot_id": "s1",
+        "url": "https://mail.example.com/compose",
+        "title": "Compose",
+        "text": "New message",
+        "elements": [
+            {"id": "b1", "role": "button", "name": "Send", "actionable": true},
+            {"id": "b2", "role": "link", "name": "Inbox", "actionable": true},
+        ],
+    }))
+    .await;
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        vec![fast_link("t1", "Desktop item")],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    harness.session.context.active_task.lock().root_request =
+        "Reply to Ana that the meeting moved to Friday".into();
+    let mut metrics = RunMetrics::default();
+    let result = harness
+        .session
+        .run_fast_actions(
+            1,
+            &json!({"goal": "finish the reply", "target_hint": "\"Send\"", "done_when": "the reply is gone", "allowed_operations": ["user_browser_click"]}),
+            &mut metrics,
+        )
+        .await
+        .unwrap();
+    assert_eq!(result["status"], "commit_required", "{result}");
+    assert!(harness.clicks.lock().is_empty());
+    let ready = &result["alternatives"][0];
+    assert_eq!(ready["tool"], "user_browser_click");
+    assert_eq!(ready["arguments"]["target"], "b1");
+    assert!(
+        result.to_string().contains("the user is asked to confirm"),
+        "{result}"
+    );
+}
+
+#[tokio::test]
 async fn fast_actions_accepts_a_quoted_window_title_that_is_already_in_front() {
     // The planner asks for a window that is already in the foreground and
     // quotes its title in both the hint and done_when.

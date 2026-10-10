@@ -708,7 +708,15 @@ pub fn tool_group(name: &str) -> &'static str {
         | "managed_browser_type"
         | "managed_browser_select"
         | "managed_browser_hover"
-        | "managed_browser_scroll" => "browser",
+        | "managed_browser_scroll"
+        | "user_browser_status"
+        | "user_browser_navigate"
+        | "user_browser_click"
+        | "user_browser_type"
+        | "user_browser_select"
+        | "user_browser_extract"
+        | "user_browser_screenshot"
+        | "user_browser_tabs" => "browser",
         "run_command" | "manage_command" => "system",
         "list_directory" | "read_file" | "grep_search" | "source_outline" | "write_file"
         | "edit_file" | "undo_edit" | "inspect_artifact" => "coding",
@@ -725,7 +733,7 @@ pub fn tool_group(name: &str) -> &'static str {
     }
 }
 
-fn apply_approval_decision(
+pub(crate) fn apply_approval_decision(
     decision: ApprovalDecision,
     approval_key: Option<&str>,
     approval_cache: &Mutex<BTreeSet<String>>,

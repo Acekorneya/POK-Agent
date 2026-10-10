@@ -28,5 +28,6 @@ pub mod session_archive;
 pub mod subagent;
 pub mod tool;
 pub mod types;
+pub mod user_browser;
 
 pub use error::{PokError, Result};
