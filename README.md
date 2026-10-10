@@ -206,6 +206,23 @@ keep working meanwhile. System 1 can navigate there through `fast_actions`, whil
 sending, or changing account settings always waits for your confirmation, enforced by System 2 in
 Rust. See [`docs/USER-BROWSER.md`](docs/USER-BROWSER.md).
 
+**A swarm of agents.** The planner works swarm-first: a task with several parts, or anything to
+find out first, goes to `run_agents`, which runs one worker agent per part at the same time and
+returns their reports. The planner decides how many agents a task needs and which roles they take:
+research (the web), browse (your signed-in browser, one tab each), desktop (one window each, taking
+turns at the mouse and keyboard and pausing while you use the computer), scout (study an
+application without changing it, so the planner can act), explore and review (read code), and code
+(edit and test in its own git worktree, returning a commit). Agents talk on a team board: findings
+reach teammates with their next tool result, and promising leads work like pheromone trails,
+evaporating unless teammates follow them, while a strong lead recruits another agent. Successful
+splits are saved to memory as playbooks. A model on this computer gets four requests at once, a
+hosted one as many as the agents, narrowed when the provider rate-limits; `[swarm] worker_model`
+can give the workers a smaller model. See [`docs/SWARM.md`](docs/SWARM.md).
+
+**Web research.** `web_search` finds pages without a key (DuckDuckGo; Brave, Tavily, or a SearXNG
+instance are configurable) and `web_fetch` reads them as clean text in parts, with private and
+local addresses refused. See [`docs/WEB.md`](docs/WEB.md).
+
 **Without a router (the default)**, POK-Agent is a complete computer-use and coding agent on its
 own, exactly as before System 1 was added. The router is optional (`[decision_router]
 enabled = false` out of the box). The planner sees the grounded screen and calls the desktop,
@@ -213,7 +230,8 @@ browser, coding, command, and memory tools itself, one action per call, with the
 verification, safety boundary, first look, and learned skills. What a router adds is speed and
 cost: plan trees that run many steps per planner call, and muscle-memory replays of verified
 runs. Without it, each action is one planner call. Any OpenAI-compatible or Anthropic provider
-with tool use works (vision recommended), including local models in LM Studio or Ollama.
+with tool use works (vision recommended), including local models in LM Studio or Ollama and
+hosted gateways such as OpenRouter and OpenCode Zen, both of which offer free models.
 
 ## Current MVP boundaries
 
@@ -617,7 +635,8 @@ and coordinates outside the selected window or monitor. Desktop overviews never
 authorize input. In your own signed-in browser, any click, submission, or navigation that deletes,
 buys, sends, posts, changes account settings, or signs out waits for your confirmation in every
 policy mode, password fields are never filled, and only tabs the agent opened are navigated away
-or closed. Exam automation is limited to disposable fixture
+or closed. Swarm agents run under the same gates; a code agent writes and runs commands only
+inside its own git worktree, and its commit reaches your branch only after you agree. Exam automation is limited to disposable fixture
 repositories and the titled POK-Agent exam window. Every run writes a JSONL trace
 and artifacts under `%LOCALAPPDATA%\POK-Ai`.
 

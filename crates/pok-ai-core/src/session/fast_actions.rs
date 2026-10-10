@@ -1831,7 +1831,7 @@ impl Session {
     /// browser while the plan acts there, else the managed browser's page.
     pub(super) async fn fast_browser_state(&self) -> Value {
         if self.fast_user_browser {
-            crate::user_browser::decision_state().await
+            crate::user_browser::decision_state(&self.context).await
         } else {
             crate::browser::decision_state(&self.context).await
         }
@@ -2628,8 +2628,10 @@ impl Session {
                 );
             }
             if user_browser_allowed {
-                candidates
-                    .extend(crate::user_browser::decision_candidates(&goal, &hint, limit).await);
+                candidates.extend(
+                    crate::user_browser::decision_candidates(&self.context, &goal, &hint, limit)
+                        .await,
+                );
             }
             // A quoted target may be any reliably grounded control (a button,
             // for example), not only the navigation controls offered above.
@@ -2701,7 +2703,13 @@ impl Session {
                 );
                 if user_browser_allowed {
                     candidates.extend(
-                        crate::user_browser::decision_candidates(interrupt, interrupt, limit).await,
+                        crate::user_browser::decision_candidates(
+                            &self.context,
+                            interrupt,
+                            interrupt,
+                            limit,
+                        )
+                        .await,
                     );
                 }
             }

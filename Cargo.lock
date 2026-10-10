@@ -4122,6 +4122,7 @@ dependencies = [
  "dunce",
  "eventsource-stream",
  "futures",
+ "html5ever",
  "ignore",
  "image 0.24.9",
  "parking_lot",

@@ -69,6 +69,15 @@ it, and close it afterwards if other software on the machine is not trusted.
   that framework-managed inputs (React and similar) see the change. Password
   fields are never filled; your signed-in session usually makes them
   unnecessary.
+- **Scrolling and waiting in the background.** A background tab does not
+  run the rendering steps that fire lazy loading and infinite feeds, so
+  after a scroll the agent has the browser render the tab once for a capture
+  (without showing it), which lets that content load, and then puts the tab
+  back where it was scrolled.
+- **Links that open a new tab.** The agent's click counts as a user's click,
+  so the browser opens the tab, and the agent continues there. It follows
+  only a tab opened by its own tab: a tab you open at the same moment is
+  never taken over.
 - **It can read the whole page.** `user_browser_extract` returns the URL,
   title, visible text, and every visible control with the id to act on, and
   with `include_html` the page's HTML (scripts and styles removed, each
@@ -85,7 +94,9 @@ The tools (the fast execution layer: fixed functions, no shell scripts):
 | `user_browser_click` | Click one control by element id (`b12`), exact visible text, or CSS selector; ambiguous text is refused with the matching ids |
 | `user_browser_type` | Fill one field with exact text, optionally pressing Enter |
 | `user_browser_select` | Choose an option in a dropdown list |
-| `user_browser_extract` | Read the page (text, controls, optionally HTML) |
+| `user_browser_extract` | Read the page (text, controls, optionally HTML); long pages are read on in parts with `offset` (the previous result's `next_offset`) |
+| `user_browser_scroll` | Scroll up or down by a third of the window, a page, or to the top or bottom; reports whether more content loaded (infinite feeds) and whether the end was reached |
+| `user_browser_wait_for` | Wait (up to 30 seconds) for text or an element to appear, or to go away (a spinner, "Loading") |
 | `user_browser_screenshot` | Capture the agent's tab as an image |
 | `user_browser_tabs` | List tabs, switch to one, or close one the agent opened |
 
@@ -128,16 +139,23 @@ the local Laya router to keep that on the machine. The opt-in router training
 log never records questions about your browser, whatever the page. Every
 tool call is also written to the local diagnostics folder, as for all tools.
 
+## Several agents at once
+
+In a [swarm](SWARM.md), every agent with the browse role gets its own
+background tab in your browser, so several pages are read or filled at the
+same time without the agents getting in each other's way, and a finished
+agent's tabs are closed. The confirmation gate works the same for every
+agent: a send, purchase, deletion, or account change by any of them asks you
+first, and an agent whose action you decline reports it instead of retrying.
+
 ## Limits
 
 - The guardrail reads labels and addresses. An icon-only button with no
   accessible name (a bare trash-can icon) cannot be classified; System 2's
   plan and the page's own confirmation dialogs remain the check there.
 - In a background tab, page events are untrusted (`isTrusted` is false). Most
-  sites accept them; a few security-sensitive widgets do not. Links that open
-  a new tab may be stopped by the popup blocker there; open their address with
-  `user_browser_navigate` instead. When you switch to the agent's tab, native
-  input is used again.
+  sites accept them; a few security-sensitive widgets do not. When you switch
+  to the agent's tab, native input is used again.
 - Native `<select>` popups, file pickers, and browser dialogs (print, save)
   are outside the page and cannot be operated; `user_browser_select` sets list
   values directly.

@@ -369,6 +369,18 @@ impl ToolRegistry {
         self.tools.insert(tool.name().into(), Arc::new(tool));
     }
 
+    /// Keep only the tools whose names pass `keep` (a swarm worker's role).
+    pub(crate) fn retain(&mut self, keep: impl Fn(&str) -> bool) {
+        self.tools.retain(|name, _| keep(name));
+    }
+
+    /// Replace every tool with a wrapper around it.
+    pub(crate) fn wrap_all(&mut self, wrap: impl Fn(Arc<dyn Tool>) -> Arc<dyn Tool>) {
+        for tool in self.tools.values_mut() {
+            *tool = wrap(tool.clone());
+        }
+    }
+
     pub fn definitions(&self) -> Vec<BrainTool> {
         self.tools
             .values()
@@ -423,6 +435,10 @@ impl ToolRegistry {
 
     pub fn names(&self) -> Vec<String> {
         self.tools.keys().cloned().collect()
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.tools.contains_key(name)
     }
 
     pub fn input_schema(&self, name: &str) -> Option<Value> {
@@ -502,6 +518,9 @@ impl ToolRegistry {
                 }
             }
         }
+        // Desktop input takes turns between swarm agents, and a window one
+        // agent is acting in is refused to the others.
+        let _desktop_turn = crate::swarm::desktop_turn(name, &arguments, context).await?;
         let started = Utc::now();
         let result = tool.execute(arguments.clone(), context).await;
         let record = serde_json::json!({
@@ -683,7 +702,8 @@ pub fn tool_group(name: &str) -> &'static str {
         return "mcp";
     }
     match name {
-        "get_current_time" | "update_task_plan" | "discover_tools" | "fast_actions" => "control",
+        "get_current_time" | "update_task_plan" | "discover_tools" | "fast_actions"
+        | "run_agents" | "team_post" | "team_read" => "control",
         "observe_desktop"
         | "capture_screen"
         | "inspect_screen_region"
@@ -716,7 +736,11 @@ pub fn tool_group(name: &str) -> &'static str {
         | "user_browser_select"
         | "user_browser_extract"
         | "user_browser_screenshot"
-        | "user_browser_tabs" => "browser",
+        | "user_browser_tabs"
+        | "user_browser_scroll"
+        | "user_browser_wait_for"
+        | "web_search"
+        | "web_fetch" => "browser",
         "run_command" | "manage_command" => "system",
         "list_directory" | "read_file" | "grep_search" | "source_outline" | "write_file"
         | "edit_file" | "undo_edit" | "inspect_artifact" => "coding",

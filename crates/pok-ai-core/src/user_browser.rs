@@ -39,11 +39,12 @@ use schemars::{JsonSchema, schema_for};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::sync::Mutex;
+use uuid::Uuid;
 
 use crate::{
     PokError, Result,
     browser::{
-        BrowserConnection, ManagedBrowser, bounded_label, cdp_call, devtools_http_client,
+        BrowserConnection, ManagedBrowser, bounded_label, devtools_http_client,
         snapshot_decision_state,
     },
     config::UserBrowserConfig,
@@ -52,7 +53,6 @@ use crate::{
     tool::{Tool, ToolContext, ToolRegistry},
 };
 
-const BROWSER_CALL_TIMEOUT: Duration = Duration::from_secs(10);
 /// HTML returned by `user_browser_extract` with `include_html`.
 const HTML_LIMIT: usize = 24_000;
 /// Candidate ids for System 1 clicks that the guardrail flags. They are
@@ -71,7 +71,6 @@ struct UserBrowserState {
 pub struct UserBrowser {
     port: u16,
     user_data_dir: PathBuf,
-    state: Arc<Mutex<UserBrowserState>>,
 }
 
 /// One tab in the user's browser.
@@ -92,8 +91,12 @@ struct Resolved {
 }
 
 /// The agent's state per DevTools port, shared by every registry built in
-/// this process so a conversation keeps working in the tab it opened.
-static STATES: OnceLock<SyncMutex<HashMap<u16, Arc<Mutex<UserBrowserState>>>>> = OnceLock::new();
+/// this process so a conversation keeps working in the tab it opened. A
+/// swarm worker has its own entry (keyed by its session), so each worker
+/// works in its own tab.
+type StateKey = (u16, Option<Uuid>);
+static STATES: OnceLock<SyncMutex<HashMap<StateKey, Arc<Mutex<UserBrowserState>>>>> =
+    OnceLock::new();
 /// The most recently registered user browser, read by System 1.
 static ACTIVE: OnceLock<SyncMutex<Option<Arc<UserBrowser>>>> = OnceLock::new();
 
@@ -108,20 +111,25 @@ pub fn default_profile_dir(data_dir: &Path) -> PathBuf {
 
 impl UserBrowser {
     fn new(config: &UserBrowserConfig, data_dir: &Path) -> Self {
-        let state = STATES
-            .get_or_init(Default::default)
-            .lock()
-            .entry(config.port)
-            .or_default()
-            .clone();
         Self {
             port: config.port,
             user_data_dir: config
                 .user_data_dir
                 .clone()
                 .unwrap_or_else(|| default_profile_dir(data_dir)),
-            state,
         }
+    }
+
+    /// The agent's state for this session: shared by the main agent's
+    /// conversations, separate for each swarm worker.
+    fn state(&self, session: Uuid) -> Arc<Mutex<UserBrowserState>> {
+        let lane = crate::swarm::is_worker(session).then_some(session);
+        STATES
+            .get_or_init(Default::default)
+            .lock()
+            .entry((self.port, lane))
+            .or_default()
+            .clone()
     }
 
     /// The DevTools `/json/version` answer, or why the browser is not there.
@@ -213,39 +221,10 @@ impl UserBrowser {
     /// A new tab that opens behind the user's current tab, so their focus
     /// and what they are looking at stay as they were.
     async fn open_background_tab(&self) -> Result<String> {
-        let version = self
-            .version()
+        self.version()
             .await
             .map_err(|reason| self.not_running(&reason))?;
-        let endpoint = version
-            .get("webSocketDebuggerUrl")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        let created = tokio::time::timeout(
-            BROWSER_CALL_TIMEOUT,
-            cdp_call(
-                endpoint,
-                "Target.createTarget",
-                json!({"url": "about:blank", "background": true}),
-            ),
-        )
-        .await
-        .map_err(|_| PokError::Tool("the browser did not open a tab in time".into()))??;
-        let id = created
-            .get("targetId")
-            .and_then(Value::as_str)
-            .ok_or_else(|| PokError::Tool("the browser opened no tab".into()))?
-            .to_owned();
-        // The new tab can take a moment to appear in the tab listing.
-        for _ in 0..20 {
-            if self.tabs().await?.iter().any(|tab| tab.id == id) {
-                return Ok(id);
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-        Err(PokError::Tool(
-            "the browser opened a tab but does not list it".into(),
-        ))
+        crate::browser::open_background_tab(self.port).await
     }
 
     fn tab_listing(&self, tabs: &[Tab], state: &UserBrowserState) -> Vec<Value> {
@@ -301,8 +280,9 @@ impl UserBrowser {
         result
     }
 
-    async fn status(&self) -> Value {
-        let mut guard = self.state.lock().await;
+    async fn status(&self, context: &ToolContext) -> Value {
+        let state = self.state(context.session_id);
+        let mut guard = state.lock().await;
         let state = &mut *guard;
         match self.version().await {
             Ok(version) => {
@@ -336,7 +316,8 @@ impl UserBrowser {
             .ok_or_else(|| {
                 PokError::Tool("user_browser_navigate needs an absolute http(s) URL".into())
             })?;
-        let mut guard = self.state.lock().await;
+        let state = self.state(context.session_id);
+        let mut guard = state.lock().await;
         let state = &mut *guard;
         self.attach(state).await?;
         if let Some((consequence, evidence)) = guardrail::navigation(parsed.as_str()) {
@@ -393,7 +374,8 @@ impl UserBrowser {
         target: &str,
         action: Action<'_>,
     ) -> Result<Value> {
-        let mut guard = self.state.lock().await;
+        let state = self.state(context.session_id);
+        let mut guard = state.lock().await;
         let state = &mut *guard;
         self.attach(state).await?;
         self.require_tab(state).await?;
@@ -500,8 +482,15 @@ impl UserBrowser {
         Ok(self.decorate(result, state))
     }
 
-    async fn extract(&self, selector: Option<&str>, include_html: bool) -> Result<Value> {
-        let mut guard = self.state.lock().await;
+    async fn extract(
+        &self,
+        context: &ToolContext,
+        selector: Option<&str>,
+        include_html: bool,
+        page: Option<(usize, usize)>,
+    ) -> Result<Value> {
+        let state = self.state(context.session_id);
+        let mut guard = state.lock().await;
         let state = &mut *guard;
         self.attach(state).await?;
         self.require_tab(state).await?;
@@ -536,11 +525,176 @@ impl UserBrowser {
                 snapshot["section_text"] = section.get("text").cloned().unwrap_or(Value::Null);
             }
         }
+        // The whole page text, read in parts; the snapshot shows its start.
+        let full = ManagedBrowser::cdp(
+            connection,
+            "Runtime.evaluate",
+            json!({"expression": PAGE_TEXT_SCRIPT, "returnByValue": true}),
+        )
+        .await?;
+        let full = full
+            .pointer("/result/value")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let total = full.chars().count();
+        let (offset, shown) = match page {
+            Some((offset, max)) => {
+                let part = full.chars().skip(offset).take(max).collect::<String>();
+                let shown = part.chars().count();
+                snapshot["text"] = json!(part);
+                (offset, shown)
+            }
+            None => (
+                0,
+                snapshot
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .map_or(0, |text| text.chars().count()),
+            ),
+        };
+        snapshot["text_offset"] = json!(offset);
+        snapshot["total_chars"] = json!(total);
+        snapshot["next_offset"] = json!((offset + shown < total).then_some(offset + shown));
         Ok(self.decorate(snapshot, state))
     }
 
-    async fn screenshot(&self, max_edge: u32) -> Result<Value> {
-        let mut guard = self.state.lock().await;
+    async fn scroll(&self, context: &ToolContext, direction: &str, amount: &str) -> Result<Value> {
+        let state = self.state(context.session_id);
+        let mut guard = state.lock().await;
+        let state = &mut *guard;
+        self.attach(state).await?;
+        self.require_tab(state).await?;
+        let connection = state.connection.as_mut().expect("attached");
+        let script = SCROLL_SCRIPT
+            .replace("__DIRECTION__", &serde_json::to_string(direction)?)
+            .replace("__AMOUNT__", &serde_json::to_string(amount)?);
+        let moved = ManagedBrowser::cdp(
+            connection,
+            "Runtime.evaluate",
+            json!({"expression": script, "returnByValue": true}),
+        )
+        .await?;
+        let moved = moved
+            .pointer("/result/value")
+            .cloned()
+            .unwrap_or(Value::Null);
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        if moved.get("hidden").and_then(Value::as_bool) == Some(true) {
+            // A background tab does not run the rendering steps that fire
+            // visibility observers (lazy images, infinite feeds); a capture
+            // renders it once without showing it, then content can load.
+            let _ = ManagedBrowser::cdp(
+                connection,
+                "Page.captureScreenshot",
+                json!({"format": "jpeg", "quality": 1, "captureBeyondViewport": true}),
+            )
+            .await;
+            tokio::time::sleep(Duration::from_millis(700)).await;
+            if let Some(at) = moved.get("at").and_then(Value::as_u64) {
+                restore_scroll(connection, at).await;
+            }
+        }
+        let mut snapshot = ManagedBrowser::settled_snapshot(connection, true).await?;
+        let height = snapshot
+            .pointer("/metrics/page_height")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let before = moved
+            .get("height")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let to = snapshot
+            .pointer("/metrics/scroll_y")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        let viewport = snapshot
+            .pointer("/metrics/viewport_height")
+            .and_then(Value::as_u64)
+            .unwrap_or_default();
+        snapshot["scroll"] = json!({
+            "from": moved.get("from"),
+            "to": to,
+            "page_height": height,
+            "more_loaded": height > before,
+            "at_end": to + viewport + 2 >= height,
+            "at_top": to == 0,
+        });
+        Ok(self.decorate(snapshot, state))
+    }
+
+    async fn wait_for(
+        &self,
+        context: &ToolContext,
+        text: Option<&str>,
+        selector: Option<&str>,
+        gone: bool,
+        timeout: Duration,
+    ) -> Result<Value> {
+        if text.is_none() && selector.is_none() {
+            return Err(PokError::Tool(
+                "wait for text, a CSS selector, or both".into(),
+            ));
+        }
+        let state = self.state(context.session_id);
+        let mut guard = state.lock().await;
+        let state = &mut *guard;
+        self.attach(state).await?;
+        self.require_tab(state).await?;
+        let connection = state.connection.as_mut().expect("attached");
+        let script = WAIT_SCRIPT
+            .replace("__TEXT__", &serde_json::to_string(&text)?)
+            .replace("__SELECTOR__", &serde_json::to_string(&selector)?);
+        let started = tokio::time::Instant::now();
+        let mut last = Value::Null;
+        while started.elapsed() < timeout {
+            if context.cancellation.is_cancelled() {
+                return Err(PokError::Cancelled);
+            }
+            // A page replaced by a navigation cannot be read for a moment.
+            if let Ok(found) = ManagedBrowser::cdp(
+                connection,
+                "Runtime.evaluate",
+                json!({"expression": script, "returnByValue": true}),
+            )
+            .await
+            {
+                last = found
+                    .pointer("/result/value")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                if last.get("present").and_then(Value::as_bool) == Some(!gone) {
+                    let mut snapshot = ManagedBrowser::settled_snapshot(connection, false).await?;
+                    snapshot["waited_ms"] = json!(started.elapsed().as_millis() as u64);
+                    return Ok(self.decorate(snapshot, state));
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+        Err(PokError::Tool(format!(
+            "{} {} within {} seconds; the page shows: {}",
+            match (text, selector) {
+                (Some(text), Some(selector)) => format!("{text:?} in {selector:?}"),
+                (Some(text), None) => format!("{text:?}"),
+                (None, Some(selector)) => format!("{selector:?}"),
+                (None, None) => unreachable!("checked above"),
+            },
+            if gone {
+                "did not go away"
+            } else {
+                "did not appear"
+            },
+            timeout.as_secs(),
+            crate::decision::bounded_text(
+                last.get("excerpt").and_then(Value::as_str).unwrap_or(""),
+                300
+            )
+        )))
+    }
+
+    async fn screenshot(&self, context: &ToolContext) -> Result<Value> {
+        let max_edge = context.vision_max_edge;
+        let state = self.state(context.session_id);
+        let mut guard = state.lock().await;
         let state = &mut *guard;
         self.attach(state).await?;
         self.require_tab(state).await?;
@@ -548,7 +702,7 @@ impl UserBrowser {
         let page = ManagedBrowser::cdp(
             connection,
             "Runtime.evaluate",
-            json!({"expression": "({url: location.href, title: document.title, hidden: document.visibilityState !== 'visible'})", "returnByValue": true}),
+            json!({"expression": "({url: location.href, title: document.title, y: Math.round(scrollY), hidden: document.visibilityState !== 'visible'})", "returnByValue": true}),
         )
         .await?;
         // A background tab is not drawn; capturing beyond the viewport makes
@@ -563,6 +717,9 @@ impl UserBrowser {
             json!({"format": "png", "captureBeyondViewport": hidden}),
         )
         .await?;
+        if hidden && let Some(y) = page.pointer("/result/value/y").and_then(Value::as_u64) {
+            restore_scroll(connection, y).await;
+        }
         let data = shot
             .get("data")
             .and_then(Value::as_str)
@@ -578,8 +735,14 @@ impl UserBrowser {
         Ok(self.decorate(result, state))
     }
 
-    async fn tabs_action(&self, action: TabAction, tab_id: Option<&str>) -> Result<Value> {
-        let mut guard = self.state.lock().await;
+    async fn tabs_action(
+        &self,
+        context: &ToolContext,
+        action: TabAction,
+        tab_id: Option<&str>,
+    ) -> Result<Value> {
+        let state = self.state(context.session_id);
+        let mut guard = state.lock().await;
         let state = &mut *guard;
         self.attach(state).await?;
         let tabs = self.tabs().await?;
@@ -884,6 +1047,50 @@ const PRESS_ENTER_SCRIPT: &str = r#"(() => {
     if (button && !button.disabled) button.click(); else form.requestSubmit();
   }
   return {ok: true, native: false};
+})()"#;
+
+/// The page's whole visible text, spaced like the snapshot's.
+const PAGE_TEXT_SCRIPT: &str =
+    r#"String(document.body?.innerText || '').replace(/\s+/g, ' ').trim().slice(0, 2000000)"#;
+
+/// Scroll the page and report where it was. A scroll listener (common for
+/// infinite feeds) is also told, because a background tab does not
+/// deliver scroll events on its own.
+const SCROLL_SCRIPT: &str = r#"(() => {
+  const direction = __DIRECTION__, amount = __AMOUNT__;
+  const from = Math.round(scrollY);
+  const height = document.documentElement?.scrollHeight || 0;
+  if (amount === 'end') scrollTo(0, direction === 'up' ? 0 : height);
+  else scrollBy(0, (direction === 'up' ? -1 : 1) * innerHeight * (amount === 'page' ? 0.85 : 0.35));
+  for (const target of [window, document]) target.dispatchEvent(new Event('scroll'));
+  return {from, at: Math.round(scrollY), height, hidden: document.visibilityState !== 'visible'};
+})()"#;
+
+/// Put a background tab back at `y` after a capture that rendered it: the
+/// whole page is laid out for the capture, so content that loads meanwhile
+/// (an infinite feed) can leave it scrolled somewhere else.
+async fn restore_scroll(connection: &mut BrowserConnection, y: u64) {
+    let _ = ManagedBrowser::cdp(
+        connection,
+        "Runtime.evaluate",
+        json!({"expression": format!("scrollTo(0, {y})"), "returnByValue": true}),
+    )
+    .await;
+}
+
+/// Whether the awaited text (case-insensitive) and element are present.
+const WAIT_SCRIPT: &str = r#"(() => {
+  const text = __TEXT__, selector = __SELECTOR__;
+  const body = String(document.body?.innerText || '');
+  let present = true;
+  if (text) present = present && body.toLowerCase().includes(String(text).toLowerCase());
+  if (selector) {
+    let element = null;
+    try { element = document.querySelector(selector); } catch (_) { return {present: false, excerpt: 'invalid CSS selector'}; }
+    const box = element && element.getBoundingClientRect();
+    present = present && !!element && box.width > 0 && box.height > 0;
+  }
+  return {present, excerpt: body.replace(/\s+/g, ' ').trim().slice(0, 300)};
 })()"#;
 
 const SELECTOR_SCRIPT: &str = r#"(() => {
@@ -1255,8 +1462,7 @@ async fn confirm(
         return Ok(());
     }
     let reason = format!(
-        "This {} in your own signed-in browser: {evidence} on {site}. Allow it only if you asked for it. Allowing it for this session covers only actions that {} on {site}.",
-        consequence.describe(),
+        "This {} in your own signed-in browser: {evidence} on {site}. Allow it only if you asked for it. Allowing it for this session covers only this kind of action on {site}.",
         consequence.describe()
     );
     let mut shown = request;
@@ -1291,6 +1497,7 @@ fn allowed(context: &ToolContext, tool: &str) -> Result<()> {
 /// flags get the commit id prefix, so `fast_actions` withholds them and
 /// hands a named one back to System 2 (`needs_confirmation`).
 pub async fn decision_candidates(
+    context: &ToolContext,
     task: &str,
     current_step: &str,
     limit: usize,
@@ -1298,7 +1505,8 @@ pub async fn decision_candidates(
     let Some(browser) = active() else {
         return Vec::new();
     };
-    let state = browser.state.lock().await;
+    let state = browser.state(context.session_id);
+    let state = state.lock().await;
     let Some(snapshot) = agent_snapshot(&state) else {
         return Vec::new();
     };
@@ -1313,11 +1521,12 @@ pub fn needs_confirmation(candidate: &DecisionCandidate) -> bool {
 
 /// The bounded page state System 1 checks conditions against: the agent's
 /// tab only, with sensitive fields withheld.
-pub async fn decision_state() -> Value {
+pub async fn decision_state(context: &ToolContext) -> Value {
     let Some(browser) = active() else {
         return json!({});
     };
-    let state = browser.state.lock().await;
+    let state = browser.state(context.session_id);
+    let state = state.lock().await;
     agent_snapshot(&state).map_or_else(|| json!({}), snapshot_decision_state)
 }
 
@@ -1432,6 +1641,56 @@ struct ExtractArgs {
     /// with its id as data-pok-id), for working out complex forms.
     #[serde(default)]
     include_html: bool,
+    /// Read the page text from this character on (a previous result's
+    /// next_offset), for long pages.
+    #[serde(default)]
+    offset: Option<usize>,
+    /// Characters of page text to return when reading by offset (default
+    /// 12000, at most 40000).
+    #[serde(default)]
+    max_chars: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum ScrollDirection {
+    Up,
+    Down,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+enum ScrollAmount {
+    /// About a third of the window.
+    Small,
+    /// Most of the window.
+    #[default]
+    Page,
+    /// The top or bottom of the page.
+    End,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct ScrollArgs {
+    direction: ScrollDirection,
+    #[serde(default)]
+    amount: ScrollAmount,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+struct WaitArgs {
+    /// Text to wait for anywhere on the page (case-insensitive).
+    #[serde(default)]
+    text: Option<String>,
+    /// A CSS selector for an element to wait for (it must be visible).
+    #[serde(default)]
+    selector: Option<String>,
+    /// Wait for the text or element to go away instead (a spinner, "Loading").
+    #[serde(default)]
+    gone: bool,
+    /// Seconds to wait (default 10, at most 30).
+    #[serde(default)]
+    timeout_seconds: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
@@ -1456,6 +1715,8 @@ struct ClickTool(Arc<UserBrowser>);
 struct TypeTool(Arc<UserBrowser>);
 struct SelectTool(Arc<UserBrowser>);
 struct ExtractTool(Arc<UserBrowser>);
+struct ScrollTool(Arc<UserBrowser>);
+struct WaitForTool(Arc<UserBrowser>);
 struct ScreenshotTool(Arc<UserBrowser>);
 struct TabsTool(Arc<UserBrowser>);
 
@@ -1475,7 +1736,7 @@ impl Tool for StatusTool {
     }
     async fn execute(&self, _arguments: Value, context: &ToolContext) -> Result<Value> {
         allowed(context, self.name())?;
-        Ok(self.0.status().await)
+        Ok(self.0.status(context).await)
     }
 }
 
@@ -1602,7 +1863,17 @@ impl Tool for ExtractTool {
         allowed(context, self.name())?;
         let args: ExtractArgs = serde_json::from_value(arguments)?;
         self.0
-            .extract(args.selector.as_deref(), args.include_html)
+            .extract(
+                context,
+                args.selector.as_deref(),
+                args.include_html,
+                (args.offset.is_some() || args.max_chars.is_some()).then(|| {
+                    (
+                        args.offset.unwrap_or(0),
+                        args.max_chars.unwrap_or(12_000).clamp(500, 40_000),
+                    )
+                }),
+            )
             .await
     }
 }
@@ -1623,7 +1894,7 @@ impl Tool for ScreenshotTool {
     }
     async fn execute(&self, _arguments: Value, context: &ToolContext) -> Result<Value> {
         allowed(context, self.name())?;
-        self.0.screenshot(context.vision_max_edge).await
+        self.0.screenshot(context).await
     }
 }
 
@@ -1652,8 +1923,92 @@ impl Tool for TabsTool {
         allowed(context, self.name())?;
         let args: TabsArgs = serde_json::from_value(arguments)?;
         self.0
-            .tabs_action(args.action, args.tab_id.as_deref())
+            .tabs_action(context, args.action, args.tab_id.as_deref())
             .await
+    }
+}
+
+#[async_trait]
+impl Tool for ScrollTool {
+    fn name(&self) -> &'static str {
+        "user_browser_scroll"
+    }
+    fn description(&self) -> &'static str {
+        "Scroll the agent's tab of the user's browser up or down (small, page, or to the end) so more of a feed or list loads, and return the settled page with where it scrolled and whether more content loaded. Works in the background tab."
+    }
+    fn input_schema(&self) -> Value {
+        schema::<ScrollArgs>()
+    }
+    fn risk(&self) -> RiskClass {
+        RiskClass::DesktopInput
+    }
+    async fn execute(&self, arguments: Value, context: &ToolContext) -> Result<Value> {
+        allowed(context, self.name())?;
+        let args: ScrollArgs = serde_json::from_value(arguments)?;
+        let direction = match args.direction {
+            ScrollDirection::Up => "up",
+            ScrollDirection::Down => "down",
+        };
+        let amount = match args.amount {
+            ScrollAmount::Small => "small",
+            ScrollAmount::Page => "page",
+            ScrollAmount::End => "end",
+        };
+        self.0.scroll(context, direction, amount).await
+    }
+}
+
+#[async_trait]
+impl Tool for WaitForTool {
+    fn name(&self) -> &'static str {
+        "user_browser_wait_for"
+    }
+    fn description(&self) -> &'static str {
+        "Wait until text or an element (CSS selector) appears, or with gone, disappears, in the agent's tab of the user's browser, then return the page. Use it after an action that loads results or shows a spinner, instead of reading the page repeatedly."
+    }
+    fn input_schema(&self) -> Value {
+        schema::<WaitArgs>()
+    }
+    fn risk(&self) -> RiskClass {
+        RiskClass::ReadOnly
+    }
+    async fn execute(&self, arguments: Value, context: &ToolContext) -> Result<Value> {
+        allowed(context, self.name())?;
+        let args: WaitArgs = serde_json::from_value(arguments)?;
+        let timeout = Duration::from_secs(args.timeout_seconds.unwrap_or(10).clamp(1, 30));
+        self.0
+            .wait_for(
+                context,
+                args.text.as_deref().filter(|text| !text.trim().is_empty()),
+                args.selector
+                    .as_deref()
+                    .filter(|selector| !selector.trim().is_empty()),
+                args.gone,
+                timeout,
+            )
+            .await
+    }
+}
+
+/// Close the tabs a finished swarm worker opened in the user's browser and
+/// forget its state. The user's own tabs are never touched.
+pub(crate) async fn release_worker(session_id: Uuid) {
+    let lanes = {
+        let mut states = STATES.get_or_init(Default::default).lock();
+        let keys = states
+            .keys()
+            .filter(|(_, lane)| *lane == Some(session_id))
+            .copied()
+            .collect::<Vec<_>>();
+        keys.into_iter()
+            .filter_map(|key| states.remove(&key).map(|state| (key.0, state)))
+            .collect::<Vec<_>>()
+    };
+    for (port, state) in lanes {
+        let state = state.lock().await;
+        for tab in &state.owned_tabs {
+            crate::browser::close_tab(port, tab).await;
+        }
     }
 }
 
@@ -1675,6 +2030,8 @@ pub fn register_user_browser_tools(
     registry.register(SelectTool(browser.clone()));
     registry.register(ExtractTool(browser.clone()));
     registry.register(ScreenshotTool(browser.clone()));
+    registry.register(ScrollTool(browser.clone()));
+    registry.register(WaitForTool(browser.clone()));
     registry.register(TabsTool(browser));
 }
 
@@ -1690,7 +2047,7 @@ pub(crate) async fn install_test_page(snapshot: Value) {
     let mut connection = BrowserConnection::user(browser.port);
     connection.page_target = Some("agent-tab".into());
     connection.last_snapshot = Some(snapshot);
-    browser.state.lock().await.connection = Some(connection);
+    browser.state(Uuid::nil()).lock().await.connection = Some(connection);
     *ACTIVE.get_or_init(Default::default).lock() = Some(browser);
 }
 
@@ -1957,15 +2314,15 @@ mod tests {
             user_data_dir: None,
         };
         let browser = UserBrowser::new(&config, data.path());
-        let status = browser.status().await;
+        let platform = Arc::new(crate::platform::MockDesktop::default());
+        let context = crate::builtins::tests::mock_input_context(platform, &data);
+        let status = browser.status(&context).await;
         assert_eq!(status["connected"], false);
         let command = status["launch_command"].as_str().unwrap();
         assert!(command.contains(&format!("--remote-debugging-port={port}")));
         assert!(command.contains("personal"));
         let line = health_check(&config, data.path()).await;
         assert!(line.contains("not detected"), "{line}");
-        let platform = Arc::new(crate::platform::MockDesktop::default());
-        let context = crate::builtins::tests::mock_input_context(platform, &data);
         let error = browser
             .navigate(&context, "https://example.com/")
             .await
@@ -2125,6 +2482,132 @@ mod tests {
         assert_eq!((width, height), (1000, 500));
         let (same, width, _) = bounded_png(&data, 4000).unwrap();
         assert_eq!((same.as_str(), width), (data.as_str(), 2000));
+    }
+
+    /// Scrolling, waiting, and paging in a background tab of a real browser:
+    /// set POK_AI_USER_BROWSER_TEST_PORT and POK_AI_USER_BROWSER_TEST_FEED_URL.
+    #[tokio::test]
+    #[ignore = "needs a Chromium started with --remote-debugging-port; set POK_AI_USER_BROWSER_TEST_PORT and POK_AI_USER_BROWSER_TEST_FEED_URL"]
+    async fn scrolls_waits_and_pages_in_a_background_tab() {
+        let port: u16 = std::env::var("POK_AI_USER_BROWSER_TEST_PORT")
+            .expect("POK_AI_USER_BROWSER_TEST_PORT")
+            .parse()
+            .unwrap();
+        let feed = std::env::var("POK_AI_USER_BROWSER_TEST_FEED_URL")
+            .expect("POK_AI_USER_BROWSER_TEST_FEED_URL");
+        let data = tempfile::tempdir().unwrap();
+        let (context, _) = approval_context(crate::policy::ApprovalDecision::Deny, &data);
+        let config = UserBrowserConfig {
+            enabled: true,
+            port,
+            user_data_dir: None,
+        };
+        let mut registry = ToolRegistry::new();
+        register_user_browser_tools(&mut registry, &config, data.path());
+        let call = |name: &'static str, arguments: Value| {
+            let registry = &registry;
+            let context = &context;
+            async move { registry.call(name, arguments, context).await }
+        };
+        let page = call("user_browser_navigate", json!({"url": feed}))
+            .await
+            .unwrap();
+        let text = |value: &Value| value["text"].as_str().unwrap_or("").to_owned();
+        assert!(
+            text(&page).contains("item 20") && !text(&page).contains("item 41"),
+            "{}",
+            text(&page)
+        );
+
+        // An infinite feed loads more as it is scrolled, even in the background.
+        let scrolled = call(
+            "user_browser_scroll",
+            json!({"direction": "down", "amount": "end"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            scrolled["scroll"]["more_loaded"], true,
+            "{}",
+            scrolled["scroll"]
+        );
+        assert!(
+            text(&scrolled).contains("item 21"),
+            "{}",
+            scrolled["scroll"]
+        );
+        // The tab stays where it was scrolled, so reading on continues from there.
+        let at = scrolled["scroll"]["to"].as_u64().unwrap();
+        assert!(at > 0, "{}", scrolled["scroll"]);
+        let up = call(
+            "user_browser_scroll",
+            json!({"direction": "up", "amount": "page"}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(up["scroll"]["from"].as_u64(), Some(at), "{}", up["scroll"]);
+        assert!(
+            up["scroll"]["to"].as_u64().unwrap() < at,
+            "{}",
+            up["scroll"]
+        );
+
+        // Waiting for results that appear after a delay, and for ones that never do.
+        call("user_browser_click", json!({"target": "Load results"}))
+            .await
+            .unwrap();
+        let ready = call(
+            "user_browser_wait_for",
+            json!({"text": "results ready", "timeout_seconds": 8}),
+        )
+        .await
+        .unwrap();
+        assert!(
+            ready["waited_ms"].as_u64().unwrap() >= 500,
+            "{}",
+            ready["waited_ms"]
+        );
+        let missing = call(
+            "user_browser_wait_for",
+            json!({"text": "never shown", "timeout_seconds": 1}),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(missing.contains("did not appear"), "{missing}");
+        let gone = call(
+            "user_browser_wait_for",
+            json!({"text": "idle", "gone": true, "timeout_seconds": 3}),
+        )
+        .await
+        .unwrap();
+        assert!(gone.get("waited_ms").is_some());
+
+        // A long page is read in parts that join up.
+        let first = call(
+            "user_browser_extract",
+            json!({"offset": 0, "max_chars": 2000}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(first["next_offset"], 2000, "{}", first["next_offset"]);
+        let total = first["total_chars"].as_u64().unwrap();
+        assert!(total > 20_000, "{total}");
+        let second = call(
+            "user_browser_extract",
+            json!({"offset": 2000, "max_chars": 2000}),
+        )
+        .await
+        .unwrap();
+        assert_eq!(second["text_offset"], 2000);
+        assert_ne!(first["text"], second["text"]);
+        let tab = page["tab"]["tab_id"].as_str().unwrap().to_owned();
+        call(
+            "user_browser_tabs",
+            json!({"action": "close", "tab_id": tab}),
+        )
+        .await
+        .unwrap();
     }
 
     /// End to end against a real browser started with
