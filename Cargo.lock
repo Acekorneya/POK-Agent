@@ -4091,7 +4091,7 @@ dependencies = [
 
 [[package]]
 name = "pok-ai-cli"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4110,7 +4110,7 @@ dependencies = [
 
 [[package]]
 name = "pok-ai-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -4150,7 +4150,7 @@ dependencies = [
 
 [[package]]
 name = "pok-ai-desktop"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -4178,7 +4178,7 @@ dependencies = [
 
 [[package]]
 name = "pok-ai-voice"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "cpal",
  "parking_lot",
@@ -4191,7 +4191,7 @@ dependencies = [
 
 [[package]]
 name = "pok-ai-windows"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
