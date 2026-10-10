@@ -1807,8 +1807,8 @@ impl Session {
         }
         // What this verified run did, step by step, for System 1 to replay,
         // kept only when its result check passed without recovery.
-        let program = if self.clean_completion {
-            program_from_tape(&self.motor_tape, &prompt)
+        let draft = if self.clean_completion {
+            Some(program_draft(&self.motor_tape, &prompt))
         } else {
             let _ = self.log(
                 "skill_program_not_saved",
@@ -1844,6 +1844,9 @@ impl Session {
             learn_verified_procedures(&self.context.memory, &prompt, &workflow, &qualification)
         } {
             Ok(records) => {
+                // Learned without a model (an exam): no one is asked, so
+                // nothing private is kept.
+                let program = draft.as_ref().and_then(|draft| seal_program(draft, &[]));
                 for (record, created) in records {
                     attach_program(
                         &self.context.memory,
@@ -1908,6 +1911,7 @@ impl Session {
         let decision_router = self.decision_router.clone();
         let decision_router_config = self.decision_router_config.clone();
         let observer = self.observer.clone();
+        let approvals = self.context.approvals.clone();
         let curation_session_id = self.id;
         let task = tokio::spawn(async move {
             if tokio::time::timeout(std::time::Duration::from_secs(3), cancellation.cancelled())
@@ -1915,7 +1919,9 @@ impl Session {
                 .is_ok()
             {
                 // A follow-up arrived: skip the model calls, but keep what the
-                // run proved as a plain skill (no router or LLM review).
+                // run proved as a plain skill (no router or LLM review), and do
+                // not stop the user with a question about private values.
+                let program = draft.as_ref().and_then(|draft| seal_program(draft, &[]));
                 if model_curation_enabled
                     && let Ok(records) =
                         learn_verified_procedures(&memory, &prompt, &workflow, &qualification)
@@ -1964,6 +1970,16 @@ impl Session {
             )
             .await;
             if let Ok(Some(learned)) = &skill {
+                // Private values the run used are remembered only when the
+                // user agrees; otherwise the program ends before them.
+                let names = match &draft {
+                    Some(draft) => {
+                        remember_private_values(&approvals, learned.id, &prompt, &draft.private)
+                            .await
+                    }
+                    None => Vec::new(),
+                };
+                let program = draft.as_ref().and_then(|draft| seal_program(draft, &names));
                 let stored = attach_program(&memory, learned.id, program.as_ref(), stale_program);
                 append_trace(
                     &artifact_dir,

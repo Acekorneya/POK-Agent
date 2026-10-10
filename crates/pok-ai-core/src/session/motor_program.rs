@@ -183,11 +183,58 @@ fn text_fingerprint(text: &str) -> String {
     format!("{:x}", Sha256::digest(text.to_lowercase().as_bytes()))
 }
 
-/// The program a verified run leaves: its motor steps, where text the user's
-/// request supplied is kept only as a fingerprint (found again in the next
-/// request) and private-looking text ends the program. `None` when fewer than
-/// two steps could be repeated.
-pub(super) fn program_from_tape(tape: &[Value], request: &str) -> Option<Value> {
+/// A private value a verified run used (an email address it typed, a mailbox
+/// page it opened). It stays out of the program unless the user agrees to
+/// let it be remembered in the secure store (`crate::secrets`).
+#[derive(Debug, Clone)]
+pub(super) struct PrivateValue {
+    pub(super) page: bool,
+    pub(super) value: String,
+}
+
+impl PrivateValue {
+    /// What the question to the user shows: what kind of value, never the
+    /// value itself.
+    pub(super) fn hint(&self) -> String {
+        if self.page {
+            let site = reqwest::Url::parse(&self.value)
+                .ok()
+                .and_then(|url| url.host_str().map(str::to_owned))
+                .unwrap_or_else(|| "a site".into());
+            return format!("a page on {site}");
+        }
+        let kind = if self.value.contains('@') {
+            "an email address"
+        } else if self.value.contains(":\\") || self.value.contains('/') {
+            "a file path"
+        } else {
+            "a number or code"
+        };
+        format!("{kind} ({} characters)", self.value.chars().count())
+    }
+}
+
+/// A verified run's program before the user is asked about its private
+/// values: those steps hold a placeholder (`{"private": n}`).
+pub(super) struct ProgramDraft {
+    steps: Vec<Value>,
+    pub(super) private: Vec<PrivateValue>,
+}
+
+/// The motor steps of a verified run, ready to become a program. Text the
+/// user's request supplied is kept only as a fingerprint (found again in the
+/// next request); a credential or very long text ends the program; personal
+/// values (an email address, a number, a private page) wait for the user's
+/// answer.
+pub(super) fn program_draft(tape: &[Value], request: &str) -> ProgramDraft {
+    let mut private = Vec::new();
+    let mut hold = |value: &str, page: bool| {
+        private.push(PrivateValue {
+            page,
+            value: value.to_owned(),
+        });
+        private.len() - 1
+    };
     let steps = tape
         .iter()
         .map(|step| {
@@ -196,13 +243,11 @@ pub(super) fn program_from_tape(tape: &[Value], request: &str) -> Option<Value> 
             if let Some(url) = step.get("browser_open").and_then(Value::as_str) {
                 return match request_slot(url, request) {
                     Some(slot) => json!({"browser_open_request": slot}),
+                    None if memory_text_may_be_sensitive(url) => json!({"stop": "private_text"}),
                     // An address with a query or fragment (a mailbox message,
                     // a search, an account page) can carry private values.
-                    None if url.contains(['?', '#'])
-                        || looks_private(url)
-                        || memory_text_may_be_sensitive(url) =>
-                    {
-                        json!({"stop": "private_text"})
+                    None if url.contains(['?', '#']) || looks_private(url) => {
+                        json!({"private_page": hold(url, true)})
                     }
                     None => step.clone(),
                 };
@@ -212,11 +257,42 @@ pub(super) fn program_from_tape(tape: &[Value], request: &str) -> Option<Value> 
             };
             if let Some(slot) = request_slot(text, request) {
                 json!({"request_text": slot, "replace": step.get("replace")})
-            } else if text.chars().count() > MOTOR_TEXT_LIMIT
-                || looks_private(text)
-                || memory_text_may_be_sensitive(text)
+            } else if text.chars().count() > MOTOR_TEXT_LIMIT || memory_text_may_be_sensitive(text)
             {
                 json!({"stop": "private_text"})
+            } else if looks_private(text) {
+                json!({"private": hold(text, false), "replace": step.get("replace")})
+            } else {
+                step.clone()
+            }
+        })
+        .collect();
+    ProgramDraft { steps, private }
+}
+
+/// The program, with each private value replaced by the key it was saved
+/// under (`names[n]`), or ending at the first one that was not saved. `None`
+/// when fewer than two steps could be repeated.
+pub(super) fn seal_program(draft: &ProgramDraft, names: &[Option<String>]) -> Option<Value> {
+    let name = |step: &Value, key: &str| {
+        step.get(key)
+            .and_then(Value::as_u64)
+            .and_then(|index| names.get(usize::try_from(index).ok()?).cloned().flatten())
+    };
+    let steps = draft
+        .steps
+        .iter()
+        .map(|step| {
+            if step.get("private").is_some() {
+                name(step, "private").map_or_else(
+                    || json!({"stop": "private_text"}),
+                    |key| json!({"secret_text": key, "replace": step.get("replace")}),
+                )
+            } else if step.get("private_page").is_some() {
+                name(step, "private_page").map_or_else(
+                    || json!({"stop": "private_text"}),
+                    |key| json!({"secret_page": key}),
+                )
             } else {
                 step.clone()
             }
@@ -227,6 +303,66 @@ pub(super) fn program_from_tape(tape: &[Value], request: &str) -> Option<Value> 
         .take_while(|step| step.get("stop").is_none())
         .count();
     (replayable >= 2).then(|| json!({"version": 1, "steps": steps}))
+}
+
+/// Ask the user whether System 1 may keep a skill's private values in the
+/// secure store, and save them when they agree. The key each value was saved
+/// under, or None (no store, declined, or the save failed).
+pub(super) async fn remember_private_values(
+    approvals: &Arc<dyn crate::policy::ApprovalHandler>,
+    skill: Uuid,
+    request: &str,
+    private: &[PrivateValue],
+) -> Vec<Option<String>> {
+    if private.is_empty() {
+        return Vec::new();
+    }
+    let Some(store) = crate::secrets::store() else {
+        return Vec::new();
+    };
+    let hints = private.iter().map(PrivateValue::hint).collect::<Vec<_>>();
+    let reason = format!(
+        "To repeat this task by itself, System 1 needs {} private value{} it used: {}. Allow saving {} in {}? {} never written to POK-Agent's files; if you decline, a replay stops before {} and the planner continues.",
+        private.len(),
+        if private.len() == 1 { "" } else { "s" },
+        hints.join(", "),
+        if private.len() == 1 { "it" } else { "them" },
+        store.name(),
+        if private.len() == 1 {
+            "It is"
+        } else {
+            "They are"
+        },
+        if private.len() == 1 { "it" } else { "them" },
+    );
+    let decision = approvals
+        .approve(
+            "remember_private_values",
+            &json!({"task": crate::decision::bounded_text(request, 200), "values": hints}),
+            &reason,
+        )
+        .await;
+    if !matches!(
+        decision,
+        Ok(crate::policy::ApprovalDecision::AllowOnce
+            | crate::policy::ApprovalDecision::AllowSession)
+    ) {
+        return vec![None; private.len()];
+    }
+    private
+        .iter()
+        .enumerate()
+        .map(|(index, value)| {
+            let key = format!("skill-{skill}-{index}");
+            store.save(&key, &value.value).ok().map(|()| key)
+        })
+        .collect()
+}
+
+/// The program a verified run leaves when nothing private is remembered.
+#[cfg(test)]
+pub(super) fn program_from_tape(tape: &[Value], request: &str) -> Option<Value> {
+    seal_program(&program_draft(tape, request), &[])
 }
 
 /// Key chords that commit a document or message (save, save as, send,
@@ -356,6 +492,13 @@ pub(super) fn program_nodes(
             json!({"key": key})
         } else if let Some(text) = step.get("text").and_then(Value::as_str) {
             json!({"text": text, "replace_existing": step.get("replace").and_then(Value::as_bool).unwrap_or(false)})
+        } else if let Some(key) = step.get("secret_text").and_then(Value::as_str) {
+            // A value the user let System 1 remember; gone from the store, the
+            // replay stops here.
+            let Some(text) = crate::secrets::load(key) else {
+                break;
+            };
+            json!({"text": text, "replace_existing": step.get("replace").and_then(Value::as_bool).unwrap_or(false)})
         } else if let Some(fingerprint) = step.get("request_text") {
             let Some(text) = resolve_request_text(fingerprint, request) else {
                 break;
@@ -416,7 +559,9 @@ pub(super) fn program_opens_page(program: &Value) -> bool {
 }
 
 fn opens_page(step: &Value) -> bool {
-    step.get("browser_open").is_some() || step.get("browser_open_request").is_some()
+    step.get("browser_open").is_some()
+        || step.get("browser_open_request").is_some()
+        || step.get("secret_page").is_some()
 }
 
 /// The page a program for the user's browser opens first, filled from this
@@ -426,6 +571,9 @@ pub(super) fn program_page(program: &Value, request: &str) -> Option<String> {
     let first = program.get("steps")?.as_array()?.first()?;
     if let Some(url) = first.get("browser_open").and_then(Value::as_str) {
         return Some(url.to_owned());
+    }
+    if let Some(key) = first.get("secret_page").and_then(Value::as_str) {
+        return crate::secrets::load(key);
     }
     let found = resolve_request_text(first.get("browser_open_request")?, request)?;
     // The whole address as written in the request: a slot can stop at

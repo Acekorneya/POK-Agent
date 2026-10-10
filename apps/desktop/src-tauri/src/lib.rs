@@ -3571,6 +3571,25 @@ fn load_provider_key(_name: &str) -> Option<String> {
     None
 }
 
+/// Values the user let the agent remember (asked after a verified run), kept
+/// in Windows Credential Manager beside the provider keys, never in files.
+#[cfg(windows)]
+struct CredentialSecretStore;
+
+#[cfg(windows)]
+impl pok_ai_core::secrets::SecretStore for CredentialSecretStore {
+    fn name(&self) -> &str {
+        "Windows Credential Manager"
+    }
+    fn load(&self, key: &str) -> Option<String> {
+        load_provider_key(&format!("remembered:{key}"))
+    }
+    fn save(&self, key: &str, value: &str) -> pok_ai_core::Result<()> {
+        persist_provider_key(&format!("remembered:{key}"), value)
+            .map_err(pok_ai_core::PokError::Tool)
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let project_config = std::env::current_dir().ok().and_then(|directory| {
@@ -3596,6 +3615,9 @@ pub fn run() {
     if let Some(api_key) = load_provider_key(&config.decision_router.api_key_env) {
         pok_ai_core::brain::set_api_key(&config.decision_router.api_key_env, api_key);
     }
+    // Private values the user agreed to let System 1 remember for a skill.
+    #[cfg(windows)]
+    pok_ai_core::secrets::install(std::sync::Arc::new(CredentialSecretStore));
     if config.decision_router.enabled
         && config.decision_router.backend == DecisionRouterBackend::Jev
         && pok_ai_core::brain::get_api_key(&config.decision_router.api_key_env)

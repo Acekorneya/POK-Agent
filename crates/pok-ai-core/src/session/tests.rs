@@ -7227,6 +7227,86 @@ fn a_run_in_the_users_browser_becomes_a_program_system_one_replays() {
     );
 }
 
+/// A secure store for tests, kept in memory.
+#[derive(Default)]
+struct MemorySecretStore(parking_lot::Mutex<std::collections::HashMap<String, String>>);
+
+impl crate::secrets::SecretStore for MemorySecretStore {
+    fn name(&self) -> &str {
+        "the test store"
+    }
+    fn load(&self, key: &str) -> Option<String> {
+        self.0.lock().get(key).cloned()
+    }
+    fn save(&self, key: &str, value: &str) -> Result<()> {
+        self.0.lock().insert(key.into(), value.into());
+        Ok(())
+    }
+}
+
+/// Records the question it was asked and answers it.
+struct AnsweringApproval {
+    decision: crate::policy::ApprovalDecision,
+    asked: parking_lot::Mutex<Vec<String>>,
+}
+
+#[async_trait]
+impl crate::policy::ApprovalHandler for AnsweringApproval {
+    async fn approve(
+        &self,
+        _tool: &str,
+        arguments: &Value,
+        reason: &str,
+    ) -> Result<crate::policy::ApprovalDecision> {
+        self.asked.lock().push(format!("{reason} {arguments}"));
+        Ok(self.decision)
+    }
+}
+
+#[tokio::test]
+async fn private_values_are_remembered_only_when_the_user_agrees() {
+    crate::secrets::install(Arc::new(MemorySecretStore::default()));
+    let request = "Fill in the contact form for me";
+    let tape = vec![
+        json!({"click": "Email"}),
+        json!({"text": "jordan.avery@example.com", "replace": true}),
+        json!({"click": "Phone"}),
+        json!({"text": "Portland", "replace": true}),
+    ];
+    let draft = program_draft(&tape, request);
+    assert_eq!(draft.private.len(), 1);
+    // The question names the kind of value, never the value.
+    assert_eq!(draft.private[0].hint(), "an email address (24 characters)");
+    let skill = Uuid::new_v4();
+
+    // Declined: the program ends before the value, as without a store.
+    let declined: Arc<dyn crate::policy::ApprovalHandler> = Arc::new(AnsweringApproval {
+        decision: crate::policy::ApprovalDecision::Deny,
+        asked: Default::default(),
+    });
+    let names = remember_private_values(&declined, skill, request, &draft.private).await;
+    assert_eq!(names, vec![None]);
+    let program = seal_program(&draft, &names);
+    assert!(program.is_none(), "{program:?}");
+
+    // Agreed: saved in the store, and the program refers to it by key.
+    let agreeing = Arc::new(AnsweringApproval {
+        decision: crate::policy::ApprovalDecision::AllowOnce,
+        asked: Default::default(),
+    });
+    let handler: Arc<dyn crate::policy::ApprovalHandler> = agreeing.clone();
+    let names = remember_private_values(&handler, skill, request, &draft.private).await;
+    let key = names[0].clone().expect("saved");
+    assert!(!agreeing.asked.lock()[0].contains("jordan.avery"));
+    assert!(agreeing.asked.lock()[0].contains("the test store"));
+    let program = seal_program(&draft, &names).unwrap();
+    assert!(!program.to_string().contains("jordan.avery"));
+    assert_eq!(program["steps"][1]["secret_text"], key);
+    // A replay types the remembered value.
+    let nodes = program_nodes(&program, "Contact form", &task_signature(request), request);
+    assert_eq!(nodes[1]["input"][0]["text"], "jordan.avery@example.com");
+}
+
 #[test]
 fn a_program_becomes_one_long_plan_for_the_same_task() {
     let request = "Name the sheet Example Report and add a profit column";

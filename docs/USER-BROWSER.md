@@ -163,5 +163,7 @@ first, and an agent whose action you decline reports it instead of retrying.
 - Muscle memory records opening a page and clicking controls by label in your
   browser, and System 1 replays that path on the same or a similar request
   (a page the request named is filled in from the new request). Typing and
-  list choices there are not recorded yet, and a page address with a query or
-  anything private-looking ends the recording.
+  list choices there are not recorded yet. A page address with a query, or
+  other personal values the run used, are kept only if you agree when asked
+  after the run (they are saved in Windows Credential Manager, never in
+  POK-Agent's files); otherwise the recording ends there.

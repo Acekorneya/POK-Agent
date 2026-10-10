@@ -539,6 +539,7 @@ function describeTool(name: string, rawArguments: unknown): Pick<LiveActivity, "
     web_search: { phase: "reading", label: "Searching the web", detail: detail("query") },
     web_fetch: { phase: "reading", label: "Reading a web page", detail: detail("url") },
     run_agents: { phase: "acting", label: "Running a swarm of agents", detail: detail("goal") },
+    remember_private_values: { phase: "thinking", label: "Asking to remember private values for a skill", detail: detail("task") },
     activate_window: { phase: "navigating", label: "Switching to a window", detail: detail("title", "window_id") },
     open_application: { phase: "navigating", label: "Opening an application", detail: detail("name") },
     fast_actions: { phase: "acting", label: "Carrying out the plan", detail: detail("goal", "target_hint") },
