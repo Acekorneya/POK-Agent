@@ -924,13 +924,61 @@ fn compact_tool_results_to_budget(
             })
             .sum::<usize>()
     };
-    let (large, small): (Vec<usize>, Vec<usize>) = tool_positions
+    // Reference material (a file read, a search) goes last, as the task keeps
+    // working from it, except for an older copy of a read made again later.
+    let calls = messages
+        .iter()
+        .flat_map(|message| &message.tool_calls)
+        .map(|call| (call.id.as_str(), call))
+        .collect::<std::collections::HashMap<_, _>>();
+    let reference = |index: usize| {
+        messages[index]
+            .tool_call_id
+            .as_deref()
+            .and_then(|id| calls.get(id))
+            .filter(|call| REFERENCE_TOOLS.contains(&call.name.as_str()))
+            .map(|call| format!("{} {}", call.name, call.arguments))
+    };
+    // A copy is redundant only when a later one holds the same text (not a
+    // short "unchanged" answer pointing back to it).
+    let text = |index: usize| {
+        messages[index]
+            .content
+            .iter()
+            .filter_map(|part| match part {
+                MessageContent::Text { text } => Some(text.as_str()),
+                MessageContent::ImagePng { .. } => None,
+            })
+            .collect::<String>()
+    };
+    let mut later_reads = std::collections::HashSet::new();
+    let mut repeated = Vec::new();
+    for &index in tool_positions.iter().rev() {
+        if let Some(signature) = reference(index)
+            && !later_reads.insert((signature, text(index)))
+            && tool_positions[..trim_limit].contains(&index)
+        {
+            repeated.push(index);
+        }
+    }
+    let rest = tool_positions
         .iter()
         .take(trim_limit)
         .copied()
-        .partition(|&index| size(index) > SMALL_TOOL_RESULT_CHARS);
+        .filter(|index| !repeated.contains(index));
+    let (large, small): (Vec<usize>, Vec<usize>) =
+        rest.partition(|&index| size(index) > SMALL_TOOL_RESULT_CHARS);
+    let (references, small): (Vec<usize>, Vec<usize>) = small
+        .into_iter()
+        .partition(|&index| reference(index).is_some());
     let mut compacted = 0;
-    for index in large.into_iter().chain(small) {
+    for index in repeated
+        .into_iter()
+        .rev()
+        .chain(large)
+        .chain(small)
+        .chain(references)
+    {
         if estimate_context_tokens(messages, schema_chars, usage_scale) <= token_target {
             break;
         }

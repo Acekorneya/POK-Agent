@@ -503,6 +503,7 @@ impl Session {
         let mut workflow: Vec<Value> = Vec::new();
         let mut verified_goal_actions = BTreeMap::<String, Value>::new();
         let mut live_evidence_guard_fires = 0_u32;
+        let mut unfinished_form_checks = Vec::<String>::new();
         let mut empty_response_streak = 0_u32;
         let mut malformed_response_streak = 0_u32;
         let mut answer_emission_recovery_attempts = 0_u32;
@@ -758,6 +759,11 @@ impl Session {
                     "SWARM: this request lists {listed_parts} separate parts. As soon as you know enough to describe each part (a quick look at the page or file is fine), give them to run_agents, one agent per part, all at once, with what each needs in its context; then combine their reports. Do a part yourself only when it is a single obvious step."
                 )
             });
+            let forms_note = if self.tools.contains("user_browser_navigate") {
+                crate::user_browser::form_notes(self.id).await
+            } else {
+                None
+            };
             let task_reminder = active_task_reminder(
                 &self.context.active_task.lock(),
                 self.continuity.current.as_ref(),
@@ -770,6 +776,7 @@ impl Session {
                     let notes = swarm_hint
                         .into_iter()
                         .chain(user_browser_note.map(str::to_owned))
+                        .chain(forms_note)
                         .collect::<Vec<_>>()
                         .join("\n");
                     (!notes.is_empty()).then_some(notes)
@@ -2077,6 +2084,34 @@ impl Session {
                     self.emit(AgentEvent::CompletionCandidateRejected {
                         attempt: live_evidence_guard_fires,
                         maximum: 1,
+                        reason: reason.into(),
+                    });
+                    continue;
+                }
+                // A form left part-filled is checked once (per state of the
+                // forms) before the run reports it finished.
+                if unfinished_form_checks.len() < 2
+                    && !is_safety_refusal(&text)
+                    && self.tools.contains("user_browser_navigate")
+                    && let Some(forms) = crate::user_browser::unfinished_forms(self.id).await
+                    && !unfinished_form_checks.contains(&forms)
+                {
+                    unfinished_form_checks.push(forms.clone());
+                    let reason = "A form in the user's browser still has empty fields.";
+                    self.messages.push(BrainMessage::text_with_origin(
+                        "user",
+                        format!(
+                            "<system-reminder>Before you finish: these forms still have empty fields, as the pages show them:\n{forms}\nFill what the task needs (switch tabs with user_browser_tabs), or, if a field is meant to stay empty, say which and why in your answer. Report only what the pages hold.</system-reminder>"
+                        ),
+                        MessageOrigin::SystemReminder,
+                    ));
+                    self.log(
+                        "completion_execution_incomplete",
+                        json!({"attempt": unfinished_form_checks.len(), "maximum": 2, "reason": reason}),
+                    )?;
+                    self.emit(AgentEvent::CompletionCandidateRejected {
+                        attempt: u32::try_from(unfinished_form_checks.len()).unwrap_or(u32::MAX),
+                        maximum: 2,
                         reason: reason.into(),
                     });
                     continue;
