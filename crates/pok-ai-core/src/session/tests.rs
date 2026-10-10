@@ -2071,6 +2071,42 @@ fn bounded_context_keeps_many_tool_results_while_they_fit_the_budget() {
 }
 
 #[test]
+fn a_small_reference_result_outlives_large_page_reads() {
+    // The resume read first, then many large page reads: over budget, the
+    // page reads are reduced before the small resume.
+    let mut messages = vec![
+        BrainMessage::text("system", "system"),
+        BrainMessage::text("user", "fill both applications from my resume"),
+    ];
+    messages.extend(read_file_cycle(
+        0,
+        "RESUME Jordan Avery jordan.avery@example.com",
+    ));
+    for index in 1..30 {
+        messages.extend(read_file_cycle(
+            index,
+            &format!("PAGE_{index}_{}", "x".repeat(4_000)),
+        ));
+    }
+    let (bounded, _, actions) = bounded_context(&messages, 1, 12_000, 4_000, 1.0);
+    let rendered = serde_json::to_string(&bounded).unwrap();
+    assert!(
+        actions
+            .iter()
+            .any(|action| action.starts_with("compacted_tool_results")),
+        "{actions:?}"
+    );
+    assert!(
+        rendered.contains("RESUME Jordan Avery"),
+        "the resume was compacted"
+    );
+    assert!(
+        !rendered.contains("PAGE_1_"),
+        "the oldest large page read was kept"
+    );
+}
+
+#[test]
 fn bounded_context_compacts_oldest_tool_results_only_over_budget() {
     let mut messages = vec![
         BrainMessage::text("system", "system"),
@@ -2084,12 +2120,20 @@ fn bounded_context_compacts_oldest_tool_results_only_over_budget() {
     }
 
     let (bounded, _, actions) = bounded_context(&messages, 1, 5_000, 4_000, 1.0);
-    let rendered = serde_json::to_string(&bounded).unwrap();
+    // Tool results only: the continuity ledger also keeps a few small older
+    // reads verbatim, so the model does not read them again.
+    let tool_results = bounded
+        .iter()
+        .filter(|message| message.role == "tool")
+        .collect::<Vec<_>>();
+    let rendered = serde_json::to_string(&tool_results).unwrap();
     assert!(
         actions
             .iter()
             .any(|action| action.starts_with("compacted_tool_results"))
     );
+    let ledger = serde_json::to_string(&bounded).unwrap();
+    assert!(ledger.contains("Reference results from before"), "{ledger}");
     // Over budget the oldest are reduced first; the survivors are the newest
     // contiguous run, and the floor keeps a real working set instead of the
     // old fixed six results.
@@ -2242,7 +2286,7 @@ fn context_compaction_preserves_midnight_temporal_update() {
         });
     }
     let mut compactions = Vec::new();
-    let compacted = compact_old_tool_cycles(&messages, &mut compactions);
+    let compacted = compact_old_tool_cycles(&messages, &mut compactions, 0);
     let rendered = serde_json::to_string(&compacted).unwrap();
     assert!(rendered.contains("Today's local date is 2026-07-19"));
     assert!(
@@ -5775,6 +5819,88 @@ async fn a_locked_navigation_tool_called_anyway_goes_to_system_one() {
             })
     });
     assert!(redirected, "{:?}", harness.session.messages);
+}
+
+/// Asks discover_tools for a tool name instead of a group, then answers.
+struct DiscoversWrongGroupBrain {
+    requests: AtomicU64,
+}
+
+#[async_trait]
+impl Brain for DiscoversWrongGroupBrain {
+    async fn list_models(&self) -> Result<Vec<String>> {
+        Ok(vec!["mock".into()])
+    }
+    fn stream(&self, _request: BrainRequest) -> crate::brain::BrainStream {
+        let events = if self.requests.fetch_add(1, Ordering::SeqCst) == 0 {
+            vec![
+                Ok(BrainEvent::ToolCall {
+                    call: CompletedToolCall {
+                        id: "discover".into(),
+                        name: "discover_tools".into(),
+                        arguments: json!({"groups": ["user_browser", "desktop"]}),
+                    },
+                }),
+                Ok(BrainEvent::Finished {
+                    reason: Some("tool_calls".into()),
+                }),
+            ]
+        } else {
+            vec![
+                Ok(BrainEvent::TextDelta {
+                    text: "The browser group holds those tools.".into(),
+                }),
+                Ok(BrainEvent::Finished {
+                    reason: Some("stop".into()),
+                }),
+            ]
+        };
+        Box::pin(futures::stream::iter(events))
+    }
+}
+
+#[tokio::test]
+async fn discover_tools_reports_a_group_that_does_not_exist() {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        vec![fast_link("t1", "general")],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    let mut tools = ToolRegistry::new();
+    crate::builtins::register_desktop_tools(&mut tools);
+    harness.session.tools = Arc::new(tools);
+    harness.session.brain = Arc::new(DiscoversWrongGroupBrain {
+        requests: AtomicU64::new(0),
+    });
+    harness
+        .session
+        .run("Open the general channel")
+        .await
+        .unwrap();
+    let report = harness
+        .session
+        .messages
+        .iter()
+        .filter(|message| message.role == "tool")
+        .flat_map(|message| &message.content)
+        .find_map(|part| match part {
+            MessageContent::Text { text } if text.contains("enabled_for_next_turn") => {
+                serde_json::from_str::<Value>(text).ok()
+            }
+            _ => None,
+        })
+        .expect("a discover_tools result");
+    assert_eq!(
+        report["unknown_groups"],
+        json!(["user_browser"]),
+        "{report}"
+    );
+    assert_eq!(
+        report["enabled_for_next_turn"],
+        json!(["desktop"]),
+        "{report}"
+    );
+    assert!(report["hint"].as_str().unwrap().contains("browser"));
 }
 
 #[test]

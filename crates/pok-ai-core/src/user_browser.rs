@@ -66,6 +66,9 @@ struct UserBrowserState {
     /// Tabs the agent opened, or that opened from its clicks: the only tabs
     /// it navigates away from or closes.
     owned_tabs: HashSet<String>,
+    /// Tabs holding a form the agent filled and did not submit, by address:
+    /// opening another page goes to a new tab, so the filled form stays.
+    filled_tabs: HashMap<String, String>,
 }
 
 pub struct UserBrowser {
@@ -332,12 +335,25 @@ impl UserBrowser {
             .await?;
         }
         let tabs = self.tabs().await?;
-        // Only a tab the agent opened is navigated away from its page.
-        let reusable = state
+        state
+            .filled_tabs
+            .retain(|id, _| tabs.iter().any(|tab| &tab.id == id));
+        let current = state
             .connection
             .as_ref()
-            .and_then(|connection| connection.page_target.clone())
-            .filter(|id| state.owned_tabs.contains(id) && tabs.iter().any(|tab| &tab.id == id));
+            .and_then(|connection| connection.page_target.clone());
+        // A form filled and not submitted would be lost by loading another
+        // page over it: that tab is kept, and the page opens in a new one.
+        let kept = current.as_ref().and_then(|id| {
+            state
+                .filled_tabs
+                .get(id)
+                .map(|url| (id.clone(), url.clone()))
+        });
+        // Only a tab the agent opened is navigated away from its page.
+        let reusable = current
+            .filter(|id| state.owned_tabs.contains(id) && tabs.iter().any(|tab| &tab.id == id))
+            .filter(|_| kept.is_none());
         let tab_id = match reusable {
             Some(id) => id,
             None => {
@@ -361,7 +377,14 @@ impl UserBrowser {
             )));
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
-        let snapshot = ManagedBrowser::settled_snapshot(connection, true).await?;
+        let mut snapshot = ManagedBrowser::settled_snapshot(connection, true).await?;
+        if let Some((id, url)) = kept {
+            snapshot["kept_filled_form"] = json!({
+                "tab_id": id,
+                "url": url,
+                "note": "The form you filled there and did not submit stays open in that tab; this page opened in a new tab. Switch back with user_browser_tabs to finish or check it.",
+            });
+        }
         Ok(self.decorate(snapshot, state))
     }
 
@@ -389,6 +412,10 @@ impl UserBrowser {
             Action::Type { .. } => None,
             Action::Select { .. } => guardrail::select(&resolved.element, &resolved.page_url),
         };
+        // A click that sends or submits (confirmed below) leaves no unsent form.
+        let flagged_send = flagged.as_ref().is_some_and(|(consequence, _)| {
+            matches!(consequence, guardrail::Consequence::SendOrSubmit)
+        });
         if let Action::Type { .. } = action
             && resolved.element.get("sensitive").and_then(Value::as_bool) == Some(true)
         {
@@ -478,6 +505,29 @@ impl UserBrowser {
             && let Some(id) = connection.page_target.clone()
         {
             state.owned_tabs.insert(id);
+        }
+        // Entering a value leaves an unsent form in this tab; pressing Enter
+        // to submit it, or a confirmed send, ends that.
+        if let Some(id) = connection.page_target.clone() {
+            let checkbox = matches!(
+                resolved.element.get("input_type").and_then(Value::as_str),
+                Some("checkbox" | "radio")
+            );
+            match action {
+                Action::Type { submit: true, .. } => {
+                    state.filled_tabs.remove(&id);
+                }
+                Action::Type { .. } | Action::Select { .. } => {
+                    state.filled_tabs.insert(id, resolved.page_url.clone());
+                }
+                Action::Click if checkbox => {
+                    state.filled_tabs.insert(id, resolved.page_url.clone());
+                }
+                Action::Click if flagged_send => {
+                    state.filled_tabs.remove(&id);
+                }
+                Action::Click => {}
+            }
         }
         // The control's label, so a verified run can be replayed by label
         // (motor programs) on a page whose element ids differ.
@@ -2018,6 +2068,32 @@ impl Tool for WaitForTool {
     }
 }
 
+/// The page the main agent last had open in its tab of the user's browser,
+/// for swarm workers, which work in tabs of their own.
+pub(crate) async fn lead_page() -> Option<String> {
+    let leads = STATES
+        .get_or_init(Default::default)
+        .lock()
+        .iter()
+        .filter(|((_, lane), _)| lane.is_none())
+        .map(|(_, state)| state.clone())
+        .collect::<Vec<_>>();
+    for state in leads {
+        let state = state.lock().await;
+        if let Some(url) = state
+            .connection
+            .as_ref()
+            .and_then(|connection| connection.last_snapshot.as_ref())
+            .and_then(|snapshot| snapshot.get("url"))
+            .and_then(Value::as_str)
+            .filter(|url| url.starts_with("http"))
+        {
+            return Some(url.to_owned());
+        }
+    }
+    None
+}
+
 /// Close the tabs a finished swarm worker opened in the user's browser and
 /// forget its state. The user's own tabs are never touched.
 pub(crate) async fn release_worker(session_id: Uuid) {
@@ -2513,6 +2589,85 @@ mod tests {
         assert_eq!((width, height), (1000, 500));
         let (same, width, _) = bounded_png(&data, 4000).unwrap();
         assert_eq!((same.as_str(), width), (data.as_str(), 2000));
+    }
+
+    /// A form the agent filled and did not submit survives opening another
+    /// page: set POK_AI_USER_BROWSER_TEST_PORT, POK_AI_USER_BROWSER_TEST_URL
+    /// (the test form), and POK_AI_USER_BROWSER_TEST_FEED_URL.
+    #[tokio::test]
+    #[ignore = "needs a Chromium started with --remote-debugging-port; set POK_AI_USER_BROWSER_TEST_PORT, POK_AI_USER_BROWSER_TEST_URL and POK_AI_USER_BROWSER_TEST_FEED_URL"]
+    async fn a_filled_form_is_kept_when_another_page_opens() {
+        let port: u16 = std::env::var("POK_AI_USER_BROWSER_TEST_PORT")
+            .expect("POK_AI_USER_BROWSER_TEST_PORT")
+            .parse()
+            .unwrap();
+        let form =
+            std::env::var("POK_AI_USER_BROWSER_TEST_URL").expect("POK_AI_USER_BROWSER_TEST_URL");
+        let feed = std::env::var("POK_AI_USER_BROWSER_TEST_FEED_URL")
+            .expect("POK_AI_USER_BROWSER_TEST_FEED_URL");
+        let data = tempfile::tempdir().unwrap();
+        let (context, _) = approval_context(crate::policy::ApprovalDecision::Deny, &data);
+        let config = UserBrowserConfig {
+            enabled: true,
+            port,
+            user_data_dir: None,
+        };
+        let mut registry = ToolRegistry::new();
+        register_user_browser_tools(&mut registry, &config, data.path());
+        let call = |name: &'static str, arguments: Value| {
+            let registry = &registry;
+            let context = &context;
+            async move { registry.call(name, arguments, context).await }
+        };
+        let opened = call("user_browser_navigate", json!({"url": form}))
+            .await
+            .unwrap();
+        let form_tab = opened["tab"]["tab_id"].as_str().unwrap().to_owned();
+        // Reading a page and opening another reuses the tab.
+        let reused = call("user_browser_navigate", json!({"url": form}))
+            .await
+            .unwrap();
+        assert_eq!(reused["tab"]["tab_id"], form_tab.as_str());
+        assert!(reused.get("kept_filled_form").is_none());
+        call(
+            "user_browser_type",
+            json!({"target": "Search mail", "text": "kept value"}),
+        )
+        .await
+        .unwrap();
+        // With an unsent value in it, the form's tab stays and the next page
+        // opens in a new tab.
+        let next = call("user_browser_navigate", json!({"url": feed}))
+            .await
+            .unwrap();
+        assert_eq!(
+            next["kept_filled_form"]["tab_id"],
+            form_tab.as_str(),
+            "{next}"
+        );
+        assert_ne!(next["tab"]["tab_id"], form_tab.as_str());
+        let tabs = call("user_browser_tabs", json!({"action": "list"}))
+            .await
+            .unwrap();
+        assert!(tabs.to_string().contains(&form_tab), "{tabs}");
+        // The value is still there.
+        call(
+            "user_browser_tabs",
+            json!({"action": "switch", "tab_id": form_tab}),
+        )
+        .await
+        .unwrap();
+        let back = call("user_browser_extract", json!({"include_html": true}))
+            .await
+            .unwrap();
+        assert!(back.to_string().contains("kept value"), "{back}");
+        for tab in [form_tab.as_str(), next["tab"]["tab_id"].as_str().unwrap()] {
+            let _ = call(
+                "user_browser_tabs",
+                json!({"action": "close", "tab_id": tab}),
+            )
+            .await;
+        }
     }
 
     /// Scrolling, waiting, and paging in a background tab of a real browser:

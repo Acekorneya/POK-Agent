@@ -138,7 +138,17 @@ pub(super) fn bounded_context(
     // re-read the same inputs every turn because the content they were working
     // from had been dropped before the next request.
     if estimate_context_tokens(&messages, schema_chars, usage_scale) > token_target {
-        messages = compact_old_tool_cycles(&messages, &mut compactions);
+        // Reference text kept through the collapse: an eighth of the budget
+        // at most, so it never crowds out the recent working set.
+        let reference_chars = usize::try_from(token_target)
+            .unwrap_or(usize::MAX)
+            .saturating_mul(4)
+            / 8;
+        messages = compact_old_tool_cycles(
+            &messages,
+            &mut compactions,
+            reference_chars.min(REFERENCE_RESULT_CHARS),
+        );
     }
     let compacted_observations = compact_superseded_observations(&mut messages);
     if compacted_observations > 0 {
@@ -883,8 +893,15 @@ fn collect_page_notes(messages: &[BrainMessage], prior: &str) -> Vec<(String, us
 pub(super) const TOOL_COMPACTION_TRIGGER: usize = RETAINED_TOOL_RESULTS;
 pub(super) const CONTINUITY_ACTIONS: usize = 24;
 
-/// Reduce the oldest tool results, one at a time, until the working set fits
-/// `token_target`, never touching the `MIN_RETAINED_TOOL_RESULTS` most recent.
+/// Tool results up to this size (a file read, a status, a short answer) are
+/// reduced only after every larger one: they are often the reference a long
+/// task keeps using (the resume a form is filled from), while large page and
+/// screen reads go stale quickly.
+const SMALL_TOOL_RESULT_CHARS: usize = 2_000;
+
+/// Reduce old tool results, one at a time, until the working set fits
+/// `token_target`: large ones first, oldest first, then small ones, never
+/// touching the `MIN_RETAINED_TOOL_RESULTS` most recent.
 fn compact_tool_results_to_budget(
     messages: &mut [BrainMessage],
     tool_positions: &[usize],
@@ -897,8 +914,23 @@ fn compact_tool_results_to_budget(
         return;
     }
     let trim_limit = tool_positions.len() - MIN_RETAINED_TOOL_RESULTS;
+    let size = |index: usize| {
+        messages[index]
+            .content
+            .iter()
+            .map(|part| match part {
+                MessageContent::Text { text } => text.len(),
+                MessageContent::ImagePng { .. } => SMALL_TOOL_RESULT_CHARS + 1,
+            })
+            .sum::<usize>()
+    };
+    let (large, small): (Vec<usize>, Vec<usize>) = tool_positions
+        .iter()
+        .take(trim_limit)
+        .copied()
+        .partition(|&index| size(index) > SMALL_TOOL_RESULT_CHARS);
     let mut compacted = 0;
-    for &index in tool_positions.iter().take(trim_limit) {
+    for index in large.into_iter().chain(small) {
         if estimate_context_tokens(messages, schema_chars, usage_scale) <= token_target {
             break;
         }
@@ -926,6 +958,7 @@ fn compact_tool_results_to_budget(
 pub(super) fn compact_old_tool_cycles(
     messages: &[BrainMessage],
     compactions: &mut Vec<String>,
+    reference_chars: usize,
 ) -> Vec<BrainMessage> {
     let tool_positions = messages
         .iter()
@@ -958,7 +991,12 @@ pub(super) fn compact_old_tool_cycles(
     }
 
     let dropped = &messages[original_task + 1..tail_start];
-    let summary = continuity_summary(dropped);
+    let mut summary = continuity_summary(dropped);
+    let references = kept_reference_results(dropped, reference_chars);
+    if !references.is_empty() {
+        summary.push_str("\nReference results from before, kept verbatim (still current unless the work since changed them; do not read them again):\n");
+        summary.push_str(&references.join("\n"));
+    }
     let temporal_updates = dropped.iter().filter(|message| {
         message.role == "system"
             && message.content.iter().any(|part| {
@@ -971,6 +1009,69 @@ pub(super) fn compact_old_tool_cycles(
     compacted.extend_from_slice(&messages[tail_start..]);
     compactions.push(format!("continuity_ledger:{}_messages", dropped.len()));
     compacted
+}
+
+/// Tools whose small results are reference material a task keeps using.
+const REFERENCE_TOOLS: &[&str] = &[
+    "read_file",
+    "grep_search",
+    "list_directory",
+    "source_outline",
+    "inspect_artifact",
+    "memory_search",
+    "skill_load",
+];
+/// At most this much reference text survives the collapse of old tool cycles.
+const REFERENCE_RESULT_CHARS: usize = 6_000;
+
+/// Small reference results (a file read, a search) among collapsed tool
+/// cycles, newest first and one per call, so a long task does not lose the
+/// facts it works from (and read them again) when older history is folded
+/// into the continuity ledger.
+fn kept_reference_results(messages: &[BrainMessage], limit: usize) -> Vec<String> {
+    let calls = messages
+        .iter()
+        .flat_map(|message| &message.tool_calls)
+        .map(|call| (call.id.as_str(), call))
+        .collect::<std::collections::HashMap<_, _>>();
+    let mut seen = std::collections::HashSet::new();
+    let mut kept = Vec::new();
+    let mut used = 0;
+    for message in messages
+        .iter()
+        .rev()
+        .filter(|message| message.role == "tool")
+    {
+        let Some(call) = message
+            .tool_call_id
+            .as_deref()
+            .and_then(|id| calls.get(id))
+            .filter(|call| REFERENCE_TOOLS.contains(&call.name.as_str()))
+        else {
+            continue;
+        };
+        let text = message
+            .content
+            .iter()
+            .filter_map(|part| match part {
+                MessageContent::Text { text } => Some(text.as_str()),
+                MessageContent::ImagePng { .. } => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let signature = format!("{} {}", call.name, call.arguments);
+        if text.is_empty()
+            || text == TOOL_RESULT_COMPACTED_STUB
+            || text.len() > SMALL_TOOL_RESULT_CHARS
+            || used + text.len() > limit
+            || !seen.insert(signature.clone())
+        {
+            continue;
+        }
+        used += text.len();
+        kept.push(format!("- {}: {text}", truncate_chars(&signature, 300)));
+    }
+    kept
 }
 
 pub(super) fn continuity_summary(messages: &[BrainMessage]) -> String {
