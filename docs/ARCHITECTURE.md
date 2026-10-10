@@ -437,6 +437,15 @@ recipients, paths, coordinates, ephemeral target ids, and secrets. Retrieval of
 facts and command templates is injected as guidance only; every new run must
 still obtain fresh observations and pass current safety checks.
 
+Motor programs keep private values out the same way: text the request supplied
+is stored only as a fingerprint, and credentials or very long text end the
+program. Personal values a run used (an email address it typed, a mailbox page
+it opened) are held back until the user answers one question after the verified
+run (`remember_private_values`, through the normal approval handler). Allowed,
+they are saved in a secure store outside POK-Agent's files (`secrets.rs`; the
+desktop app installs Windows Credential Manager) and the program refers to them
+by key; declined, or without a store (the CLI), the program ends before them.
+
 ### Skill lifecycle
 
 Workflow procedures are the agent's skills, and they improve with use:

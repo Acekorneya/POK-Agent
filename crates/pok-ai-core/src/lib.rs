@@ -23,6 +23,7 @@ mod process_window;
 pub mod retrieval;
 pub mod router_bench;
 pub mod router_training;
+pub mod secrets;
 pub mod session;
 pub mod session_archive;
 pub mod subagent;

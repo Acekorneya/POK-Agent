@@ -636,7 +636,9 @@ authorize input. In your own signed-in browser, any click, submission, or naviga
 buys, sends, posts, changes account settings, or signs out waits for your confirmation in every
 policy mode, password fields are never filled, and only tabs the agent opened are navigated away
 or closed. Swarm agents run under the same gates; a code agent writes and runs commands only
-inside its own git worktree, and its commit reaches your branch only after you agree. Exam automation is limited to disposable fixture
+inside its own git worktree, and its commit reaches your branch only after you agree. Muscle memory
+keeps personal values a task used (an email address, a private page) only if you agree when asked,
+in Windows Credential Manager; passwords and keys are never kept. Exam automation is limited to disposable fixture
 repositories and the titled POK-Agent exam window. Every run writes a JSONL trace
 and artifacts under `%LOCALAPPDATA%\POK-Ai`.
 
