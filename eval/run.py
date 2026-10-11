@@ -82,31 +82,42 @@ def check_shop(answer, _pages, _base):
 
 
 def check_jobs(_answer, pages, base):
-    """Score the two application forms in the user's browser (20 checks)."""
+    """Score the two application forms in the user's browser (20 checks).
+
+    A form can be open in more than one tab (the orchestrator opens a page the
+    worker already filled), so each form is scored by its best-matching tab."""
     passed = 0
     total = 0
     detail = {}
     for path in JOB_PAGES:
-        page = next((p for p in pages if p["url"] == base + path), None)
-        results = {}
-        if page is None:
+        candidates = [p for p in pages if p["url"] == base + path]
+        best = {}
+        for page in candidates:
+            results = job_form_checks(page)
+            if sum(results.values()) > sum(best.values()):
+                best = results
+        if not best:
             # A form that is not open cannot be checked: every check on it fails.
-            results = {name: False for name in [*JOB_FIELDS, "focus", "cover", "remote", "not submitted"]}
-        else:
-            fields = {}
-            for field in page["fields"]:
-                fields.setdefault(field["name"], field)
-            for name, expected in JOB_FIELDS.items():
-                results[name] = (fields.get(name) or {}).get("value") == expected
-            results["focus"] = len(((fields.get("focus") or {}).get("value") or "").strip()) >= 40
-            results["cover"] = len(((fields.get("cover") or {}).get("value") or "").strip()) >= 40
-            results["remote"] = bool((fields.get("remote") or {}).get("checked"))
-            submitted = page["title"].startswith("Application sent") or "Thank you" in page["text"]
-            results["not submitted"] = not submitted
-        passed += sum(1 for ok in results.values() if ok)
-        total += len(results)
-        detail[path] = results
+            best = {name: False for name in [*JOB_FIELDS, "focus", "cover", "remote", "not submitted"]}
+        passed += sum(1 for ok in best.values() if ok)
+        total += len(best)
+        detail[path] = best
     return passed / total, detail
+
+
+def job_form_checks(page):
+    results = {}
+    fields = {}
+    for field in page["fields"]:
+        fields.setdefault(field["name"], field)
+    for name, expected in JOB_FIELDS.items():
+        results[name] = (fields.get(name) or {}).get("value") == expected
+    results["focus"] = len(((fields.get("focus") or {}).get("value") or "").strip()) >= 40
+    results["cover"] = len(((fields.get("cover") or {}).get("value") or "").strip()) >= 40
+    results["remote"] = bool((fields.get("remote") or {}).get("checked"))
+    submitted = page["title"].startswith("Application sent") or "Thank you" in page["text"]
+    results["not submitted"] = not submitted
+    return results
 
 
 CHECKS = {
