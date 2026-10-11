@@ -111,7 +111,11 @@ def job_form_checks(page):
     for field in page["fields"]:
         fields.setdefault(field["name"], field)
     for name, expected in JOB_FIELDS.items():
-        results[name] = (fields.get(name) or {}).get("value") == expected
+        value = (fields.get(name) or {}).get("value") or ""
+        if name == "linkedin":
+            # Same profile with or without the scheme or www.
+            value = re.sub(r"^https?://(www\.)?", "", value.strip()).rstrip("/")
+        results[name] = value == expected
     results["focus"] = len(((fields.get("focus") or {}).get("value") or "").strip()) >= 40
     results["cover"] = len(((fields.get("cover") or {}).get("value") or "").strip()) >= 40
     results["remote"] = bool((fields.get("remote") or {}).get("checked"))
