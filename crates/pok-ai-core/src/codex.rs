@@ -157,7 +157,7 @@ impl Brain for CodexBrain {
     fn stream(&self, request: BrainRequest) -> BrainStream {
         let this = self.clone();
         Box::pin(async_stream::try_stream! {
-            let body = codex_request(&request);
+            let body = responses_request(&request);
             let mut token = this.access_token().await?;
             let response = match this.request(&body, &token).await {
                 Ok(response) => response,
@@ -172,118 +172,129 @@ impl Brain for CodexBrain {
                 }
                 Err(error) => Err(error)?,
             };
-            let mut bytes = response.bytes_stream();
-            let mut buffer = String::new();
-            let mut calls: BTreeMap<String, CodexToolCall> = BTreeMap::new();
-            while let Some(chunk) = bytes.next().await {
-                let chunk = chunk.map_err(codex_error)?;
-                buffer.push_str(&String::from_utf8_lossy(&chunk));
-                while let Some(end) = buffer.find("\n\n") {
-                    let event = buffer[..end].to_owned();
-                    buffer.drain(..end + 2);
-                    for line in event.lines().filter_map(|line| line.strip_prefix("data:")) {
-                        let data = line.trim();
-                        if data == "[DONE]" { continue; }
-                        let value: Value = serde_json::from_str(data)?;
-                        match value.get("type").and_then(Value::as_str).unwrap_or_default() {
-                            "response.output_text.delta" => {
-                                if let Some(text) = value.get("delta").and_then(Value::as_str)
-                                    && !text.is_empty()
-                                {
-                                    yield BrainEvent::TextDelta { text: text.into() };
-                                }
-                            }
-                            "response.reasoning.delta" | "response.reasoning_summary_text.delta" => {
-                                if let Some(text) = value.get("delta").and_then(Value::as_str)
-                                    && !text.is_empty()
-                                {
-                                    yield BrainEvent::ReasoningDelta { text: text.into() };
-                                }
-                            }
-                            "response.output_item.added" => {
-                                if let Some(item) = value.get("item")
-                                    && item.get("type").and_then(Value::as_str) == Some("function_call")
-                                    && let Some(item_id) = item.get("id").and_then(Value::as_str)
-                                {
-                                    let call = calls.entry(item_id.to_owned()).or_default();
-                                    if let Some(call_id) = item.get("call_id").and_then(Value::as_str) {
-                                        call.call_id = call_id.to_owned();
-                                    }
-                                    if let Some(name) = item.get("name").and_then(Value::as_str) {
-                                        call.name = name.to_owned();
-                                    }
-                                    if let Some(arguments) = item.get("arguments").and_then(Value::as_str) {
-                                        call.arguments.push_str(arguments);
-                                    }
-                                }
-                            }
-                            "response.function_call_arguments.delta" => {
-                                if let Some(item_id) = value.get("item_id").and_then(Value::as_str)
-                                    && let Some(delta) = value.get("delta").and_then(Value::as_str)
-                                {
-                                    calls.entry(item_id.to_owned()).or_default().arguments.push_str(delta);
-                                }
-                            }
-                            "response.function_call_arguments.done" => {
-                                if let Some(item_id) = value.get("item_id").and_then(Value::as_str) {
-                                    let mut call = calls.remove(item_id).unwrap_or_default();
-                                    if let Some(arguments) = value.get("arguments").and_then(Value::as_str) {
-                                        call.arguments = arguments.to_owned();
-                                    }
-                                    if call.name.is_empty() {
-                                        call.name = value.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
-                                    }
-                                    if !call.name.is_empty() {
-                                        yield call.into_event();
-                                    }
-                                }
-                            }
-                            "response.output_item.done" => {
-                                if let Some(item) = value.get("item")
-                                    && item.get("type").and_then(Value::as_str) == Some("function_call")
-                                    && let Some(item_id) = item.get("id").and_then(Value::as_str)
-                                    && let Some(mut call) = calls.remove(item_id)
-                                {
-                                    if let Some(call_id) = item.get("call_id").and_then(Value::as_str) {
-                                        call.call_id = call_id.to_owned();
-                                    }
-                                    if let Some(name) = item.get("name").and_then(Value::as_str) {
-                                        call.name = name.to_owned();
-                                    }
-                                    if let Some(arguments) = item.get("arguments").and_then(Value::as_str) {
-                                        call.arguments = arguments.to_owned();
-                                    }
-                                    if !call.name.is_empty() {
-                                        yield call.into_event();
-                                    }
-                                }
-                            }
-                            "response.completed" | "response.incomplete" => {
-                                if let Some(usage) = value.pointer("/response/usage") {
-                                    yield BrainEvent::Usage {
-                                        prompt_tokens: usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0),
-                                        completion_tokens: usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(0),
-                                    };
-                                }
-                                let reason = value.get("type").and_then(Value::as_str).unwrap_or("completed");
-                                yield BrainEvent::Finished { reason: Some(reason.into()) };
-                            }
-                            "response.failed" | "error" => {
-                                let message = value
-                                    .pointer("/response/error/message")
-                                    .or_else(|| value.pointer("/error/message"))
-                                    .or_else(|| value.pointer("/response/incomplete_details/reason"))
-                                    .and_then(Value::as_str)
-                                    .unwrap_or("the ChatGPT backend reported a failed response");
-                                Err(PokError::Provider(message.to_owned()))?;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
+            let mut events = responses_events(response);
+            while let Some(event) = events.next().await {
+                yield event?;
             }
         })
     }
+}
+
+/// Map a Responses API SSE response to brain events. Shared by the ChatGPT
+/// backend and OpenCode Go's `/responses` models.
+pub(crate) fn responses_events(response: reqwest::Response) -> BrainStream {
+    Box::pin(async_stream::try_stream! {
+        let mut bytes = response.bytes_stream();
+        let mut buffer = String::new();
+        let mut calls: BTreeMap<String, CodexToolCall> = BTreeMap::new();
+        while let Some(chunk) = bytes.next().await {
+            let chunk = chunk.map_err(codex_error)?;
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            while let Some(end) = buffer.find("\n\n") {
+                let event = buffer[..end].to_owned();
+                buffer.drain(..end + 2);
+                for line in event.lines().filter_map(|line| line.strip_prefix("data:")) {
+                    let data = line.trim();
+                    if data == "[DONE]" { continue; }
+                    let value: Value = serde_json::from_str(data)?;
+                    match value.get("type").and_then(Value::as_str).unwrap_or_default() {
+                        "response.output_text.delta" => {
+                            if let Some(text) = value.get("delta").and_then(Value::as_str)
+                                && !text.is_empty()
+                            {
+                                yield BrainEvent::TextDelta { text: text.into() };
+                            }
+                        }
+                        "response.reasoning.delta" | "response.reasoning_summary_text.delta" => {
+                            if let Some(text) = value.get("delta").and_then(Value::as_str)
+                                && !text.is_empty()
+                            {
+                                yield BrainEvent::ReasoningDelta { text: text.into() };
+                            }
+                        }
+                        "response.output_item.added" => {
+                            if let Some(item) = value.get("item")
+                                && item.get("type").and_then(Value::as_str) == Some("function_call")
+                                && let Some(item_id) = item.get("id").and_then(Value::as_str)
+                            {
+                                let call = calls.entry(item_id.to_owned()).or_default();
+                                if let Some(call_id) = item.get("call_id").and_then(Value::as_str) {
+                                    call.call_id = call_id.to_owned();
+                                }
+                                if let Some(name) = item.get("name").and_then(Value::as_str) {
+                                    call.name = name.to_owned();
+                                }
+                                if let Some(arguments) = item.get("arguments").and_then(Value::as_str) {
+                                    call.arguments.push_str(arguments);
+                                }
+                            }
+                        }
+                        "response.function_call_arguments.delta" => {
+                            if let Some(item_id) = value.get("item_id").and_then(Value::as_str)
+                                && let Some(delta) = value.get("delta").and_then(Value::as_str)
+                            {
+                                calls.entry(item_id.to_owned()).or_default().arguments.push_str(delta);
+                            }
+                        }
+                        "response.function_call_arguments.done" => {
+                            if let Some(item_id) = value.get("item_id").and_then(Value::as_str) {
+                                let mut call = calls.remove(item_id).unwrap_or_default();
+                                if let Some(arguments) = value.get("arguments").and_then(Value::as_str) {
+                                    call.arguments = arguments.to_owned();
+                                }
+                                if call.name.is_empty() {
+                                    call.name = value.get("name").and_then(Value::as_str).unwrap_or_default().to_owned();
+                                }
+                                if !call.name.is_empty() {
+                                    yield call.into_event();
+                                }
+                            }
+                        }
+                        "response.output_item.done" => {
+                            if let Some(item) = value.get("item")
+                                && item.get("type").and_then(Value::as_str) == Some("function_call")
+                                && let Some(item_id) = item.get("id").and_then(Value::as_str)
+                                && let Some(mut call) = calls.remove(item_id)
+                            {
+                                if let Some(call_id) = item.get("call_id").and_then(Value::as_str) {
+                                    call.call_id = call_id.to_owned();
+                                }
+                                if let Some(name) = item.get("name").and_then(Value::as_str) {
+                                    call.name = name.to_owned();
+                                }
+                                if let Some(arguments) = item.get("arguments").and_then(Value::as_str) {
+                                    call.arguments = arguments.to_owned();
+                                }
+                                if !call.name.is_empty() {
+                                    yield call.into_event();
+                                }
+                            }
+                        }
+                        "response.completed" | "response.incomplete" => {
+                            if let Some(usage) = value.pointer("/response/usage") {
+                                yield BrainEvent::Usage {
+                                    prompt_tokens: usage.get("input_tokens").and_then(Value::as_u64).unwrap_or(0),
+                                    completion_tokens: usage.get("output_tokens").and_then(Value::as_u64).unwrap_or(0),
+                                };
+                            }
+                            let reason = value.get("type").and_then(Value::as_str).unwrap_or("completed");
+                            yield BrainEvent::Finished { reason: Some(reason.into()) };
+                        }
+                        "response.failed" | "error" => {
+                            let message = value
+                                .pointer("/response/error/message")
+                                .or_else(|| value.pointer("/error/message"))
+                                .or_else(|| value.pointer("/response/incomplete_details/reason"))
+                                .and_then(Value::as_str)
+                                .unwrap_or("the Responses backend reported a failed response");
+                            Err(PokError::Provider(message.to_owned()))?;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    })
 }
 
 #[derive(Default)]
@@ -318,7 +329,8 @@ impl CodexToolCall {
 
 /// The Responses request for one turn: instructions from the system messages,
 /// the conversation as input items, and the tools in Responses format.
-fn codex_request(request: &BrainRequest) -> Value {
+/// Shared by the ChatGPT backend and OpenCode Go's `/responses` models.
+pub(crate) fn responses_request(request: &BrainRequest) -> Value {
     let mut instructions = Vec::new();
     let mut input = Vec::new();
     for message in &request.messages {
@@ -508,7 +520,7 @@ mod tests {
             seed: None,
             reasoning_effort: Some("high".into()),
         };
-        let body = codex_request(&request);
+        let body = responses_request(&request);
         assert_eq!(body["model"], "gpt-5.5");
         assert_eq!(body["instructions"], "You are POK-Agent.");
         assert_eq!(body["store"], false);
@@ -544,8 +556,8 @@ mod tests {
             seed: None,
             reasoning_effort: Some("off".into()),
         };
-        assert_eq!(codex_request(&request)["reasoning"]["effort"], "none");
+        assert_eq!(responses_request(&request)["reasoning"]["effort"], "none");
         request.reasoning_effort = Some("on".into());
-        assert!(codex_request(&request).get("reasoning").is_none());
+        assert!(responses_request(&request).get("reasoning").is_none());
     }
 }

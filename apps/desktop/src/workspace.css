@@ -231,10 +231,11 @@ button.danger { color: var(--danger); border-color: color-mix(in srgb, var(--dan
 button.danger:hover:not(:disabled) { background: var(--danger-bg); border-color: var(--danger); }
 .banner-connect { padding: 3px 10px; font-size: 11px; }
 .login-hint { color: var(--muted); font-size: 12px; line-height: 1.55; }
+.sign-in-open { display: inline-flex; align-items: center; justify-content: center; gap: 6px; margin: 12px 0 6px; padding: 10px 18px; border-radius: 10px; background: var(--accent); color: var(--accent-ink); border: 1px solid transparent; font-weight: 600; cursor: pointer; }
+.sign-in-open:hover { filter: brightness(1.05); }
+.sign-in-url { color: var(--muted); font-size: 11px; word-break: break-all; user-select: all; margin: 0 0 4px; }
 .device-code-row { display: flex; align-items: center; gap: 10px; margin: 14px 0 12px; }
 .device-code { font: 700 26px/1.1 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .18em; color: var(--accent); background: var(--code); border: 1px solid var(--border); border-radius: 10px; padding: 10px 16px; user-select: all; }
-.key-link.primary-link { display: inline-flex; align-items: center; justify-content: center; padding: 8px 16px; border-radius: 9px; background: var(--accent); color: var(--accent-ink); text-decoration: none; font-weight: 600; }
-.key-link.primary-link:hover { filter: brightness(1.05); }
 .login-waiting { display: inline-flex; align-items: center; gap: 8px; margin-top: 12px; color: var(--muted); }
 .waiting-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: waiting-pulse 1.3s ease-in-out infinite; }
 @keyframes waiting-pulse { 0%, 100% { opacity: .3; transform: scale(.8); } 50% { opacity: 1; transform: scale(1); } }

@@ -28,6 +28,7 @@ serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "2.8", features = [] }
 tauri-plugin-global-shortcut = "2"
+tauri-plugin-opener = "2"
 tokio.workspace = true
 tokio-util.workspace = true
 uuid.workspace = true

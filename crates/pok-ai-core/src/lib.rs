@@ -18,6 +18,7 @@ pub mod grounding;
 pub mod mcp;
 pub mod memory;
 pub mod oauth;
+pub mod opencode_go;
 pub mod pause;
 pub mod platform;
 pub mod policy;

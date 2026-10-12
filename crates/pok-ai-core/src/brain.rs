@@ -331,6 +331,18 @@ pub fn from_provider_with_session(
         brain = brain.with_headers(&copilot_client_headers(session))?;
         return Ok(Arc::new(brain));
     }
+    // OpenCode Go serves its models over three wires (chat, Responses,
+    // messages) and rejects the wrong one; the Go brain routes each model to
+    // the wire that accepts it.
+    if provider.is_some_and(|name| name.eq_ignore_ascii_case("opencode-go")) {
+        let data_dir = data_dir
+            .ok_or_else(|| PokError::Config("OpenCode Go needs a data directory".into()))?;
+        let api_key = config.api_key_env.as_deref().and_then(get_api_key);
+        let brain =
+            crate::opencode_go::OpenCodeGoBrain::new(&config.base_url, api_key, session, data_dir)?
+                .with_max_retries(config.max_retries);
+        return Ok(Arc::new(brain));
+    }
     // ChatGPT subscription plans speak the Responses API at the ChatGPT
     // backend, with the Codex client's headers; the token refreshes there.
     if provider.is_some_and(|name| name.eq_ignore_ascii_case(crate::oauth::CODEX_PROVIDER)) {
@@ -1810,6 +1822,19 @@ fn openai_stream_error(value: &Value) -> Option<PokError> {
     })
 }
 
+/// The message a failed provider response becomes. OpenCode Zen's app-only
+/// free tier has a dedicated translation: the raw 403 says "can only be used
+/// from within OpenCode", which does not tell the user what to do instead.
+fn provider_error_message(status: reqwest::StatusCode, body: &str) -> String {
+    if body.contains("FreeTierError") {
+        format!(
+            "HTTP {status}: this OpenCode Zen free-tier model is reserved for the OpenCode app; use the \"OpenCode Go\" provider instead. Server said: {body}"
+        )
+    } else {
+        format!("HTTP {status}: {body}")
+    }
+}
+
 pub(crate) async fn require_success(response: reqwest::Response) -> Result<reqwest::Response> {
     if response.status().is_success() {
         return Ok(response);
@@ -1820,7 +1845,7 @@ pub(crate) async fn require_success(response: reqwest::Response) -> Result<reqwe
         .text()
         .await
         .unwrap_or_else(|error| format!("<could not read provider response: {error}>"));
-    let message = format!("HTTP {status}: {body}");
+    let message = provider_error_message(status, &body);
     if transient_status_code(status.as_u16()) {
         Err(PokError::ProviderTransient {
             message,
@@ -2223,6 +2248,20 @@ mod tests {
         ] {
             assert!(copilot_model_info(&skipped).is_none(), "{skipped}");
         }
+    }
+
+    #[test]
+    fn the_opencode_free_tier_error_points_at_the_go_provider() {
+        let message = provider_error_message(
+            reqwest::StatusCode::FORBIDDEN,
+            r#"{"type":"error","error":{"type":"FreeTierError","message":"OpenCode's free tier can only be used from within OpenCode"}}"#,
+        );
+        assert!(message.contains("\"OpenCode Go\""), "{message}");
+        assert!(message.contains("HTTP 403"), "{message}");
+        assert_eq!(
+            provider_error_message(reqwest::StatusCode::UNAUTHORIZED, "missing key"),
+            "HTTP 401 Unauthorized: missing key"
+        );
     }
 
     #[tokio::test]

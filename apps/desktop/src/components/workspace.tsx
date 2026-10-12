@@ -1,6 +1,4 @@
 import React, { useEffect, useRef, useState } from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
 
 export type Theme = "teal" | "dark" | "light";
 export function applyTheme(theme: Theme) {
@@ -42,20 +40,14 @@ export function ConversationSidebar({ conversations, activeId, disabled, onSelec
   </aside>;
 }
 
-function CopyButton({ text }: { text: string }) {
-  const [label, setLabel] = useState("Copy");
-  return <button className="copy-button" onClick={() => { void navigator.clipboard.writeText(text).then(() => setLabel("Copied"), () => setLabel("Copy unavailable")); }}>{label}</button>;
-}
-function CodeBlock({ children, ...props }: React.ComponentProps<"pre">) {
-  const ref = useRef<HTMLPreElement>(null);
-  return <div className="code-block"><button className="copy-button" onClick={e => { const button = e.currentTarget; void navigator.clipboard.writeText(ref.current?.textContent || "").then(() => { button.textContent = "Copied"; }, () => { button.textContent = "Copy unavailable"; }); }}>Copy code</button><pre ref={ref} {...props}>{children}</pre></div>;
-}
+/** The markdown renderer is a separate chunk (react-markdown + GFM), loaded
+ * when the first message needs it; the fallback shows the plain text. */
+const MarkdownRenderer = React.lazy(() => import("./markdown-renderer"));
+
 function MarkdownMessageView({ text }: { text: string }) {
-  return <div className="markdown-message"><Markdown remarkPlugins={[remarkGfm]} skipHtml components={{
-    pre: CodeBlock,
-    img: ({ alt }) => <span className="image-placeholder">[Image: {alt || "not loaded"}]</span>,
-    a: ({ children, href }) => <a href={href && /^https?:\/\//i.test(href) ? href : undefined} target="_blank" rel="noreferrer noopener">{children}</a>,
-  }}>{text}</Markdown><CopyButton text={text} /></div>;
+  return <React.Suspense fallback={<div className="markdown-message">{text}</div>}>
+    <MarkdownRenderer text={text} />
+  </React.Suspense>;
 }
 /** Markdown parsing is the most expensive part of the feed; skip it when the
  * text did not change (every composer keystroke re-renders the session). */

@@ -5,13 +5,20 @@ import "./styles.css";
 import { Appearance, Composer, ConversationSidebar, useDialogFocus } from "./components/workspace";
 import { MicButton, VoiceCaption, VoiceSettingsPage, appendDictation, useVoice } from "./components/voice";
 import { AttachButton, AttachmentStrip, useAttachments, useImageDrop, useNativeDrop } from "./components/attachments";
-import { AgentView, type FrameTarget, type ObservationFrame } from "./components/agent-view";
+import type { FrameTarget, ObservationFrame } from "./components/agent-view";
 import { SettingsCard, SettingRow, SettingsDrawer, StatusPill, Switch, type SettingsSection } from "./components/settings-drawer";
 import "./workspace.css";
 import "./settings.css";
 import { appendStreamDelta, appendSwarmEvent, swarmActivityLabel, type ChatMessage, type SwarmAgentState, type SwarmRunState } from "./session-display";
 import { asRecord, formatElapsed } from "./display-utils";
 import { ConversationMessage, MessageActionProvider, type MessageActionKind } from "./components/conversation";
+
+/** The agent view (live frames) is a separate chunk, loaded when a run first
+ * shows a frame; the markdown renderer is loaded by workspace.tsx the same
+ * way. Both are kicked off after the first paint below. */
+const AgentView = React.lazy(() =>
+  import("./components/agent-view").then((module) => ({ default: module.AgentView })),
+);
 
 type Approval = { id: string; tool: string; reason: string; arguments: unknown };
 type UserQuestion = { id: string; header: string; question: string; options: { label: string; description: string }[]; multi_select: boolean };
@@ -2650,6 +2657,9 @@ export function App() {
     });
     const unlistenProviderLogin = listen<{ user_code: string; verification_uri: string }>("provider_login_code", ({ payload }) => {
       setLoginCode(payload);
+      // Open the sign-in page in the user's own browser right away; the dialog
+      // keeps a button for reopening it if the browser did not come up.
+      void invoke("open_external", { url: payload.verification_uri }).catch(() => undefined);
     });
     
     return () => {
@@ -2662,6 +2672,14 @@ export function App() {
       void unlistenQuestion.then((fn) => fn());
       void unlistenProviderLogin.then((fn) => fn());
     };
+  }, []);
+
+  // Load the deferred UI chunks (the markdown renderer and the agent view)
+  // after the first paint: both are needed only once a message or frame
+  // exists, and keeping them out of the entry bundle shortens startup.
+  useEffect(() => {
+    void import("./components/markdown-renderer");
+    void import("./components/agent-view");
   }, []);
 
   async function run() {
@@ -3575,7 +3593,7 @@ export function App() {
       </SettingsDrawer>
       <section className={`panel agent ${dropActive ? "drop-active" : ""}`} {...imageDrop.handlers}>
         {dropActive && <div className="drop-overlay" aria-hidden="true"><span>Drop files, folders or images to attach them</span></div>}
-        {agentViewOpen && (agentFrame || busy) && <AgentView frame={agentFrame} onClose={() => toggleAgentView(false)} />}
+        <React.Suspense fallback={null}>{agentViewOpen && (agentFrame || busy) && <AgentView frame={agentFrame} onClose={() => toggleAgentView(false)} />}</React.Suspense>
         <details className="session-details"><summary>Session details <span>{model || "No model selected"} · {usage.totalCompletion.toLocaleString()} output tokens</span></summary>
         {jevEnabled && <div className="jev-scorecard" role="status" aria-label="Decision router performance diagnostics">
           <div><strong>{decisionRouterBackend.toUpperCase()} PERFORMANCE</strong><span>{jevMetrics.actions} actions · {jevMetrics.evidence} evidence · {jevMetrics.progress} verified progress</span></div>
@@ -3765,8 +3783,14 @@ export function App() {
           {loginCode ? (
             <>
               <p className="login-hint">
-                Open the sign-in page and enter this code to authorize POK-Agent on your {providerLabel(selectedProvider)} account. The credential stays on this computer.
+                Enter this code on the sign-in page to authorize POK-Agent on your {providerLabel(selectedProvider)} account. The credential stays on this computer.
               </p>
+              <button type="button" className="sign-in-open" onClick={() => {
+                void invoke("open_external", { url: loginCode.verification_uri }).catch(() => undefined);
+              }}>
+                Open sign-in page ↗
+              </button>
+              <p className="sign-in-url">{loginCode.verification_uri}</p>
               <div className="device-code-row">
                 <code className="device-code">{loginCode.user_code}</code>
                 <button type="button" onClick={() => {
@@ -3774,9 +3798,6 @@ export function App() {
                   setLoginCopied(true);
                 }}>{loginCopied ? "Copied" : "Copy"}</button>
               </div>
-              <a className="key-link primary-link" href={loginCode.verification_uri} target="_blank" rel="noreferrer">
-                Open sign-in page ↗
-              </a>
               <p className="login-waiting"><span className="waiting-dot" aria-hidden="true" />Waiting for approval…</p>
             </>
           ) : (

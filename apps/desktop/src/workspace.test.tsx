@@ -69,9 +69,13 @@ describe("workspace presentation", () => {
     expect((ConversationMessage as unknown as { $$typeof: symbol }).$$typeof).toBe(memo);
     expect((MarkdownMessage as unknown as { $$typeof: symbol }).$$typeof).toBe(memo);
   });
-  it("renders tables and code without raw HTML, remote images, or unsafe links", () => {
+  it("renders tables and code without raw HTML, remote images, or unsafe links", async () => {
     const { container } = render(<MarkdownMessage text={'| A | B |\n|---|---|\n| 1 | 2 |\n\n```rust\nfn main() {}\n```\n\n<script>alert(1)</script>\n\n![private](https://example.test/track)\n\n[bad](javascript:alert(1))'} />);
-    expect(container.querySelector("table")).not.toBeNull(); expect(container.querySelector("pre")?.textContent).toContain("fn main");
+    // The renderer is its own chunk; settle the dynamic import, then wait for
+    // the Suspense boundary to swap the fallback for the parsed markdown.
+    await vi.dynamicImportSettled();
+    await waitFor(() => expect(container.querySelector("table")).not.toBeNull());
+    expect(container.querySelector("pre")?.textContent).toContain("fn main");
     expect(container.querySelector("script, img, a[href^='javascript:']")).toBeNull();
   });
   it("shows each frame the agent saw with its numbered targets, and can be hidden", async () => {

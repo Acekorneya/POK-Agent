@@ -53,6 +53,7 @@ use process_wrap::tokio::{CreationFlags, JobObject};
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_opener::OpenerExt;
 use tokio::{
     process::Command,
     sync::{Mutex, mpsc, oneshot},
@@ -2760,6 +2761,18 @@ fn subscription_account(provider: String, runtime: State<'_, AppRuntime>) -> Opt
     }
 }
 
+/// Open an http(s) address in the user's own browser. Used for the device
+/// sign-in page so connecting never requires copying a URL by hand.
+#[tauri::command]
+fn open_external(app: tauri::AppHandle, url: String) -> std::result::Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err("only http(s) links can be opened".into());
+    }
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|error| error.to_string())
+}
+
 /// Forget a stored subscription credential.
 #[tauri::command]
 fn disconnect_subscription(
@@ -3787,6 +3800,7 @@ pub fn run() {
                 })
                 .build(),
         )
+        .plugin(tauri_plugin_opener::init())
         .manage(voice::VoiceState::default())
         .manage(runtime)
         .manage(broker)
@@ -3818,6 +3832,7 @@ pub fn run() {
             connect_copilot,
             connect_chatgpt,
             subscription_account,
+            open_external,
             disconnect_subscription,
             save_provider_key,
             get_decision_router_status,
