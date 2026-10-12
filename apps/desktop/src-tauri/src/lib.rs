@@ -15,8 +15,9 @@ use pok_ai_core::{
     Result,
     brain::{
         LocalModelPhase, LocalModelRuntimeStatus, ModelInfo, from_provider,
-        load_local_model_from_status_with_context, load_local_model_with_context,
-        local_model_status, unload_local_model, unload_local_model_from_status,
+        from_provider_with_session, load_local_model_from_status_with_context,
+        load_local_model_with_context, local_model_status, unload_local_model,
+        unload_local_model_from_status,
     },
     builtins::{register_desktop_tools, register_memory_tools},
     coding::register_coding_tools,
@@ -522,6 +523,9 @@ async fn provider_model_catalog(
         provider.to_ascii_lowercase(),
         provider_config.base_url.to_ascii_lowercase()
     );
+    // The models.dev cache lives in the data directory; copy it out of the
+    // config lock before any await.
+    let data_dir = runtime.config.lock().data_dir.clone();
     if local_lifecycle_supported(provider) {
         if let Some(models) = runtime
             .model_catalog_cache
@@ -537,7 +541,9 @@ async fn provider_model_catalog(
         if let Some(models) = cache.get(&cache_key) {
             return Ok(models.clone());
         }
-        let brain = from_provider(provider_config).map_err(|error| error.to_string())?;
+        let brain =
+            from_provider_with_session(provider_config, None, Some(provider), Some(&data_dir))
+                .map_err(|error| error.to_string())?;
         let models = if provider.eq_ignore_ascii_case("ollama") {
             brain
                 .list_models()
@@ -567,7 +573,8 @@ async fn provider_model_catalog(
         cache.insert(cache_key, models.clone());
         return Ok(models);
     }
-    let brain = from_provider(provider_config).map_err(|error| error.to_string())?;
+    let brain = from_provider_with_session(provider_config, None, Some(provider), Some(&data_dir))
+        .map_err(|error| error.to_string())?;
     brain.model_info().await.map_err(|error| error.to_string())
 }
 
@@ -2281,7 +2288,6 @@ async fn run_prompt(
             ) => result?,
         };
     }
-    let brain = from_provider(&provider_config).map_err(|error| error.to_string())?;
     let requested_policy = if policy_mode.as_deref() == Some("autonomous") {
         Policy::autonomous()
     } else {
@@ -2309,6 +2315,16 @@ async fn run_prompt(
         let session_id = pending_snapshot
             .as_ref()
             .map_or_else(Uuid::new_v4, |snapshot| snapshot.summary.id);
+        // The conversation id goes to providers that route by client session
+        // (OpenCode Go's `x-opencode-session`); the models.dev catalog fills
+        // capabilities the provider's own sparse model list omits.
+        let brain = from_provider_with_session(
+            &provider_config,
+            Some(&session_id.to_string()),
+            Some(&provider),
+            Some(&data_dir),
+        )
+        .map_err(|error| error.to_string())?;
         let memory =
             MemoryStore::open(data_dir.join("memory")).map_err(|error| error.to_string())?;
         let mut tools = ToolRegistry::new();
@@ -2330,6 +2346,9 @@ async fn run_prompt(
             )
         };
         pok_ai_core::web::register_web_tools(&mut tools, &web_config);
+        // One observer per session, shared with the swarm tool so worker
+        // progress reaches the dashboard while `run_agents` is running.
+        let session_observer = Arc::new(TauriSessionObserver::new(app.clone()));
         pok_ai_core::swarm::register_swarm_tool(
             &mut tools,
             pok_ai_core::swarm::SwarmTemplate {
@@ -2341,6 +2360,7 @@ async fn run_prompt(
                 web: web_config,
                 temperature: agent_temperature.value(),
                 standing_instructions: swarm_instructions,
+                observer: Some(session_observer.clone()),
                 local_model: provider_config.resolved_data_boundary(&provider)
                     == ProviderDataBoundary::LocalDevice,
             },
@@ -2471,7 +2491,7 @@ async fn run_prompt(
                 .with_temperature(agent_temperature.value())
                 .with_action_step_budget(action_step_budget)
                 .with_standing_instructions(standing_instructions.as_deref())
-                .with_observer(Arc::new(TauriSessionObserver::new(app))),
+                .with_observer(session_observer),
         );
         *conversation_provider = Some(provider);
         *conversation_decision_router_backend = Some(effective_decision_router_backend);
@@ -2672,6 +2692,94 @@ fn send_guidance(
 #[tauri::command]
 fn list_providers(runtime: State<'_, AppRuntime>) -> Vec<String> {
     runtime.config.lock().providers.keys().cloned().collect()
+}
+
+/// The device code shown while a subscription login waits for the user.
+#[derive(Serialize, Clone)]
+struct ProviderDeviceCode {
+    user_code: String,
+    verification_uri: String,
+}
+
+/// Connect GitHub Copilot with its device flow: the code is emitted for the
+/// dialog, and the credential is stored under the provider's key name in
+/// Windows Credential Manager (loaded at startup like any provider key).
+#[tauri::command]
+async fn connect_copilot(app: tauri::AppHandle) -> std::result::Result<String, String> {
+    let credential = pok_ai_core::oauth::copilot_login(|login| {
+        let _ = app.emit(
+            "provider_login_code",
+            ProviderDeviceCode {
+                user_code: login.user_code.clone(),
+                verification_uri: login.verification_uri.clone(),
+            },
+        );
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    let stored = credential.to_stored().map_err(|error| error.to_string())?;
+    persist_provider_key("COPILOT_API_KEY", &stored)?;
+    pok_ai_core::brain::set_api_key("COPILOT_API_KEY", stored);
+    Ok(credential
+        .account
+        .unwrap_or_else(|| "GitHub Copilot".into()))
+}
+
+/// Connect ChatGPT (Codex) with the OpenAI device flow.
+#[tauri::command]
+async fn connect_chatgpt(app: tauri::AppHandle) -> std::result::Result<String, String> {
+    let credential = pok_ai_core::oauth::codex_login(|login| {
+        let _ = app.emit(
+            "provider_login_code",
+            ProviderDeviceCode {
+                user_code: login.user_code.clone(),
+                verification_uri: login.verification_uri.clone(),
+            },
+        );
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    let stored = credential.to_stored().map_err(|error| error.to_string())?;
+    persist_provider_key("CHATGPT_API_KEY", &stored)?;
+    pok_ai_core::brain::set_api_key("CHATGPT_API_KEY", stored);
+    Ok(credential.account_id.unwrap_or_else(|| "ChatGPT".into()))
+}
+
+/// The account a stored subscription login belongs to, for Settings.
+#[tauri::command]
+fn subscription_account(provider: String, runtime: State<'_, AppRuntime>) -> Option<String> {
+    let data_dir = runtime.config.lock().data_dir.clone();
+    match provider.to_ascii_lowercase().as_str() {
+        "copilot" => {
+            pok_ai_core::oauth::stored_copilot_credential(Some(&data_dir)).and_then(|c| c.account)
+        }
+        "chatgpt" => {
+            pok_ai_core::oauth::stored_codex_credential(Some(&data_dir)).and_then(|c| c.account_id)
+        }
+        _ => None,
+    }
+}
+
+/// Forget a stored subscription credential.
+#[tauri::command]
+fn disconnect_subscription(
+    provider: String,
+    runtime: State<'_, AppRuntime>,
+) -> std::result::Result<(), String> {
+    let (key, kind) = match provider.to_ascii_lowercase().as_str() {
+        "copilot" => ("COPILOT_API_KEY", "copilot"),
+        "chatgpt" => ("CHATGPT_API_KEY", "chatgpt"),
+        other => return Err(format!("provider {other:?} is not a subscription login")),
+    };
+    persist_provider_key(key, "")?;
+    pok_ai_core::brain::set_api_key(key, "");
+    let data_dir = runtime.config.lock().data_dir.clone();
+    let cleared = if kind == "copilot" {
+        pok_ai_core::oauth::clear_copilot_credential(&data_dir)
+    } else {
+        pok_ai_core::oauth::clear_codex_credential(&data_dir)
+    };
+    cleared.map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -3707,6 +3815,10 @@ pub fn run() {
             switch_local_model,
             unload_model,
             list_providers,
+            connect_copilot,
+            connect_chatgpt,
+            subscription_account,
+            disconnect_subscription,
             save_provider_key,
             get_decision_router_status,
             set_decision_router_enabled,

@@ -5797,6 +5797,94 @@ async fn the_run_stops_acting_when_the_step_budget_is_used() {
     assert_eq!(harness.clicks.lock().len(), 2);
 }
 
+/// Calls read_file on a missing path whenever the tool is offered, and
+/// answers once the stall guard withholds it: the predicted shape of the
+/// worker that looped on rate-limited web_fetch calls instead of reporting.
+struct KeepsReadingMissingFileBrain {
+    tool_requests: AtomicU64,
+}
+
+#[async_trait]
+impl Brain for KeepsReadingMissingFileBrain {
+    async fn list_models(&self) -> Result<Vec<String>> {
+        Ok(vec!["mock".into()])
+    }
+    fn stream(&self, request: BrainRequest) -> crate::brain::BrainStream {
+        if request.tools.iter().any(|tool| tool.name == "read_file") {
+            let attempt = self.tool_requests.fetch_add(1, Ordering::SeqCst) + 1;
+            Box::pin(futures::stream::iter(vec![
+                Ok(BrainEvent::ToolCall {
+                    call: CompletedToolCall {
+                        id: format!("missing-{attempt}"),
+                        name: "read_file".into(),
+                        arguments: json!({"path": "missing-notes.txt"}),
+                    },
+                }),
+                Ok(BrainEvent::Finished {
+                    reason: Some("tool_calls".into()),
+                }),
+            ]))
+        } else {
+            Box::pin(futures::stream::iter(vec![
+                Ok(BrainEvent::TextDelta {
+                    text: "Every read failed with the same error; reporting the blocker.".into(),
+                }),
+                Ok(BrainEvent::Finished {
+                    reason: Some("stop".into()),
+                }),
+            ]))
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_tool_that_keeps_failing_is_withheld_and_the_run_answers() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let brain = Arc::new(KeepsReadingMissingFileBrain {
+        tool_requests: AtomicU64::new(0),
+    });
+    let mut registry = ToolRegistry::new();
+    crate::coding::register_coding_tools(&mut registry);
+    let context = crate::builtins::tests::mock_input_context(
+        Arc::new(crate::platform::MockDesktop::default()),
+        &temp_dir,
+    );
+    let mut session = Session::new(
+        brain.clone(),
+        Arc::new(registry),
+        context,
+        "mock-model".into(),
+        64,
+    )
+    .unwrap()
+    .with_active_tool_groups(["coding"]);
+    let summary = session
+        .run("Read the missing notes file and summarize it.")
+        .await
+        .unwrap();
+    assert!(
+        summary.answer.contains("reporting the blocker"),
+        "{}",
+        summary.answer
+    );
+    // 8 executed attempts, then two refused calls, then the answer.
+    assert_eq!(brain.tool_requests.load(Ordering::SeqCst), 10);
+    let trace = std::fs::read_to_string(summary.artifact_dir.join("trace.jsonl")).unwrap();
+    assert!(trace.contains("\"kind\":\"tool_stall_notice\""), "{trace}");
+    assert!(
+        trace.contains("\"kind\":\"tool_stall_withheld\""),
+        "{trace}"
+    );
+    assert_eq!(trace.matches("\"kind\":\"tool_stall_blocked\"").count(), 2);
+    // The refusal names the guard so the model (and the trace) know why.
+    let refused = session.messages.iter().any(|message| {
+        message.content.iter().any(|part| {
+            matches!(part, MessageContent::Text { text } if text.contains("stall guard withheld"))
+        })
+    });
+    assert!(refused, "{:?}", session.messages);
+}
+
 /// Calls click_target on its first turn whether or not it was offered, as a
 /// model that read the tool's name in the catalog does.
 struct CallsLockedClickBrain {

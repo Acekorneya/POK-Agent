@@ -668,6 +668,11 @@ impl Session {
         let _ = tokio::time::timeout(limit, futures::future::join_all(tasks)).await;
     }
 
+    /// Attach the dashboard/CLI observer. Child sessions (swarm workers)
+    /// share the parent's pause controller, so they must use
+    /// [`Self::with_event_observer`] instead: this installs the
+    /// user-activity listener, and the last session to do that would replace
+    /// the parent's.
     pub fn with_observer(mut self, observer: Arc<dyn SessionObserver>) -> Self {
         self.context
             .command_manager
@@ -676,6 +681,19 @@ impl Session {
             }));
         self.observer = Some(observer);
         self.install_user_activity_listener();
+        self
+    }
+
+    /// Attach an observer for this session's events only, without the
+    /// user-activity listener: how a child session (a swarm worker) reports
+    /// progress to the host without disturbing the host's own listener.
+    pub(crate) fn with_event_observer(mut self, observer: Arc<dyn SessionObserver>) -> Self {
+        self.context
+            .command_manager
+            .set_event_sink(Arc::new(ObserverCommandSink {
+                observer: observer.clone(),
+            }));
+        self.observer = Some(observer);
         self
     }
 

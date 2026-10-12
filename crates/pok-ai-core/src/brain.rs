@@ -298,17 +298,163 @@ pub fn get_api_key(name: &str) -> Option<String> {
 }
 
 pub fn from_provider(config: &ProviderConfig) -> Result<Arc<dyn Brain>> {
-    let api_key = config.api_key_env.as_deref().and_then(get_api_key);
-    match config.protocol {
-        ProviderProtocol::OpenaiCompatible => Ok(Arc::new(
-            OpenAiCompatibleBrain::new(config.base_url.clone(), api_key)?
-                .with_max_retries(config.max_retries),
-        )),
-        ProviderProtocol::AnthropicMessages => Ok(Arc::new(
-            AnthropicBrain::new(config.base_url.clone(), api_key)?
-                .with_max_retries(config.max_retries),
-        )),
+    from_provider_with_session(config, None, None, None)
+}
+
+/// Build the provider brain. `session` is the conversation id for providers
+/// that route by client session: OpenCode Go requires it (sent as
+/// `x-opencode-session`) so its gateway can optimize routing and prompt
+/// caching; `None` uses a fresh id for this brain's lifetime. `provider` and
+/// `data_dir` locate the models.dev catalog used to fill capability fields a
+/// sparse provider list omits (OpenCode returns only ids).
+pub fn from_provider_with_session(
+    config: &ProviderConfig,
+    session: Option<&str>,
+    provider: Option<&str>,
+    data_dir: Option<&std::path::Path>,
+) -> Result<Arc<dyn Brain>> {
+    // GitHub Copilot: a subscription credential plus the client headers its
+    // API expects. The endpoint comes from the credential (enterprise
+    // deployments differ), so the catalog base URL is only a default.
+    if provider.is_some_and(|name| name.eq_ignore_ascii_case(crate::oauth::COPILOT_PROVIDER)) {
+        let credential = crate::oauth::stored_copilot_credential(data_dir).ok_or_else(|| {
+            PokError::Config(
+                "GitHub Copilot is not connected: run `pok-ai login copilot`, or connect it in Settings \u{2192} Model"
+                    .into(),
+            )
+        })?;
+        let mut brain = OpenAiCompatibleBrain::new(
+            credential.api_endpoint().to_owned(),
+            Some(credential.access_token.clone()),
+        )?
+        .with_max_retries(config.max_retries);
+        brain = brain.with_headers(&copilot_client_headers(session))?;
+        return Ok(Arc::new(brain));
     }
+    // ChatGPT subscription plans speak the Responses API at the ChatGPT
+    // backend, with the Codex client's headers; the token refreshes there.
+    if provider.is_some_and(|name| name.eq_ignore_ascii_case(crate::oauth::CODEX_PROVIDER)) {
+        let credential = crate::oauth::stored_codex_credential(data_dir).ok_or_else(|| {
+            PokError::Config(
+                "ChatGPT is not connected: run `pok-ai login chatgpt`, or connect it in Settings \u{2192} Model"
+                    .into(),
+            )
+        })?;
+        let brain = crate::codex::CodexBrain::new(
+            credential,
+            session,
+            data_dir.ok_or_else(|| {
+                PokError::Config("ChatGPT needs a data directory for token refresh".into())
+            })?,
+        )
+        .with_max_retries(config.max_retries);
+        return Ok(Arc::new(brain));
+    }
+    let api_key = config.api_key_env.as_deref().and_then(get_api_key);
+    let headers = opencode_client_headers(&config.base_url, session);
+    match config.protocol {
+        ProviderProtocol::OpenaiCompatible => {
+            let mut brain = OpenAiCompatibleBrain::new(config.base_url.clone(), api_key)?
+                .with_max_retries(config.max_retries);
+            if let (Some(provider), Some(data_dir)) = (provider, data_dir) {
+                brain = brain.with_catalog(provider, data_dir);
+            }
+            if !headers.is_empty() {
+                brain = brain.with_headers(&headers)?;
+            }
+            Ok(Arc::new(brain))
+        }
+        ProviderProtocol::AnthropicMessages => {
+            let mut brain = AnthropicBrain::new(config.base_url.clone(), api_key)?
+                .with_max_retries(config.max_retries);
+            if let (Some(provider), Some(data_dir)) = (provider, data_dir) {
+                brain = brain.with_catalog(provider, data_dir);
+            }
+            if !headers.is_empty() {
+                brain = brain.with_headers(&headers)?;
+            }
+            Ok(Arc::new(brain))
+        }
+    }
+}
+
+/// Headers that identify POK-Agent to OpenCode's gateway: its own user agent
+/// and a stable per-conversation session id. OpenCode Go asks coding agents
+/// to send both ("Where can I use it?" in the Go docs); other providers are
+/// left untouched. This does not unlock Zen's app-only free tier — that gate
+/// is server-side and independent of client headers.
+pub fn opencode_client_headers(base_url: &str, session: Option<&str>) -> Vec<(String, String)> {
+    let is_opencode = reqwest::Url::parse(base_url)
+        .ok()
+        .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
+        .is_some_and(|host| host == "opencode.ai" || host.ends_with(".opencode.ai"));
+    if !is_opencode {
+        return Vec::new();
+    }
+    let session = session
+        .map(str::trim)
+        .filter(|session| !session.is_empty())
+        .map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_owned);
+    vec![
+        (
+            "User-Agent".into(),
+            format!("POK-Agent/{}", env!("CARGO_PKG_VERSION")),
+        ),
+        ("x-opencode-session".into(), session),
+    ]
+}
+
+/// A client that sends `headers` with every request it makes.
+fn client_with_headers(headers: &[(String, String)]) -> Result<reqwest::Client> {
+    let mut map = reqwest::header::HeaderMap::new();
+    for (name, value) in headers {
+        let name = reqwest::header::HeaderName::from_bytes(name.as_bytes())
+            .map_err(|error| PokError::Config(format!("invalid header name {name:?}: {error}")))?;
+        let value = reqwest::header::HeaderValue::from_str(value).map_err(|error| {
+            PokError::Config(format!("invalid header value for {name:?}: {error}"))
+        })?;
+        map.insert(name, value);
+    }
+    reqwest::Client::builder()
+        .default_headers(map)
+        .build()
+        .map_err(|error| PokError::Config(error.to_string()))
+}
+
+/// Fill capability gaps from the models.dev catalog for a brain that knows
+/// which provider and data directory it belongs to.
+async fn enrich_from_catalog(
+    provider_id: &Option<String>,
+    data_dir: &Option<std::path::PathBuf>,
+    models: &mut [ModelInfo],
+) {
+    if let (Some(provider), Some(data_dir)) = (provider_id, data_dir) {
+        crate::context::enrich_model_capabilities(data_dir, provider, models).await;
+    }
+}
+
+/// The headers the GitHub Copilot API expects from a client: its API version,
+/// the openai intent, an interaction id (stable per conversation), and the
+/// agent initiator. The bearer token identifies the subscription.
+fn copilot_client_headers(session: Option<&str>) -> Vec<(String, String)> {
+    let interaction = session
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map_or_else(|| uuid::Uuid::new_v4().to_string(), str::to_owned);
+    vec![
+        (
+            "User-Agent".into(),
+            format!("POK-Agent/{}", env!("CARGO_PKG_VERSION")),
+        ),
+        (
+            "X-GitHub-Api-Version".into(),
+            crate::oauth::COPILOT_API_VERSION.into(),
+        ),
+        ("Openai-Intent".into(), "conversation-edits".into()),
+        ("X-Interaction-Type".into(), "conversation-agent".into()),
+        ("X-Interaction-Id".into(), interaction),
+        ("x-initiator".into(), "agent".into()),
+    ]
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -706,6 +852,9 @@ pub struct OpenAiCompatibleBrain {
     base_url: String,
     api_key: Option<String>,
     max_retries: u32,
+    /// models.dev provider key and cache location for capability enrichment.
+    provider_id: Option<String>,
+    catalog_dir: Option<std::path::PathBuf>,
 }
 
 impl OpenAiCompatibleBrain {
@@ -716,12 +865,95 @@ impl OpenAiCompatibleBrain {
             base_url: base_url.trim_end_matches('/').into(),
             api_key,
             max_retries: 3,
+            provider_id: None,
+            catalog_dir: None,
         })
+    }
+
+    /// Fill capability fields this provider's model list omits from models.dev.
+    pub fn with_catalog(mut self, provider: &str, data_dir: &std::path::Path) -> Self {
+        self.provider_id = Some(provider.to_owned());
+        self.catalog_dir = Some(data_dir.to_path_buf());
+        self
+    }
+
+    /// The models the provider itself reports; capability fields can be
+    /// sparse (OpenCode returns only ids).
+    async fn raw_model_info(&self) -> Result<Vec<ModelInfo>> {
+        let Some(server_root) = self.base_url.strip_suffix("/v1") else {
+            return self.standard_model_info().await;
+        };
+        let response = self
+            .authorized(self.client.get(format!("{server_root}/api/v1/models")))
+            .send()
+            .await
+            .map_err(provider_error)?;
+        if !response.status().is_success() {
+            return self.standard_model_info().await;
+        }
+        let body: Value = response.json().await.map_err(provider_error)?;
+        Ok(body
+            .get("models")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|model| {
+                let id = model.get("key")?.as_str()?.to_owned();
+                let capabilities = model.get("capabilities").unwrap_or(&Value::Null);
+                let loaded_instances = model.get("loaded_instances").and_then(Value::as_array);
+                let loaded_context = loaded_instances
+                    .and_then(|instances| instances.first())
+                    .and_then(|instance| instance.get("config"))
+                    .and_then(|config| config.get("context_length"))
+                    .and_then(Value::as_u64);
+                let (reasoning_efforts, reasoning_default) = reasoning_metadata(model);
+                Some(ModelInfo {
+                    id,
+                    // LM Studio exposes both the model's theoretical maximum and the
+                    // context actually allocated to a loaded instance. The latter is
+                    // the useful limit for planning a live session.
+                    context_length: loaded_context
+                        .or_else(|| model.get("max_context_length").and_then(Value::as_u64)),
+                    loaded_context_length: loaded_context,
+                    max_context_length: model.get("max_context_length").and_then(Value::as_u64),
+                    vision: capabilities.get("vision").and_then(Value::as_bool),
+                    tool_use: capabilities
+                        .get("trained_for_tool_use")
+                        .and_then(Value::as_bool),
+                    reasoning: capabilities
+                        .get("reasoning")
+                        .and_then(Value::as_bool)
+                        .or_else(|| {
+                            capabilities
+                                .get("reasoning")
+                                .is_some_and(Value::is_object)
+                                .then_some(true)
+                        }),
+                    supported_parameters: model
+                        .get("supported_parameters")
+                        .and_then(Value::as_array)
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|item| item.as_str().map(str::to_owned))
+                        .collect(),
+                    reasoning_efforts,
+                    reasoning_default,
+                    loaded: loaded_instances.map(|instances| !instances.is_empty()),
+                })
+            })
+            .collect())
     }
 
     pub fn with_max_retries(mut self, max_retries: u32) -> Self {
         self.max_retries = max_retries;
         self
+    }
+
+    /// Send `headers` with every request this brain makes (client identity
+    /// headers for providers that ask for them, such as OpenCode Go).
+    pub fn with_headers(mut self, headers: &[(String, String)]) -> Result<Self> {
+        self.client = client_with_headers(headers)?;
+        Ok(self)
     }
 
     fn authorized(&self, request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
@@ -751,12 +983,24 @@ impl OpenAiCompatibleBrain {
             .map_err(provider_error)?;
         let response = require_success(response).await?;
         let body: Value = response.json().await.map_err(provider_error)?;
+        // Keep only the models this harness can call: Copilot serves some
+        // models exclusively on /responses or /v1/messages, which POK-Agent
+        // does not speak yet.
+        let copilot = self.host().is_some_and(|host| {
+            host.ends_with("githubcopilot.com") || host.starts_with("copilot-api.")
+        });
         let mut models = body
             .get("data")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .filter_map(openai_model_info)
+            .filter_map(|model| {
+                if copilot {
+                    copilot_model_info(model)
+                } else {
+                    openai_model_info(model)
+                }
+            })
             .collect::<Vec<_>>();
         // xAI lists reasoning levels only in its `language-models` catalog.
         if self.host().is_some_and(|host| host.ends_with("x.ai")) {
@@ -838,68 +1082,9 @@ impl Brain for OpenAiCompatibleBrain {
     }
 
     async fn model_info(&self) -> Result<Vec<ModelInfo>> {
-        let Some(server_root) = self.base_url.strip_suffix("/v1") else {
-            return self.standard_model_info().await;
-        };
-        let response = self
-            .authorized(self.client.get(format!("{server_root}/api/v1/models")))
-            .send()
-            .await
-            .map_err(provider_error)?;
-        if !response.status().is_success() {
-            return self.standard_model_info().await;
-        }
-        let body: Value = response.json().await.map_err(provider_error)?;
-        Ok(body
-            .get("models")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .filter_map(|model| {
-                let id = model.get("key")?.as_str()?.to_owned();
-                let capabilities = model.get("capabilities").unwrap_or(&Value::Null);
-                let loaded_instances = model.get("loaded_instances").and_then(Value::as_array);
-                let loaded_context = loaded_instances
-                    .and_then(|instances| instances.first())
-                    .and_then(|instance| instance.get("config"))
-                    .and_then(|config| config.get("context_length"))
-                    .and_then(Value::as_u64);
-                let (reasoning_efforts, reasoning_default) = reasoning_metadata(model);
-                Some(ModelInfo {
-                    id,
-                    // LM Studio exposes both the model's theoretical maximum and the
-                    // context actually allocated to a loaded instance. The latter is
-                    // the useful limit for planning a live session.
-                    context_length: loaded_context
-                        .or_else(|| model.get("max_context_length").and_then(Value::as_u64)),
-                    loaded_context_length: loaded_context,
-                    max_context_length: model.get("max_context_length").and_then(Value::as_u64),
-                    vision: capabilities.get("vision").and_then(Value::as_bool),
-                    tool_use: capabilities
-                        .get("trained_for_tool_use")
-                        .and_then(Value::as_bool),
-                    reasoning: capabilities
-                        .get("reasoning")
-                        .and_then(Value::as_bool)
-                        .or_else(|| {
-                            capabilities
-                                .get("reasoning")
-                                .is_some_and(Value::is_object)
-                                .then_some(true)
-                        }),
-                    supported_parameters: model
-                        .get("supported_parameters")
-                        .and_then(Value::as_array)
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|item| item.as_str().map(str::to_owned))
-                        .collect(),
-                    reasoning_efforts,
-                    reasoning_default,
-                    loaded: loaded_instances.map(|instances| !instances.is_empty()),
-                })
-            })
-            .collect())
+        let mut models = self.raw_model_info().await?;
+        enrich_from_catalog(&self.provider_id, &self.catalog_dir, &mut models).await;
+        Ok(models)
     }
 
     fn stream(&self, request: BrainRequest) -> BrainStream {
@@ -1035,6 +1220,98 @@ fn openai_model_info(model: &Value) -> Option<ModelInfo> {
     })
 }
 
+/// GitHub Copilot's model list carries its own capabilities: context window,
+/// vision, tool calls, and the reasoning-effort levels the model accepts.
+/// Chat models this harness cannot use are skipped: policy-disabled models
+/// (the API rejects them with `model_not_supported`), utility aliases
+/// (search/exec-agent/compaction), models served only on another endpoint
+/// (`/responses`, `/v1/messages`), and non-chat types.
+fn copilot_model_info(model: &Value) -> Option<ModelInfo> {
+    if model.pointer("/policy/state").and_then(Value::as_str) == Some("disabled") {
+        return None;
+    }
+    let family = model
+        .pointer("/capabilities/family")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    if matches!(
+        family,
+        "search-agent" | "exec-agent" | "trajectory-compaction"
+    ) {
+        return None;
+    }
+    if let Some(kind) = model.pointer("/capabilities/type").and_then(Value::as_str)
+        && kind != "chat"
+    {
+        return None;
+    }
+    if let Some(endpoints) = model.get("supported_endpoints").and_then(Value::as_array) {
+        let chat = endpoints
+            .iter()
+            .any(|endpoint| endpoint.as_str() == Some("/chat/completions"));
+        if !chat {
+            return None;
+        }
+    }
+    let id = model.get("id")?.as_str()?.to_owned();
+    let supports = model
+        .pointer("/capabilities/supports")
+        .unwrap_or(&Value::Null);
+    if supports.get("tool_calls").and_then(Value::as_bool) == Some(false) {
+        return None;
+    }
+    let limits = model
+        .pointer("/capabilities/limits")
+        .unwrap_or(&Value::Null);
+    let mut reasoning_efforts = Vec::<String>::new();
+    for effort in supports
+        .get("reasoning_effort")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(canonical_reasoning_effort)
+    {
+        if !effort.is_empty() && !reasoning_efforts.iter().any(|known| known == effort) {
+            reasoning_efforts.push(effort.to_owned());
+        }
+    }
+    reasoning_efforts.sort_by_key(|effort| reasoning_rank(effort));
+    Some(ModelInfo {
+        id,
+        // The prompt limit is what a request can actually carry.
+        context_length: limits
+            .get("max_prompt_tokens")
+            .and_then(Value::as_u64)
+            .or_else(|| {
+                limits
+                    .get("max_context_window_tokens")
+                    .and_then(Value::as_u64)
+            }),
+        loaded_context_length: None,
+        max_context_length: limits
+            .get("max_context_window_tokens")
+            .and_then(Value::as_u64),
+        vision: supports
+            .get("vision")
+            .and_then(Value::as_bool)
+            .or_else(|| limits.get("vision").map(|_| true)),
+        tool_use: supports.get("tool_calls").and_then(Value::as_bool),
+        reasoning: supports
+            .get("adaptive_thinking")
+            .and_then(Value::as_bool)
+            .or_else(|| {
+                supports
+                    .get("reasoning_effort")
+                    .map(|_| !reasoning_efforts.is_empty())
+            }),
+        supported_parameters: Vec::new(),
+        reasoning_efforts,
+        reasoning_default: None,
+        loaded: None,
+    })
+}
+
 /// A model's reasoning levels and default, from whichever catalog shape the
 /// provider uses:
 /// - LM Studio `capabilities.reasoning.{allowed_options, default}` (`off`/`on`
@@ -1104,7 +1381,7 @@ fn reasoning_metadata(model: &Value) -> (Vec<String>, Option<String>) {
 }
 
 /// Display order, from no reasoning to the most.
-fn reasoning_rank(effort: &str) -> u8 {
+pub(crate) fn reasoning_rank(effort: &str) -> u8 {
     match effort {
         "off" => 0,
         "none" => 1,
@@ -1120,7 +1397,7 @@ fn reasoning_rank(effort: &str) -> u8 {
     }
 }
 
-fn canonical_reasoning_effort(effort: &str) -> &str {
+pub(crate) fn canonical_reasoning_effort(effort: &str) -> &str {
     match effort {
         // Catalog spellings of the same level.
         "extra_high" | "extra-high" | "x-high" => "xhigh",
@@ -1533,7 +1810,7 @@ fn openai_stream_error(value: &Value) -> Option<PokError> {
     })
 }
 
-async fn require_success(response: reqwest::Response) -> Result<reqwest::Response> {
+pub(crate) async fn require_success(response: reqwest::Response) -> Result<reqwest::Response> {
     if response.status().is_success() {
         return Ok(response);
     }
@@ -1586,6 +1863,9 @@ pub struct AnthropicBrain {
     base_url: String,
     api_key: Option<String>,
     max_retries: u32,
+    /// models.dev provider key and cache location for capability enrichment.
+    provider_id: Option<String>,
+    catalog_dir: Option<std::path::PathBuf>,
 }
 
 impl AnthropicBrain {
@@ -1596,12 +1876,28 @@ impl AnthropicBrain {
             base_url: base_url.trim_end_matches('/').into(),
             api_key,
             max_retries: 3,
+            provider_id: None,
+            catalog_dir: None,
         })
+    }
+
+    /// Fill capability fields this provider's model list omits from models.dev.
+    pub fn with_catalog(mut self, provider: &str, data_dir: &std::path::Path) -> Self {
+        self.provider_id = Some(provider.to_owned());
+        self.catalog_dir = Some(data_dir.to_path_buf());
+        self
     }
 
     pub fn with_max_retries(mut self, max_retries: u32) -> Self {
         self.max_retries = max_retries;
         self
+    }
+
+    /// Send `headers` with every request this brain makes (client identity
+    /// headers for providers that ask for them, such as OpenCode Go).
+    pub fn with_headers(mut self, headers: &[(String, String)]) -> Result<Self> {
+        self.client = client_with_headers(headers)?;
+        Ok(self)
     }
 }
 
@@ -1646,13 +1942,15 @@ impl Brain for AnthropicBrain {
         let response = request.send().await.map_err(provider_error)?;
         let response = require_success(response).await?;
         let body: Value = response.json().await.map_err(provider_error)?;
-        Ok(body
+        let mut models = body
             .get("data")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
             .filter_map(anthropic_model_info)
-            .collect())
+            .collect::<Vec<_>>();
+        enrich_from_catalog(&self.provider_id, &self.catalog_dir, &mut models).await;
+        Ok(models)
     }
 
     fn stream(&self, request: BrainRequest) -> BrainStream {
@@ -1852,6 +2150,118 @@ mod tests {
             api_key_env: None,
             max_retries: 0,
         }
+    }
+
+    #[test]
+    fn opencode_requests_identify_pok_agent_and_carry_the_session() {
+        let headers = opencode_client_headers("https://opencode.ai/zen/go/v1", Some("session-1"));
+        assert_eq!(
+            headers,
+            vec![
+                (
+                    "User-Agent".to_string(),
+                    format!("POK-Agent/{}", env!("CARGO_PKG_VERSION"))
+                ),
+                ("x-opencode-session".to_string(), "session-1".to_string()),
+            ]
+        );
+        // Without a conversation id a fresh one still identifies the brain.
+        let generated = opencode_client_headers("https://opencode.ai/zen/go/v1", None);
+        assert!(
+            generated
+                .iter()
+                .any(|(name, value)| { name == "x-opencode-session" && !value.trim().is_empty() })
+        );
+        // Other providers keep their requests untouched.
+        assert!(opencode_client_headers("https://api.openai.com/v1", Some("s")).is_empty());
+        assert!(opencode_client_headers("https://openrouter.ai/api/v1", Some("s")).is_empty());
+        assert!(opencode_client_headers("http://127.0.0.1:1234/v1", Some("s")).is_empty());
+        // An empty session falls back to a generated id instead of an empty header.
+        assert!(
+            opencode_client_headers("https://opencode.ai/zen/v1", Some("  "))
+                .iter()
+                .all(|(_, value)| !value.trim().is_empty())
+        );
+    }
+
+    #[test]
+    fn copilot_models_parse_and_skip_what_we_cannot_call() {
+        let chat = json!({
+            "id": "gpt-4.1",
+            "capabilities": {
+                "family": "gpt-4.1",
+                "type": "chat",
+                "limits": {
+                    "max_context_window_tokens": 128000,
+                    "max_prompt_tokens": 64000,
+                    "max_output_tokens": 16384
+                },
+                "supports": {
+                    "tool_calls": true,
+                    "vision": true,
+                    "reasoning_effort": ["low", "high", "max"]
+                }
+            }
+        });
+        let info = copilot_model_info(&chat).unwrap();
+        assert_eq!(info.context_length, Some(64_000));
+        assert_eq!(info.max_context_length, Some(128_000));
+        assert_eq!(info.vision, Some(true));
+        assert_eq!(info.tool_use, Some(true));
+        assert_eq!(info.reasoning, Some(true));
+        assert_eq!(info.reasoning_efforts, vec!["low", "high", "max"]);
+        // Policy-disabled, non-chat, utility aliases, and responses-only
+        // models are not offered.
+        for skipped in [
+            json!({"id": "x", "policy": {"state": "disabled"},
+                "capabilities": {"type": "chat", "supports": {"tool_calls": true}}}),
+            json!({"id": "emb", "capabilities": {"type": "embeddings"}}),
+            json!({"id": "copilot-search-a",
+                "capabilities": {"family": "search-agent", "type": "chat", "supports": {"tool_calls": true}}}),
+            json!({"id": "gpt-5.6", "supported_endpoints": ["/responses"],
+                "capabilities": {"type": "chat", "supports": {"tool_calls": true}}}),
+        ] {
+            assert!(copilot_model_info(&skipped).is_none(), "{skipped}");
+        }
+    }
+
+    #[tokio::test]
+    async fn brain_headers_reach_every_request() {
+        let seen: Arc<StdMutex<Option<axum::http::HeaderMap>>> = Arc::new(StdMutex::new(None));
+        let router = Router::new()
+            .route(
+                "/v1/models",
+                get(
+                    |State(seen): State<Arc<StdMutex<Option<axum::http::HeaderMap>>>>,
+                     headers: axum::http::HeaderMap| async move {
+                        *seen.lock().unwrap() = Some(headers);
+                        Json(json!({"data": [{"id": "test-model"}]}))
+                    },
+                ),
+            )
+            .with_state(seen.clone());
+        let (root, server) = spawn_local_server(router).await;
+        let brain = OpenAiCompatibleBrain::new(format!("{root}/v1"), None)
+            .unwrap()
+            .with_headers(&[
+                ("User-Agent".to_string(), "POK-Agent/test".to_string()),
+                ("x-opencode-session".to_string(), "session-9".to_string()),
+            ])
+            .unwrap();
+        let models = brain.list_models().await.unwrap();
+        assert_eq!(models, vec!["test-model".to_string()]);
+        let headers = seen.lock().unwrap().clone().expect("request captured");
+        assert_eq!(
+            headers
+                .get("x-opencode-session")
+                .and_then(|v| v.to_str().ok()),
+            Some("session-9")
+        );
+        assert_eq!(
+            headers.get("user-agent").and_then(|v| v.to_str().ok()),
+            Some("POK-Agent/test")
+        );
+        server.abort();
     }
 
     async fn spawn_local_server(router: Router) -> (String, tokio::task::JoinHandle<()>) {

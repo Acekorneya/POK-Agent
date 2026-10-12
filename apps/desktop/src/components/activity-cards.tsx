@@ -1,7 +1,7 @@
 import React, { useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { asRecord, formatElapsed } from "../display-utils";
-import type { ChatMessage } from "../session-display";
+import { swarmActivityLabel, type ChatMessage, type SwarmAgentState } from "../session-display";
 
 export function TerminalExecutionCard({ msg }: { msg: ChatMessage }) {
   const [expanded, setExpanded] = useState(false);
@@ -175,6 +175,118 @@ export function FileChangeCard({ msg }: { msg: ChatMessage }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+const SWARM_STATUS_LABELS: Record<string, string> = {
+  starting: "starting",
+  running: "running",
+  done: "done",
+  failed: "failed",
+  timed_out: "timed out",
+  cancelled: "cancelled",
+  stopped: "stopped",
+};
+
+/** Ticks once a second while any swarm agent is running, for live elapsed. */
+function useSwarmTick(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+  React.useEffect(() => {
+    if (!active) return undefined;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return now;
+}
+
+/** What one agent is doing: its tool/phase, the bounded detail (query, URL,
+ * path), and the turn while it is still working. */
+function swarmAgentActivityText(agent: SwarmAgentState, live: boolean): string {
+  const label = agent.activity ? swarmActivityLabel(agent.activity) : "";
+  const detail = agent.detail ? (label ? `${label}: ${agent.detail}` : agent.detail) : label;
+  const turn = live && agent.turn ? `turn ${agent.turn}` : "";
+  return [detail, turn].filter(Boolean).join(" · ") || (live ? "starting…" : "");
+}
+
+/**
+ * The `run_agents` card: one row per worker with its role, live activity,
+ * turn, elapsed time, and (when it finished) its report. The rows come from
+ * the agents named in the tool call, so they are visible from the first
+ * moment even before the first progress event arrives.
+ */
+export function SwarmCard({ msg }: { msg: ChatMessage }) {
+  const args = asRecord(msg.activityArgs);
+  const goal = typeof args.goal === "string" ? args.goal : undefined;
+  const specs = Array.isArray(args.agents) ? args.agents.map(asRecord) : [];
+  const swarm = msg.activitySwarm;
+  const byTitle = new Map((swarm?.agents ?? []).map((agent) => [agent.title, agent]));
+  const agents: SwarmAgentState[] = specs.map((spec, index) => {
+    const title = typeof spec.title === "string" && spec.title.trim() ? spec.title : `agent ${index + 1}`;
+    const live = byTitle.get(title);
+    if (live) {
+      byTitle.delete(title);
+      return live;
+    }
+    return {
+      id: `spec-${index}`,
+      title,
+      role: typeof spec.role === "string" && spec.role ? spec.role : "general",
+      task: typeof spec.task === "string" ? spec.task : undefined,
+      status: "starting",
+    };
+  });
+  // Recruited agents are not in the tool arguments; append what is left.
+  agents.push(...byTitle.values());
+  const stopped = msg.activityStatus === "failed";
+  const statusOf = (agent: SwarmAgentState) => stopped && (agent.status === "running" || agent.status === "starting")
+    ? "stopped"
+    : agent.status;
+  const running = agents.filter((agent) => statusOf(agent) === "running" || statusOf(agent) === "starting").length;
+  const done = agents.filter((agent) => statusOf(agent) === "done").length;
+  const failed = agents.length - running - done;
+  const now = useSwarmTick(running > 0 && !stopped);
+
+  return (
+    <div className={`rich-activity-card swarm-card ${stopped ? "swarm-failed" : ""}`}>
+      <div className="swarm-header">
+        <span className="swarm-counts">
+          {running > 0
+            ? `${running} of ${agents.length} running`
+            : `${done} of ${agents.length} done`}
+          {failed > 0 ? ` · ${failed} stopped` : ""}
+        </span>
+        {goal && <span className="swarm-goal" title={goal}>{goal}</span>}
+      </div>
+      <ul className="swarm-agents">
+        {agents.map((agent) => {
+          const status = statusOf(agent);
+          const elapsed = status === "running" && agent.startedAt
+            ? formatElapsed(now - agent.startedAt)
+            : agent.seconds !== undefined
+              ? formatElapsed(agent.seconds * 1000)
+              : "";
+          return (
+            <li key={agent.id} className={`swarm-agent status-${status}`}>
+              <div className="swarm-agent-line">
+                <span className={`swarm-pill status-${status}`}>{SWARM_STATUS_LABELS[status] ?? status}</span>
+                <span className="swarm-agent-title" title={agent.task ?? agent.title}>{agent.title}</span>
+                <span className="swarm-role">{agent.role}</span>
+                {elapsed && <span className="swarm-elapsed">{elapsed}</span>}
+              </div>
+              <div className="swarm-agent-activity">
+                {swarmAgentActivityText(agent, status === "running" || status === "starting")}
+              </div>
+              {agent.report && (
+                <details className="swarm-report">
+                  <summary>Report</summary>
+                  <pre>{agent.report}</pre>
+                </details>
+              )}
+            </li>
+          );
+        })}
+      </ul>
     </div>
   );
 }

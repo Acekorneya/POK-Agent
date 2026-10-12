@@ -9,7 +9,7 @@ import { AgentView, type FrameTarget, type ObservationFrame } from "./components
 import { SettingsCard, SettingRow, SettingsDrawer, StatusPill, Switch, type SettingsSection } from "./components/settings-drawer";
 import "./workspace.css";
 import "./settings.css";
-import { appendStreamDelta, type ChatMessage } from "./session-display";
+import { appendStreamDelta, appendSwarmEvent, swarmActivityLabel, type ChatMessage, type SwarmAgentState, type SwarmRunState } from "./session-display";
 import { asRecord, formatElapsed } from "./display-utils";
 import { ConversationMessage, MessageActionProvider, type MessageActionKind } from "./components/conversation";
 
@@ -341,6 +341,11 @@ type AgentEvent = {
     exit_code?: number;
     termination_reason?: string;
   };
+  // Swarm worker progress (swarm_agent_started / _activity / _finished).
+  run_id?: string;
+  agent_id?: string;
+  activity?: string;
+  seconds?: number;
 };
 
 type JevMetrics = { evaluations: number; eligible: number; actions: number; evidence: number; cached: number; progress: number; failures: number; latencyMs: number; judgeAttempts: number; judgePromotions: number; last?: string };
@@ -571,6 +576,19 @@ function describeTool(name: string, rawArguments: unknown): Pick<LiveActivity, "
   };
 }
 
+/** The feed row a swarm progress event belongs to: the running `run_agents`
+ * call when its id is known, otherwise the last running one. */
+function findRunAgentsMessage(messages: ChatMessage[], callId: string | null): number {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.activityTool !== "run_agents") continue;
+    if (callId ? message.activityCallId === callId : message.activityStatus === "running") {
+      return index;
+    }
+  }
+  return -1;
+}
+
 /** Past-tense rows for finished tools: "✓ Running a command" read as if the
  * command were still executing and made reasoning rows look like a second
  * command. Tools without an entry keep their live label. */
@@ -781,11 +799,14 @@ function ModelPicker({ models, value, onChange, disabled }: {
 
 const PROVIDER_LABELS: Record<string, string> = {
   lm_studio: "LM Studio", ollama: "Ollama", openai: "OpenAI", anthropic: "Anthropic", gemini: "Google Gemini",
-  openrouter: "OpenRouter", opencode: "OpenCode Zen", groq: "Groq", xai: "xAI",
+  openrouter: "OpenRouter", opencode: "OpenCode Zen", "opencode-go": "OpenCode Go", copilot: "GitHub Copilot", chatgpt: "ChatGPT", groq: "Groq", xai: "xAI",
 };
 function providerLabel(provider: string) {
   return PROVIDER_LABELS[provider.toLowerCase()] ?? provider.replaceAll("_", " ");
 }
+
+/** Providers whose plan is connected by signing in, not by pasting a key. */
+const SUBSCRIPTION_PROVIDERS = new Set(["copilot", "chatgpt"]);
 
 function InstallProgress({ label, detail }: { label: string; detail?: string }) {
   return (
@@ -812,12 +833,15 @@ const PROVIDER_URLS: Record<string, { name: string; url: string }> = {
   },
   openrouter: { name: "OpenRouter API Keys", url: "https://openrouter.ai/keys" },
   opencode: { name: "OpenCode Zen API Keys", url: "https://opencode.ai/auth" },
+  "opencode-go": { name: "OpenCode Go API Keys", url: "https://opencode.ai/auth" },
+  copilot: { name: "GitHub Copilot settings", url: "https://github.com/settings/copilot" },
+  chatgpt: { name: "ChatGPT settings", url: "https://chatgpt.com" },
   groq: { name: "Groq Console Keys", url: "https://console.groq.com/keys" },
   lm_studio: { name: "LM Studio Official Site", url: "https://lmstudio.ai" },
   ollama: { name: "Ollama Official Site", url: "https://ollama.com" },
 };
 
-function ModelStatusBanner({ status, model, provider, runtime, requiresApiKey, hasApiKey, onRetry, onConnectKey }: { status: "connecting" | "ready" | "error"; model: string; provider: string; runtime?: LocalModelRuntimeStatus | null; requiresApiKey?: boolean; hasApiKey?: boolean; onRetry: () => void; onConnectKey: () => void }) {
+function ModelStatusBanner({ status, model, provider, runtime, requiresApiKey, hasApiKey, subscription, onRetry, onConnectKey }: { status: "connecting" | "ready" | "error"; model: string; provider: string; runtime?: LocalModelRuntimeStatus | null; requiresApiKey?: boolean; hasApiKey?: boolean; subscription?: boolean; onRetry: () => void; onConnectKey: () => void }) {
   const providerName = provider.replaceAll("_", " ").toUpperCase();
   if (status === "connecting") {
     return <div className="api-status-banner connecting"><span>⏳ Connecting to {providerName} API...</span></div>;
@@ -825,8 +849,8 @@ function ModelStatusBanner({ status, model, provider, runtime, requiresApiKey, h
   if (requiresApiKey && !hasApiKey) {
     return (
       <div className="api-status-banner error" style={{ borderColor: "#ef4444", background: "var(--danger-bg)", color: "var(--danger)" }}>
-        <span>🔴 {providerName} Missing API Key</span>
-        <button onClick={onConnectKey} style={{ padding: "2px 8px", fontSize: "10px" }}>🔑 Connect Key</button>
+        <span>{providerLabel(provider)} not connected</span>
+        <button className="banner-connect" onClick={onConnectKey}>{subscription ? "Connect account" : "Connect key"}</button>
       </div>
     );
   }
@@ -926,6 +950,12 @@ export function App() {
   const [model, setModel] = useState<string>(() => localStorage.getItem("pok_selected_model") || "");
   const [modelSearch, setModelSearch] = useState("");
   const [showCloudModal, setShowCloudModal] = useState(false);
+  const [showLoginModal, setShowLoginModal] = useState(false);
+  const [loginCode, setLoginCode] = useState<{ user_code: string; verification_uri: string } | null>(null);
+  const [loginError, setLoginError] = useState("");
+  const [loginPending, setLoginPending] = useState(false);
+  const [loginCopied, setLoginCopied] = useState(false);
+  const [subscriptionAccount, setSubscriptionAccount] = useState<string | null>(null);
   const [cloudApiKey, setCloudApiKey] = useState("");
   const [cloudKeyError, setCloudKeyError] = useState("");
   const [savingCloudKey, setSavingCloudKey] = useState(false);
@@ -1036,6 +1066,10 @@ export function App() {
   const [navigationOpen, setNavigationOpen] = useState(() => window.innerWidth >= 900);
   const [showJump, setShowJump] = useState(false);
   const jevSelectedTool = useRef<string | null>(null);
+  // The `run_agents` tool call whose swarm the progress events belong to,
+  // and the folded per-agent state they build.
+  const activeSwarmCall = useRef<string | null>(null);
+  const swarmRunRef = useRef<SwarmRunState | null>(null);
   const [activeConversationId, setActiveConversationId] = useState("");
   const activeConversationIdRef = useRef("");
   const messageActionPending = useRef(false);
@@ -1216,6 +1250,61 @@ export function App() {
     }
     checkApiStatus();
   };
+
+  /// A subscription login (GitHub Copilot, ChatGPT): start the device flow,
+  /// show its code, and wait for the approval to store the credential.
+  const connectSubscription = async (provider: string) => {
+    setShowCloudModal(false);
+    setShowLoginModal(true);
+    setLoginCode(null);
+    setLoginError("");
+    setLoginCopied(false);
+    setLoginPending(true);
+    setApiStatus("connecting");
+    try {
+      await invoke<string>(provider === "chatgpt" ? "connect_chatgpt" : "connect_copilot");
+      await fetchModels(selectedProvider);
+      const updated = await invoke<Status>("get_status", {
+        provider: selectedProvider,
+        model: model || undefined,
+      });
+      setStatus(updated);
+      setApiStatus("ready");
+      setShowLoginModal(false);
+      refreshSubscriptionAccount(provider);
+    } catch (error) {
+      setApiStatus("error");
+      setLoginError(compactValue(String(error), 240) ?? "Unknown provider error");
+    } finally {
+      setLoginPending(false);
+    }
+  };
+
+  /** The signed-in account of a subscription provider, shown in Settings. */
+  const refreshSubscriptionAccount = (prov = selectedProvider) => {
+    if (!SUBSCRIPTION_PROVIDERS.has(prov)) {
+      setSubscriptionAccount(null);
+      return;
+    }
+    void invoke<string | null>("subscription_account", { provider: prov })
+      .then(setSubscriptionAccount)
+      .catch(() => setSubscriptionAccount(null));
+  };
+
+  const disconnectSubscription = async (provider: string) => {
+    if (!window.confirm(`Disconnect ${providerLabel(provider)} from this computer? The stored sign-in is removed; models stop loading until you connect again.`)) return;
+    try {
+      await invoke("disconnect_subscription", { provider });
+      setSubscriptionAccount(null);
+      checkApiStatus(provider);
+    } catch (error) {
+      setLiveActivity({ phase: "failed", label: "Could not disconnect", detail: compactValue(String(error), 160), startedAt: Date.now() });
+    }
+  };
+
+  useEffect(() => {
+    refreshSubscriptionAccount(selectedProvider);
+  }, [selectedProvider, status?.has_api_key]);
 
   const handleSaveCloudKey = async () => {
     if (!cloudApiKey.trim()) return;
@@ -1732,6 +1821,8 @@ export function App() {
           setJevRuntimeState((current) => current === "evaluating" ? "ready" : current);
           setJevWarning(null);
           jevSelectedTool.current = null;
+          activeSwarmCall.current = null;
+          swarmRunRef.current = null;
           break;
         case "decision_router_started": {
           const callId = `jev-${payload.purpose ?? "decision"}-${payload.turn ?? 0}`;
@@ -2078,6 +2169,11 @@ export function App() {
         case "tool_started": {
           const toolName = payload.name ?? "tool";
           const callId = payload.call_id ?? `legacy-${toolName}-${Date.now()}`;
+          if (toolName === "run_agents") {
+            // Worker progress events belong to this call from here on.
+            activeSwarmCall.current = callId;
+            swarmRunRef.current = null;
+          }
           const activity = describeTool(toolName, payload.arguments);
           const chosenByJev = jevSelectedTool.current === toolName;
           if (chosenByJev) jevSelectedTool.current = null;
@@ -2187,6 +2283,78 @@ export function App() {
                 activityResult: resultRecord,
               }
             ];
+          });
+          if (toolName === "run_agents") {
+            // The tool result carries every worker's final status and report;
+            // fold them onto the agents the progress events listed (matched
+            // by title, because the result does not repeat the agent ids).
+            const results = Array.isArray(resultRecord.agents) ? resultRecord.agents : null;
+            if (results) {
+              setMessages((previous) => previous.map((message) => {
+                if (message.activityTool !== "run_agents" || message.activityCallId !== callId) return message;
+                const run = message.activitySwarm;
+                const known = run?.agents ?? [];
+                const agents = results.map((result, index): SwarmAgentState => {
+                  const worker = asRecord(result);
+                  const title = typeof worker.title === "string" ? worker.title : `agent ${index + 1}`;
+                  const existing = known.find((agent) => agent.title === title);
+                  const status: SwarmAgentState["status"] = worker.status === "completed"
+                    ? "done"
+                    : worker.status === "timed_out"
+                      ? "timed_out"
+                      : worker.status === "cancelled"
+                        ? "cancelled"
+                        : "failed";
+                  return {
+                    ...(existing ?? {
+                      id: `result-${index}`,
+                      title,
+                      role: typeof worker.role === "string" ? worker.role : "general",
+                      startedAt: Date.now(),
+                    }),
+                    status,
+                    seconds: typeof worker.seconds === "number" ? worker.seconds : existing?.seconds,
+                    report: typeof worker.report === "string" ? worker.report : existing?.report,
+                  };
+                });
+                return { ...message, activitySwarm: { runId: run?.runId ?? "swarm", agents } };
+              }));
+            }
+            activeSwarmCall.current = null;
+            swarmRunRef.current = null;
+          }
+          break;
+        }
+        case "swarm_agent_started":
+        case "swarm_agent_activity":
+        case "swarm_agent_finished": {
+          const swarm = appendSwarmEvent(swarmRunRef.current, payload);
+          swarmRunRef.current = swarm;
+          const running = swarm.agents.filter((agent) => agent.status === "running" || agent.status === "starting").length;
+          const done = swarm.agents.filter((agent) => agent.status === "done").length;
+          const latest = [...swarm.agents].reverse().find((agent) => agent.status === "running" && agent.activity);
+          setLiveActivity({
+            phase: "acting",
+            label: running > 0
+              ? `Swarm: ${running} of ${swarm.agents.length} agents working`
+              : `Swarm: ${done} of ${swarm.agents.length} agents done`,
+            detail: latest
+              ? `"${latest.title}" ${swarmActivityLabel(latest.activity)}${latest.detail ? `: ${latest.detail}` : ""}`
+              : `${swarm.agents.length} agents`,
+            tool: "run_agents",
+            startedAt: Date.now(),
+          });
+          const targetCall = activeSwarmCall.current;
+          setMessages((previous) => {
+            const index = findRunAgentsMessage(previous, targetCall);
+            if (index === -1) return previous;
+            return previous.map((message, messageIndex) => messageIndex === index
+              ? {
+                  ...message,
+                  activitySwarm: swarm,
+                  activityDetail: `${swarm.agents.length} agents · ${running} running · ${done} done`,
+                }
+              : message);
           });
           break;
         }
@@ -2480,6 +2648,9 @@ export function App() {
       setQuestionAnswers(Object.fromEntries(payload.questions.map((question) => [question.id, { selected: [], custom: "" }])));
       setLiveActivity({ phase: "waiting", label: "Waiting for your answer", detail: "The agent needs a decision to continue", startedAt: Date.now() });
     });
+    const unlistenProviderLogin = listen<{ user_code: string; verification_uri: string }>("provider_login_code", ({ payload }) => {
+      setLoginCode(payload);
+    });
     
     return () => {
       void unlisten.then((fn) => fn());
@@ -2489,6 +2660,7 @@ export function App() {
       void unlistenJudgeRuntime.then((fn) => fn());
       void unlistenAgent.then((fn) => fn());
       void unlistenQuestion.then((fn) => fn());
+      void unlistenProviderLogin.then((fn) => fn());
     };
   }, []);
 
@@ -2950,7 +3122,8 @@ export function App() {
           requiresApiKey={status?.requires_api_key}
           hasApiKey={status?.has_api_key}
           onRetry={retryModelConnection}
-          onConnectKey={() => setShowCloudModal(true)}
+          subscription={SUBSCRIPTION_PROVIDERS.has(selectedProvider)}
+          onConnectKey={() => SUBSCRIPTION_PROVIDERS.has(selectedProvider) ? void connectSubscription(selectedProvider) : setShowCloudModal(true)}
         />
         <span className={`status ${status?.requires_api_key && !status?.has_api_key ? "is-error" : apiStatus === "error" || modelRuntime?.phase === "error" || modelRuntime?.phase === "server_offline" ? "is-error" : modelTransitioning ? "is-loading" : busy ? "is-running" : ""}`}>
           {status?.requires_api_key && !status?.has_api_key ? "🔴 MISSING API KEY" : apiStatus === "error" ? "🔴 NOT CONNECTED" : modelRuntime?.phase === "unloading" ? "↧ UNLOADING MODEL..." : modelRuntime?.phase === "loading" || modelRuntime?.phase === "checking" ? "⚡ LOADING MODEL..." : modelRuntime?.phase === "server_offline" ? "🔴 SERVER OFFLINE" : modelRuntime?.phase === "error" ? "🔴 MODEL ERROR" : busy ? `${policyMode.toUpperCase()} · RUNNING` : modelRuntime?.phase === "loaded" ? "READY · MODEL LOADED" : "READY"}
@@ -2986,7 +3159,9 @@ export function App() {
         {settingsSection === "model" && <>
           <SettingsCard title="Provider"
             status={status?.requires_api_key
-              ? status?.has_api_key ? <StatusPill tone="ok">Connected</StatusPill> : <StatusPill tone="error">API key needed</StatusPill>
+              ? status?.has_api_key
+                ? <StatusPill tone="ok">Connected</StatusPill>
+                : <StatusPill tone="error">{SUBSCRIPTION_PROVIDERS.has(selectedProvider) ? "Not connected" : "API key needed"}</StatusPill>
               : <StatusPill tone="ok">Local</StatusPill>}
             description={status?.data_boundary === "external_service"
               ? "External service. Full task context is sent only after you confirm it for a conversation."
@@ -2996,9 +3171,37 @@ export function App() {
                 {providers.map((p) => <option key={p} value={p}>{providerLabel(p)}</option>)}
               </select>
             </SettingRow>
-            {status?.requires_api_key && <SettingRow label="API key" help="Stored in Windows Credential Manager, never in files.">
-              <button type="button" className={status?.has_api_key ? "" : "primary"} onClick={() => setShowCloudModal(true)}>{status?.has_api_key ? "Replace key" : "Connect key"}</button>
-            </SettingRow>}
+            {status?.requires_api_key && (SUBSCRIPTION_PROVIDERS.has(selectedProvider) ? (
+              <SettingRow label="Subscription" help="Sign in with your account. The credential stays in Windows Credential Manager; nothing is pasted.">
+                <div className="subscription-connect">
+                  {status?.has_api_key ? (
+                    <>
+                      <span className="subscription-account">
+                        <span className="subscription-dot" aria-hidden="true" />
+                        {subscriptionAccount ?? "Connected"}
+                      </span>
+                      <button type="button" disabled={busy || loginPending} onClick={() => void connectSubscription(selectedProvider)}>
+                        {loginPending ? "Waiting for approval…" : "Reconnect"}
+                      </button>
+                      <button type="button" className="danger" disabled={busy || loginPending} onClick={() => void disconnectSubscription(selectedProvider)}>
+                        Disconnect
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <span className="subscription-account muted">Not connected</span>
+                      <button type="button" className="primary" disabled={busy || loginPending} onClick={() => void connectSubscription(selectedProvider)}>
+                        {loginPending ? "Waiting for approval…" : `Connect ${providerLabel(selectedProvider)}`}
+                      </button>
+                    </>
+                  )}
+                </div>
+              </SettingRow>
+            ) : (
+              <SettingRow label="API key" help="Stored in Windows Credential Manager, never in files.">
+                <button type="button" className={status?.has_api_key ? "" : "primary"} onClick={() => setShowCloudModal(true)}>{status?.has_api_key ? "Replace key" : "Connect key"}</button>
+              </SettingRow>
+            ))}
             <SettingRow label="Endpoint" help="Only change this for a custom or self-hosted server.">
               <div className="inline-field">
                 <input aria-label="Endpoint URL" type="text" value={customEndpoint} onChange={(e) => setCustomEndpoint(e.target.value)}
@@ -3550,6 +3753,38 @@ export function App() {
             <button className="primary" onClick={handleSaveCloudKey} disabled={savingCloudKey}>
               {savingCloudKey ? "Connecting…" : "Save & connect"}
             </button>
+          </div>
+        </div>
+      </div>
+    )}
+    {showLoginModal && (
+      <div className="modal">
+        <div className="dialog key-dialog">
+          <span className="eyebrow">SUBSCRIPTION SIGN-IN</span>
+          <h2>Connect {providerLabel(selectedProvider)}</h2>
+          {loginCode ? (
+            <>
+              <p className="login-hint">
+                Open the sign-in page and enter this code to authorize POK-Agent on your {providerLabel(selectedProvider)} account. The credential stays on this computer.
+              </p>
+              <div className="device-code-row">
+                <code className="device-code">{loginCode.user_code}</code>
+                <button type="button" onClick={() => {
+                  void navigator.clipboard?.writeText(loginCode.user_code);
+                  setLoginCopied(true);
+                }}>{loginCopied ? "Copied" : "Copy"}</button>
+              </div>
+              <a className="key-link primary-link" href={loginCode.verification_uri} target="_blank" rel="noreferrer">
+                Open sign-in page ↗
+              </a>
+              <p className="login-waiting"><span className="waiting-dot" aria-hidden="true" />Waiting for approval…</p>
+            </>
+          ) : (
+            <p className="login-waiting"><span className="waiting-dot" aria-hidden="true" />Starting the device login…</p>
+          )}
+          {loginError && <p className="error-text">Could not connect: {loginError}</p>}
+          <div className="actions">
+            <button onClick={() => setShowLoginModal(false)}>{loginPending ? "Hide" : "Close"}</button>
           </div>
         </div>
       </div>

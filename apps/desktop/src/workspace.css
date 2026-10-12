@@ -199,3 +199,42 @@ button.stop, button.reject, .approval-choice.deny { background: var(--danger-bg)
 .session-details .context-meter-detail { display: block; }.session-details .compact-now { display: inline-block; }
 @media (max-width: 899px) { .api-status-banner { max-width: 200px; }.header-controls:has(.api-status-banner.error, .api-status-banner.connecting) .status { display: none; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+
+/* Swarm agents: one live row per worker while run_agents is running. */
+.swarm-card .swarm-header { display: flex; align-items: baseline; gap: 10px; padding: 8px 12px; background: var(--raised); border-bottom: 1px solid var(--border); }
+.swarm-counts { font-weight: 600; color: var(--text); }
+.swarm-goal { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 11px; }
+.swarm-agents { list-style: none; margin: 0; padding: 6px 8px; display: flex; flex-direction: column; gap: 6px; max-height: 320px; overflow-y: auto; }
+.swarm-agent { padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); }
+.swarm-agent-line { display: flex; align-items: center; gap: 8px; }
+.swarm-agent-title { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swarm-role { color: var(--muted); font-size: 10.5px; border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; }
+.swarm-elapsed { margin-left: auto; color: var(--muted); font-size: 11px; }
+.swarm-agent-activity { color: var(--muted); font-size: 11.5px; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.swarm-pill { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .03em; border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; color: var(--muted); }
+.swarm-pill.status-done { color: var(--success); border-color: color-mix(in srgb, var(--success) 45%, var(--border)); }
+.swarm-pill.status-running { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); }
+.swarm-pill.status-failed, .swarm-pill.status-stopped { color: var(--danger); border-color: var(--danger); }
+.swarm-pill.status-timed_out, .swarm-pill.status-cancelled { color: var(--warning); border-color: var(--warning); }
+.swarm-report { margin-top: 4px; }
+.swarm-report summary { cursor: pointer; color: var(--muted); font-size: 11px; }
+.swarm-report pre { margin: 4px 0 0; padding: 6px 8px; background: var(--code); color: var(--text); border-radius: 4px; max-height: 200px; overflow: auto; white-space: pre-wrap; }
+.swarm-card.swarm-failed .swarm-header { background: var(--danger-bg); }
+
+/* Subscription sign-in (GitHub Copilot, ChatGPT): the Settings connection row
+   and the device-code dialog. */
+.subscription-connect { display: flex; align-items: center; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+.subscription-account { display: inline-flex; align-items: center; gap: 8px; color: var(--text); font-weight: 550; }
+.subscription-account.muted { color: var(--muted); font-weight: 500; }
+.subscription-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); box-shadow: 0 0 0 3px color-mix(in srgb, var(--success) 20%, transparent); }
+button.danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); background: transparent; }
+button.danger:hover:not(:disabled) { background: var(--danger-bg); border-color: var(--danger); }
+.banner-connect { padding: 3px 10px; font-size: 11px; }
+.login-hint { color: var(--muted); font-size: 12px; line-height: 1.55; }
+.device-code-row { display: flex; align-items: center; gap: 10px; margin: 14px 0 12px; }
+.device-code { font: 700 26px/1.1 ui-monospace, SFMono-Regular, Consolas, monospace; letter-spacing: .18em; color: var(--accent); background: var(--code); border: 1px solid var(--border); border-radius: 10px; padding: 10px 16px; user-select: all; }
+.key-link.primary-link { display: inline-flex; align-items: center; justify-content: center; padding: 8px 16px; border-radius: 9px; background: var(--accent); color: var(--accent-ink); text-decoration: none; font-weight: 600; }
+.key-link.primary-link:hover { filter: brightness(1.05); }
+.login-waiting { display: inline-flex; align-items: center; gap: 8px; margin-top: 12px; color: var(--muted); }
+.waiting-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: waiting-pulse 1.3s ease-in-out infinite; }
+@keyframes waiting-pulse { 0%, 100% { opacity: .3; transform: scale(.8); } 50% { opacity: 1; transform: scale(1); } }

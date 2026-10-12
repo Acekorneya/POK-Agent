@@ -285,7 +285,19 @@ rate-limit), one global desktop-input turn (`swarm::desktop_turn`, taken in
 `ToolRegistry::call` before any input tool runs), and per-window claims. The
 team board is in memory for one run; a run in which every worker completed
 is saved as a `swarm_playbook` memory and recalled at the start of runs with
-related requests.
+related requests. Worker progress reaches the host as
+`SwarmAgentStarted`/`SwarmAgentActivity`/`SwarmAgentFinished` events
+(`Session::with_event_observer`), so the dashboard lists one live row per
+agent — current tool, its argument summary, turn, elapsed time, and the final
+report — while the swarm runs; the CLI prints the same lines.
+
+A session-level stall guard backs this up: unsuccessful attempts of the same
+tool are counted since its last success, the model gets a change-approach
+reminder after four, the tool is withheld after eight (commands keep their own
+no-progress guard, and bookkeeping/swarm tools are exempt), and two calls to a
+withheld tool make the next turn answer-only. A worker stuck on a rate-limited
+or missing resource reports the blocker instead of retrying until its time
+limit.
 
 ## MCP servers
 

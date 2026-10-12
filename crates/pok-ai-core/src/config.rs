@@ -933,6 +933,47 @@ fn default_providers() -> BTreeMap<String, ProviderConfig> {
                 max_retries: default_provider_max_retries(),
             },
         ),
+        // OpenCode Go: the subscription endpoint third-party coding agents may
+        // use (the brain identifies POK-Agent with its own user agent and a
+        // per-conversation `x-opencode-session`; see `opencode_client_headers`).
+        // Zen's `*-free` models on `/zen/v1` remain app-only server-side.
+        (
+            "opencode-go".into(),
+            ProviderConfig {
+                protocol: ProviderProtocol::OpenaiCompatible,
+                base_url: "https://opencode.ai/zen/go/v1".into(),
+                data_boundary: Some(ProviderDataBoundary::ExternalService),
+                api_key_env: Some("OPENCODE_API_KEY".into()),
+                max_retries: default_provider_max_retries(),
+            },
+        ),
+        // GitHub Copilot: subscription sign-in through the device flow
+        // (`pok-ai login copilot`, or the desktop's Connect flow). The stored
+        // credential is the provider key; the brain sends the Copilot client
+        // headers and uses the account's endpoint.
+        (
+            "copilot".into(),
+            ProviderConfig {
+                protocol: ProviderProtocol::OpenaiCompatible,
+                base_url: "https://api.githubcopilot.com".into(),
+                data_boundary: Some(ProviderDataBoundary::ExternalService),
+                api_key_env: Some("COPILOT_API_KEY".into()),
+                max_retries: default_provider_max_retries(),
+            },
+        ),
+        // ChatGPT (Codex): subscription sign-in through the OpenAI device
+        // flow. The brain is the Responses API adapter at the ChatGPT
+        // backend, not the OpenAI chat-completions API.
+        (
+            "chatgpt".into(),
+            ProviderConfig {
+                protocol: ProviderProtocol::OpenaiCompatible,
+                base_url: "https://chatgpt.com/backend-api/codex".into(),
+                data_boundary: Some(ProviderDataBoundary::ExternalService),
+                api_key_env: Some("CHATGPT_API_KEY".into()),
+                max_retries: default_provider_max_retries(),
+            },
+        ),
         (
             "groq".into(),
             ProviderConfig {
@@ -1375,6 +1416,32 @@ base_url = "http://127.0.0.1:1234/v1"
             opencode.resolved_data_boundary("opencode"),
             ProviderDataBoundary::ExternalService
         );
+        // OpenCode Go is a separate provider on the same key, so older
+        // configs gain the endpoint third-party coding agents may use.
+        let go = &config.providers["opencode-go"];
+        assert_eq!(go.base_url, "https://opencode.ai/zen/go/v1");
+        assert_eq!(go.api_key_env.as_deref(), Some("OPENCODE_API_KEY"));
+        assert_eq!(
+            go.resolved_data_boundary("opencode-go"),
+            ProviderDataBoundary::ExternalService
+        );
+        // GitHub Copilot comes from the same merge: a subscription sign-in
+        // whose stored value is the device-flow bundle.
+        let copilot = &config.providers["copilot"];
+        assert_eq!(copilot.base_url, "https://api.githubcopilot.com");
+        assert_eq!(copilot.api_key_env.as_deref(), Some("COPILOT_API_KEY"));
+        assert_eq!(
+            copilot.resolved_data_boundary("copilot"),
+            ProviderDataBoundary::ExternalService
+        );
+        // ChatGPT (Codex) is the Responses API at the ChatGPT backend.
+        let chatgpt = &config.providers["chatgpt"];
+        assert_eq!(chatgpt.base_url, "https://chatgpt.com/backend-api/codex");
+        assert_eq!(chatgpt.api_key_env.as_deref(), Some("CHATGPT_API_KEY"));
+        assert_eq!(
+            chatgpt.resolved_data_boundary("chatgpt"),
+            ProviderDataBoundary::ExternalService
+        );
     }
 
     #[test]
@@ -1403,6 +1470,18 @@ base_url = "http://127.0.0.1:1234/v1"
         assert_eq!(
             example.providers["opencode"].base_url,
             "https://opencode.ai/zen/v1"
+        );
+        assert_eq!(
+            example.providers["opencode-go"].base_url,
+            "https://opencode.ai/zen/go/v1"
+        );
+        assert_eq!(
+            example.providers["copilot"].base_url,
+            "https://api.githubcopilot.com"
+        );
+        assert_eq!(
+            example.providers["chatgpt"].base_url,
+            "https://chatgpt.com/backend-api/codex"
         );
     }
 

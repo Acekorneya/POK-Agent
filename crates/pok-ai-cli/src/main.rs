@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use clap::{Parser, Subcommand};
 use pok_ai_core::{
     Result,
-    brain::{Brain, from_provider},
+    brain::{Brain, from_provider, from_provider_with_session},
     builtins::{register_desktop_tools, register_memory_tools},
     coding::register_coding_tools,
     config::{Config, ProviderConfig, ProviderDataBoundary},
@@ -28,6 +28,18 @@ struct ConsoleObserver {
     /// Display name of the active decision-router backend ("Laya", "JEV"),
     /// so console lines never claim JEV while the local router is running.
     router_name: String,
+    /// Titles of swarm agents by id, so their activity lines carry a name.
+    swarm_agents: std::sync::Mutex<std::collections::HashMap<Uuid, String>>,
+}
+
+impl ConsoleObserver {
+    fn swarm_title(&self, agent_id: Uuid) -> String {
+        self.swarm_agents
+            .lock()
+            .ok()
+            .and_then(|agents| agents.get(&agent_id).cloned())
+            .unwrap_or_else(|| "agent".into())
+    }
 }
 
 impl SessionObserver for ConsoleObserver {
@@ -86,6 +98,44 @@ impl SessionObserver for ConsoleObserver {
             AgentEvent::DecisionRouterCacheHit { purpose, .. } => {
                 eprintln!("[{router} reused the unchanged {purpose} decision]");
             }
+            AgentEvent::SwarmAgentStarted {
+                agent_id,
+                title,
+                role,
+                ..
+            } => {
+                if let Ok(mut agents) = self.swarm_agents.lock() {
+                    agents.insert(agent_id, title.clone());
+                }
+                eprintln!("\n[swarm] \"{title}\" ({role}) started");
+            }
+            AgentEvent::SwarmAgentActivity {
+                agent_id,
+                activity,
+                detail,
+                turn,
+                ..
+            } => {
+                // "thinking" repeats every turn and says little; tools do.
+                if activity != "thinking" {
+                    let detail = detail.map_or_else(String::new, |detail| format!(": {detail}"));
+                    eprintln!(
+                        "[swarm] \"{}\" {activity}{detail} (turn {turn})",
+                        self.swarm_title(agent_id)
+                    );
+                }
+            }
+            AgentEvent::SwarmAgentFinished {
+                agent_id,
+                status,
+                seconds,
+                ..
+            } => {
+                eprintln!(
+                    "[swarm] \"{}\" {status} in {seconds}s",
+                    self.swarm_title(agent_id)
+                );
+            }
             AgentEvent::DecisionRouterMemoryOutcome {
                 disposition,
                 used_jev,
@@ -119,6 +169,18 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     Doctor,
+    /// Connect a subscription provider (GitHub Copilot) with its device flow.
+    Login {
+        /// Provider to connect; only `copilot` is supported today.
+        #[arg(default_value = "copilot")]
+        provider: String,
+    },
+    /// Forget a stored subscription login (GitHub Copilot).
+    Logout {
+        /// Provider to disconnect; only `copilot` is supported today.
+        #[arg(default_value = "copilot")]
+        provider: String,
+    },
     Models {
         #[arg(long)]
         provider: Option<String>,
@@ -221,6 +283,65 @@ async fn run_cli() -> anyhow::Result<()> {
     let config = Config::load(config_path.as_deref())?;
     match cli.command {
         Commands::Doctor => doctor(&config).await?,
+        Commands::Login { provider } => {
+            if provider.eq_ignore_ascii_case("copilot") {
+                eprintln!(
+                    "Connecting GitHub Copilot (device flow). Nothing is written outside {}.",
+                    config.data_dir.display()
+                );
+                let credential = pok_ai_core::oauth::copilot_login(|login| {
+                    eprintln!(
+                        "\nOpen {} and enter the code: {}\nWaiting for approval\u{2026}",
+                        login.verification_uri, login.user_code
+                    );
+                })
+                .await?;
+                pok_ai_core::oauth::save_copilot_credential(&config.data_dir, &credential)?;
+                let account = credential
+                    .account
+                    .as_deref()
+                    .unwrap_or("your GitHub account");
+                eprintln!(
+                    "Connected {account}; Copilot models are available with `--provider copilot`."
+                );
+            } else if provider.eq_ignore_ascii_case("chatgpt") {
+                eprintln!(
+                    "Connecting ChatGPT (Codex device flow). Nothing is written outside {}.",
+                    config.data_dir.display()
+                );
+                let credential = pok_ai_core::oauth::codex_login(|login| {
+                    eprintln!(
+                        "\nOpen {} and enter the code: {}\nWaiting for approval\u{2026}",
+                        login.verification_uri, login.user_code
+                    );
+                })
+                .await?;
+                pok_ai_core::oauth::save_codex_credential(&config.data_dir, &credential)?;
+                let account = credential
+                    .account_id
+                    .as_deref()
+                    .unwrap_or("your ChatGPT account");
+                eprintln!(
+                    "Connected {account}; ChatGPT models are available with `--provider chatgpt`."
+                );
+            } else {
+                anyhow::bail!("login is implemented for copilot and chatgpt (got {provider:?})");
+            }
+        }
+        Commands::Logout { provider } => {
+            if provider.eq_ignore_ascii_case("copilot") {
+                pok_ai_core::oauth::clear_copilot_credential(&config.data_dir)?;
+                eprintln!(
+                    "GitHub Copilot login removed from {}",
+                    config.data_dir.display()
+                );
+            } else if provider.eq_ignore_ascii_case("chatgpt") {
+                pok_ai_core::oauth::clear_codex_credential(&config.data_dir)?;
+                eprintln!("ChatGPT login removed from {}", config.data_dir.display());
+            } else {
+                anyhow::bail!("logout is implemented for copilot and chatgpt (got {provider:?})");
+            }
+        }
         Commands::RouterBench {
             suite,
             backend,
@@ -387,7 +508,7 @@ async fn run_cli() -> anyhow::Result<()> {
             }
         }
         Commands::Models { provider, details } => {
-            let brain = brain(&config, provider.as_deref())?;
+            let brain = brain(&config, provider.as_deref(), None)?;
             if details {
                 let flag = |value: Option<bool>| match value {
                     Some(true) => "yes",
@@ -443,6 +564,11 @@ async fn run_cli() -> anyhow::Result<()> {
             } else {
                 None
             };
+            // The conversation id is resolved before the brain: providers that
+            // route by client session (OpenCode Go) receive it with each request.
+            let session_id = resume_snapshot
+                .as_ref()
+                .map_or_else(Uuid::new_v4, |snapshot| snapshot.summary.id);
             let provider_name = resume_snapshot.as_ref().map_or_else(
                 || {
                     provider
@@ -471,7 +597,7 @@ async fn run_cli() -> anyhow::Result<()> {
                 decision_router_config.enabled = false;
             }
             confirm_external_decision_router(&decision_router_config, yes)?;
-            let brain = brain(&config, Some(&provider_name))?;
+            let brain = brain(&config, Some(&provider_name), Some(&session_id.to_string()))?;
             let model = if let Some(snapshot) = &resume_snapshot {
                 snapshot.summary.model.clone()
             } else {
@@ -502,9 +628,6 @@ async fn run_cli() -> anyhow::Result<()> {
             } else {
                 dunce::canonicalize(workspace.unwrap_or(std::env::current_dir()?))?
             };
-            let session_id = resume_snapshot
-                .as_ref()
-                .map_or_else(Uuid::new_v4, |snapshot| snapshot.summary.id);
             let memory = MemoryStore::open(config.data_dir.join("memory"))?;
             let approvals: Arc<dyn ApprovalHandler> = if yes {
                 Arc::new(YesApproval)
@@ -527,6 +650,13 @@ async fn run_cli() -> anyhow::Result<()> {
                 &config.data_dir,
             );
             pok_ai_core::web::register_web_tools(&mut tools, &config.web);
+            let router_name = decision_router_config.backend.display_name().to_string();
+            // One observer per run, shared with the swarm tool so worker
+            // progress prints while `run_agents` is running.
+            let console_observer = Arc::new(ConsoleObserver {
+                router_name,
+                swarm_agents: Default::default(),
+            });
             pok_ai_core::swarm::register_swarm_tool(
                 &mut tools,
                 pok_ai_core::swarm::SwarmTemplate {
@@ -538,6 +668,7 @@ async fn run_cli() -> anyhow::Result<()> {
                     web: config.web.clone(),
                     temperature: config.agent_temperature.value(),
                     standing_instructions: config.standing_instructions.clone(),
+                    observer: Some(console_observer.clone()),
                     local_model: provider_config.resolved_data_boundary(&provider_name)
                         == pok_ai_core::config::ProviderDataBoundary::LocalDevice,
                 },
@@ -597,7 +728,6 @@ async fn run_cli() -> anyhow::Result<()> {
                 command_manager: Arc::new(pok_ai_core::commands::CommandManager::new(artifact_dir)),
                 current_tool_call_id: Default::default(),
             };
-            let router_name = decision_router_config.backend.display_name().to_string();
             let mut session = Session::new(
                 brain,
                 Arc::new(std::mem::take(&mut tools)),
@@ -619,7 +749,7 @@ async fn run_cli() -> anyhow::Result<()> {
                 .with_temperature(config.agent_temperature.value())
                 .with_action_step_budget(config.action_step_budget)
                 .with_standing_instructions(config.standing_instructions.as_deref())
-                .with_observer(Arc::new(ConsoleObserver { router_name }));
+                .with_observer(console_observer);
             let result = session.run(prompt).await?;
             println!("{}", result.answer);
             session
@@ -661,7 +791,7 @@ async fn run_cli() -> anyhow::Result<()> {
             )?;
             let scenarios: Vec<ExamScenario> =
                 serde_json::from_slice(&std::fs::read(&scenario_file)?)?;
-            let brain = brain(&config, provider.as_deref())?;
+            let brain = brain(&config, provider.as_deref(), None)?;
             let models = if models.is_empty() {
                 vec![select_model(&config, None, brain.clone()).await?]
             } else {
@@ -725,8 +855,14 @@ async fn run_cli() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn brain(config: &Config, provider: Option<&str>) -> Result<Arc<dyn Brain>> {
-    from_provider(config.provider(provider)?)
+fn brain(config: &Config, provider: Option<&str>, session: Option<&str>) -> Result<Arc<dyn Brain>> {
+    let name = provider.unwrap_or(&config.default_provider);
+    from_provider_with_session(
+        config.provider(Some(name))?,
+        session,
+        Some(name),
+        Some(&config.data_dir),
+    )
 }
 
 fn confirm_external_inference(

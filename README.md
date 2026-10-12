@@ -44,8 +44,11 @@ The builds are not code-signed yet, so Windows SmartScreen may say "Windows
 protected your PC". Choose **More info → Run anyway**. After it starts, open
 **Settings → Model** and pick a provider: a local model through
 [LM Studio](https://lmstudio.ai) or [Ollama](https://ollama.com), or a cloud
-provider with your own API key (stored in Windows Credential Manager). A
-System 1 router (JEV or Laya) is optional; the agent works without one. To
+provider with your own API key (stored in Windows Credential Manager). Paid
+subscriptions can connect without an API key: choose **GitHub Copilot** or
+**ChatGPT** and use the connect button to sign in with the provider's device
+flow (the CLI has `pok-ai login copilot` and `pok-ai login chatgpt`).
+A System 1 router (JEV or Laya) is optional; the agent works without one. To
 build from source instead, see [Quick start](#quick-start).
 
 ### Platform support

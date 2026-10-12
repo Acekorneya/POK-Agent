@@ -31,7 +31,7 @@ use std::{
     process::Command,
     sync::{
         Arc, LazyLock,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicU32, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -51,7 +51,7 @@ use crate::{
     config::{DecisionRouterConfig, UserBrowserConfig, WebConfig},
     memory::MemoryWriteProvenance,
     policy::{Policy, PolicyMode, RiskClass},
-    session::Session,
+    session::{AgentEvent, Session, SessionObserver},
     subagent::{git_output, git_status},
     tool::{
         Tool, ToolContext, ToolRegistry, UserQuestion, UserQuestionHandler, UserQuestionOutcome,
@@ -865,6 +865,9 @@ pub struct SwarmTemplate {
     pub web: WebConfig,
     pub temperature: Option<f32>,
     pub standing_instructions: Option<String>,
+    /// Where swarm progress events go, so the dashboard and CLI can show what
+    /// every agent is doing while `run_agents` runs. `None` runs silently.
+    pub observer: Option<Arc<dyn SessionObserver>>,
     /// The model runs on this computer (LM Studio, Ollama): fewer calls at once.
     pub local_model: bool,
 }
@@ -983,6 +986,70 @@ impl Worktree {
             "integration": "Review the diff, then merge the branch or cherry-pick the commit only after the user agrees. Uncommitted changes in the main checkout were not part of the agent's starting point.",
         }))
     }
+}
+
+/// Forwards one worker's progress to the host's observer as swarm events, so
+/// the dashboard can show what every agent is doing while the swarm runs.
+/// Worker events stay per-agent: the host sees them as
+/// [`AgentEvent::SwarmAgentActivity`], never as its own session's events.
+struct WorkerObserver {
+    host: Arc<dyn SessionObserver>,
+    run_id: Uuid,
+    agent_id: Uuid,
+    turn: AtomicU32,
+}
+
+impl SessionObserver for WorkerObserver {
+    fn emit(&self, event: AgentEvent) {
+        let (activity, detail, turn) = match event {
+            AgentEvent::ToolStarted {
+                name, arguments, ..
+            } => (
+                name,
+                worker_activity_detail(&arguments),
+                self.turn.load(Ordering::Relaxed),
+            ),
+            AgentEvent::ModelRequestDispatched { turn, .. } => {
+                self.turn.store(turn, Ordering::Relaxed);
+                ("thinking".to_owned(), None, turn)
+            }
+            _ => return,
+        };
+        self.host.emit(AgentEvent::SwarmAgentActivity {
+            run_id: self.run_id,
+            agent_id: self.agent_id,
+            activity,
+            detail,
+            turn,
+        });
+    }
+}
+
+/// A bounded, one-line summary of a tool call's arguments, so someone
+/// watching the swarm can see what the agent is working on (a query, URL,
+/// path, command, or window) without the full arguments.
+fn worker_activity_detail(arguments: &Value) -> Option<String> {
+    const KEYS: &[&str] = &[
+        "query",
+        "url",
+        "path",
+        "file_path",
+        "filepath",
+        "directory",
+        "command",
+        "text",
+        "title",
+        "window_id",
+        "label",
+    ];
+    let object = arguments.as_object()?;
+    let text = KEYS
+        .iter()
+        .find_map(|key| object.get(*key).and_then(Value::as_str))
+        .or_else(|| object.values().find_map(Value::as_str))?;
+    let text =
+        crate::decision::bounded_text(&text.split_whitespace().collect::<Vec<_>>().join(" "), 140);
+    (!text.is_empty()).then_some(text)
 }
 
 fn worker_context(
@@ -1117,9 +1184,35 @@ impl SwarmTool {
         let id = Uuid::new_v4();
         let started = Instant::now();
         WORKERS.lock().insert(id, spec.title.clone());
+        if let Some(host) = &self.0.observer {
+            host.emit(AgentEvent::SwarmAgentStarted {
+                run_id,
+                agent_id: id,
+                title: spec.title.clone(),
+                role: spec.role().name().to_owned(),
+                task: crate::decision::bounded_text(&spec.task, 200),
+            });
+        }
+        let worker_observer = self.0.observer.as_ref().map(|host| {
+            Arc::new(WorkerObserver {
+                host: host.clone(),
+                run_id,
+                agent_id: id,
+                turn: AtomicU32::new(0),
+            }) as Arc<dyn SessionObserver>
+        });
         let outcome = self
             .run_worker_session(
-                parent, run_id, id, goal, &spec, &roster, team_size, &board, brain,
+                parent,
+                run_id,
+                id,
+                goal,
+                &spec,
+                &roster,
+                team_size,
+                &board,
+                brain,
+                worker_observer,
             )
             .await;
         // Hand back what the worker held: its tabs and its window.
@@ -1133,7 +1226,8 @@ impl SwarmTool {
         result["title"] = json!(spec.title);
         result["role"] = json!(spec.role());
         result["task"] = json!(crate::decision::bounded_text(&spec.task, 300));
-        result["seconds"] = json!(started.elapsed().as_secs());
+        let seconds = started.elapsed().as_secs();
+        result["seconds"] = json!(seconds);
         if let Some(lead) = recruited_for {
             result["recruited_for_lead"] = json!(lead);
         }
@@ -1141,6 +1235,18 @@ impl SwarmTool {
             .get("status")
             .and_then(Value::as_str)
             .unwrap_or("failed");
+        if let Some(host) = &self.0.observer {
+            host.emit(AgentEvent::SwarmAgentFinished {
+                run_id,
+                agent_id: id,
+                status: status.to_owned(),
+                report: result
+                    .get("report")
+                    .and_then(Value::as_str)
+                    .map(|report| crate::decision::bounded_text(report, 1_200)),
+                seconds,
+            });
+        }
         let _ = board.post(
             &spec.title,
             spec.role(),
@@ -1171,6 +1277,7 @@ impl SwarmTool {
         team_size: usize,
         board: &Arc<TeamBoard>,
         brain: Arc<dyn Brain>,
+        observer: Option<Arc<dyn SessionObserver>>,
     ) -> Result<Value> {
         let template = &self.0;
         let artifact_dir = parent
@@ -1233,6 +1340,9 @@ impl SwarmTool {
             .with_temperature(template.temperature)
             .with_standing_instructions(Some(&instructions))
             .with_active_tool_groups(spec.role().groups().iter().copied());
+        if let Some(observer) = observer {
+            session = session.with_event_observer(observer);
+        }
         let run = tokio::time::timeout(
             WORKER_TIME_LIMIT,
             session.run(worker_prompt(goal, spec, roster, team_size)),
@@ -1786,6 +1896,7 @@ mod tests {
             web: WebConfig::default(),
             temperature: None,
             standing_instructions: None,
+            observer: None,
             local_model,
         }
     }
@@ -1855,6 +1966,93 @@ mod tests {
         assert_eq!(recalled.len(), 1, "{recalled:?}");
         assert!(recalled[0].contains("6 agents"), "{recalled:?}");
         assert!(related_playbooks(&parent.memory, "Order a pizza tonight").is_empty());
+    }
+
+    /// Records every swarm event, to test what the dashboard would receive.
+    #[derive(Default)]
+    struct RecordingObserver {
+        events: SyncMutex<Vec<AgentEvent>>,
+    }
+
+    impl SessionObserver for RecordingObserver {
+        fn emit(&self, event: AgentEvent) {
+            self.events.lock().push(event);
+        }
+    }
+
+    #[tokio::test]
+    async fn swarm_events_report_each_agent_as_it_works() {
+        let counters = Arc::new(Counters::default());
+        let data = tempfile::tempdir().unwrap();
+        let platform = Arc::new(crate::platform::MockDesktop::default());
+        let parent = crate::builtins::tests::mock_input_context(platform, &data);
+        let recording = Arc::new(RecordingObserver::default());
+        let mut swarm_template = template(&counters, true);
+        swarm_template.observer = Some(recording.clone());
+        let mut registry = ToolRegistry::new();
+        register_swarm_tool(&mut registry, swarm_template);
+        let result = registry
+            .call(
+                "run_agents",
+                json!({
+                    "goal": "Summarize the two note parts",
+                    "agents": [
+                        {"title": "part one", "role": "explore", "task": "Summarize note part one."},
+                        {"title": "part two", "role": "explore", "task": "Summarize note part two."},
+                    ],
+                }),
+                &parent,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result["completed"], 2, "{result}");
+        let events = recording.events.lock().clone();
+        let started = events
+            .iter()
+            .filter(|event| matches!(event, AgentEvent::SwarmAgentStarted { .. }))
+            .count();
+        let finished = events
+            .iter()
+            .filter(|event| matches!(event, AgentEvent::SwarmAgentFinished { .. }))
+            .count();
+        assert_eq!(started, 2, "{events:?}");
+        assert_eq!(finished, 2, "{events:?}");
+        // Each worker reported its own activity (its team_post call), and
+        // every event carries the agent's title so the dashboard can group.
+        let activities = events
+            .iter()
+            .filter_map(|event| match event {
+                AgentEvent::SwarmAgentActivity { activity, turn, .. } => {
+                    Some((activity.clone(), *turn))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            activities
+                .iter()
+                .any(|(activity, _)| activity == "team_post"),
+            "{activities:?}"
+        );
+        for event in &events {
+            match event {
+                AgentEvent::SwarmAgentStarted { title, role, .. } => {
+                    assert!(title.starts_with("part "), "{title}");
+                    assert_eq!(role, "explore");
+                }
+                AgentEvent::SwarmAgentFinished { status, report, .. } => {
+                    assert_eq!(status, "completed");
+                    assert!(
+                        report
+                            .as_deref()
+                            .unwrap_or_default()
+                            .contains("Report from"),
+                        "{report:?}"
+                    );
+                }
+                _ => {}
+            }
+        }
     }
 
     #[tokio::test]

@@ -234,6 +234,33 @@ pub enum AgentEvent {
         root_request: String,
         question: String,
     },
+    /// A worker agent started inside a `run_agents` swarm. The dashboard can
+    /// list one status row per agent from these events, so a swarm that runs
+    /// for minutes never looks idle.
+    SwarmAgentStarted {
+        run_id: Uuid,
+        agent_id: Uuid,
+        title: String,
+        role: String,
+        task: String,
+    },
+    /// What a running swarm worker is doing right now: `activity` is a tool
+    /// name or "thinking", with a bounded detail from its arguments.
+    SwarmAgentActivity {
+        run_id: Uuid,
+        agent_id: Uuid,
+        activity: String,
+        detail: Option<String>,
+        turn: u32,
+    },
+    /// A swarm worker stopped: completed, failed, timed out, or cancelled.
+    SwarmAgentFinished {
+        run_id: Uuid,
+        agent_id: Uuid,
+        status: String,
+        report: Option<String>,
+        seconds: u64,
+    },
 }
 
 pub trait SessionObserver: Send + Sync {

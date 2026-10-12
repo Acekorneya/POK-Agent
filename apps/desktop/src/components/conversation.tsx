@@ -1,7 +1,7 @@
 import React from "react";
 import type { ChatMessage } from "../session-display";
 import { ActivityRow, MarkdownMessage } from "./workspace";
-import { FileChangeCard, TerminalExecutionCard } from "./activity-cards";
+import { FileChangeCard, SwarmCard, TerminalExecutionCard } from "./activity-cards";
 
 const FRIENDLY_CANDIDATES: Record<string, string> = {
   jev_done: "Router done",
@@ -132,6 +132,7 @@ function ConversationMessageView({ message: msg }: { message: ChatMessage }) {
       return <ActivityRow label={msg.activityLabel ?? msg.text} detail={msg.activityDetail} status={msg.activityStatus} durationMs={msg.durationMs}>
         {msg.activityTool === "run_command" ? <TerminalExecutionCard msg={msg} />
           : ["edit_file", "write_file", "replace_file_content", "undo_edit"].includes(msg.activityTool) ? <FileChangeCard msg={msg} />
+          : msg.activityTool === "run_agents" ? <SwarmCard msg={msg} />
           : msg.activityTool === "jev_decision" ? <DecisionRouterCard msg={msg} />
           : msg.activityTool === "jev_judge" ? <JudgeCard msg={msg} />
           : hasArgs || hasResult ? (

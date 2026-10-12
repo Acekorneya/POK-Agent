@@ -145,6 +145,33 @@ base_url = "https://opencode.ai/zen/v1"
 data_boundary = "external_service"
 api_key_env = "OPENCODE_API_KEY"
 
+# OpenCode Go: the subscription endpoint for coding agents. POK-Agent sends
+# its own user agent and a per-conversation x-opencode-session header; Zen's
+# app-only free tier on /zen/v1 stays unavailable outside the OpenCode app.
+[providers.opencode-go]
+protocol = "openai_compatible"
+base_url = "https://opencode.ai/zen/go/v1"
+data_boundary = "external_service"
+api_key_env = "OPENCODE_API_KEY"
+
+# GitHub Copilot: subscription sign-in with the GitHub device flow
+# (`pok-ai login copilot`, or Settings -> Model -> Connect in the desktop app).
+# The stored value is the login bundle, not a pasted API key.
+[providers.copilot]
+protocol = "openai_compatible"
+base_url = "https://api.githubcopilot.com"
+data_boundary = "external_service"
+api_key_env = "COPILOT_API_KEY"
+
+# ChatGPT (Codex): subscription sign-in with the OpenAI device flow
+# (`pok-ai login chatgpt`, or Settings -> Model -> Connect). The brain speaks
+# the Responses API at the ChatGPT backend, not the OpenAI chat API.
+[providers.chatgpt]
+protocol = "openai_compatible"
+base_url = "https://chatgpt.com/backend-api/codex"
+data_boundary = "external_service"
+api_key_env = "CHATGPT_API_KEY"
+
 [providers.groq]
 protocol = "openai_compatible"
 base_url = "https://api.groq.com/openai/v1"

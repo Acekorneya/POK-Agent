@@ -296,8 +296,33 @@ describe("workspace presentation", () => {
     expect(mock.invoke.mock.calls.filter(c => c[0] === "get_status").length).toBeGreaterThan(1);
     mock.invoke.mockImplementation((name, args) => name === "get_status" ? Promise.resolve({ provider: "openai", model: "test-model", requires_api_key: true, has_api_key: false }) : previous(name, args));
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
-    await userEvent.click(await screen.findByRole("button", { name: /Connect Key/ }));
+    await userEvent.click(await screen.findByRole("button", { name: /Connect key/ }));
     expect(screen.getByText("Connect OPENAI API Key")).not.toBeNull();
+  });
+  it("offers account sign-in for subscription providers", async () => {
+    localStorage.setItem("pok_selected_provider", "copilot");
+    const previous = mock.invoke.getMockImplementation()!;
+    mock.invoke.mockImplementation((name, args) => {
+      if (name === "get_status") {
+        return Promise.resolve({
+          provider: "copilot",
+          model: "",
+          base_url: "https://api.githubcopilot.com",
+          platform: "test",
+          data_dir: "test",
+          requires_api_key: true,
+          has_api_key: false,
+          data_boundary: "external_service",
+        });
+      }
+      if (name === "subscription_account") return Promise.resolve(null);
+      if (name === "list_models") return Promise.resolve([]);
+      return previous(name, args);
+    });
+    await renderApp();
+    // Subscription providers sign in with an account instead of a pasted key.
+    expect(await screen.findByRole("button", { name: "Connect account" })).not.toBeNull();
+    expect(screen.queryByText(/Missing API Key/)).toBeNull();
   });
   it("keeps guidance, pause, and resume wired during an active task", async () => {
     await renderApp();
@@ -565,5 +590,33 @@ describe("activity feed presentation", () => {
     const reasoning = feed.querySelector(".reasoning-disclosure");
     expect(reasoning).not.toBeNull();
     expect(reasoning!.textContent).toContain("Reasoning");
+  });
+  it("lists every swarm agent with its live activity and report", async () => {
+    await renderApp();
+    emit({ type: "run_started", session_id: "s1", model: "test-model" });
+    emit({
+      type: "tool_started",
+      call_id: "swarm-1",
+      name: "run_agents",
+      arguments: {
+        goal: "Find how the client connects to models",
+        agents: [
+          { title: "provider source", role: "explore", task: "Find where the error is thrown." },
+          { title: "project context", role: "explore", task: "Map the project." },
+        ],
+      },
+    });
+    const feed = document.querySelector(".console-feed") as HTMLElement;
+    // Rows appear from the tool arguments before the first worker reports.
+    expect(within(feed).getByText("provider source")).not.toBeNull();
+    expect(within(feed).getByText("project context")).not.toBeNull();
+    expect(within(feed).getByText(/2 of 2 running/)).not.toBeNull();
+    emit({ type: "swarm_agent_started", run_id: "run-1", agent_id: "a1", title: "provider source", role: "explore", task: "Find where the error is thrown." });
+    emit({ type: "swarm_agent_activity", run_id: "run-1", agent_id: "a1", activity: "web_fetch", detail: "https://example.com/docs", turn: 3 });
+    expect(within(feed).getByText(/reading a page: https:\/\/example\.com\/docs · turn 3/)).not.toBeNull();
+    emit({ type: "swarm_agent_finished", run_id: "run-1", agent_id: "a1", status: "completed", report: "Found the enforcement point.", seconds: 42 });
+    expect(within(feed).getByText(/1 of 2 running/)).not.toBeNull();
+    expect(within(feed).getByText("Report")).not.toBeNull();
+    expect(within(feed).getByText("Found the enforcement point.")).not.toBeNull();
   });
 });

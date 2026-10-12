@@ -525,6 +525,16 @@ impl Session {
         let mut withhold_system_next = false;
         let mut diagnostic_command_streak = 0_u32;
         let mut diagnostic_pivot_cycles = 0_u32;
+        // A tool that keeps failing is a stall, not progress: the model is
+        // told once, then the tool is withheld, and repeated calls to a
+        // withheld tool end the run in answer-only mode. A live worker would
+        // otherwise burn its whole budget retrying a rate-limited or missing
+        // resource (a long web_fetch loop is the reported shape).
+        let mut tool_stall_failures = BTreeMap::<String, u32>::new();
+        let mut tool_stall_errors = BTreeMap::<String, String>::new();
+        let mut tool_stall_noticed = BTreeSet::<String>::new();
+        let mut tool_stall_withheld = BTreeSet::<String>::new();
+        let mut tool_stall_blocks = 0_u32;
         let mut turn = 0_u32;
         let mut action_steps_used = 0_u32;
         self.motor_tape.clear();
@@ -2359,6 +2369,46 @@ impl Session {
                     PreCallDecision::Execute {
                         signature,
                         prior_attempts,
+                    } if tool_stall_withheld.contains(&call.name) => {
+                        // Refused without executing: the tool failed enough
+                        // times already, so another attempt is a loop.
+                        tool_stall_blocks = tool_stall_blocks.saturating_add(1);
+                        increment_metric(&mut metrics, "tool_stall_blocked", 1);
+                        let failures = tool_stall_failures.get(&call.name).copied().unwrap_or(0);
+                        let last = tool_stall_errors
+                            .get(&call.name)
+                            .map(String::as_str)
+                            .unwrap_or("the same error each time");
+                        let reason = format!(
+                            "the stall guard withheld {tool}: {failures} unsuccessful attempts in this run (last error: {last}). Do not call it again; change approach with a different tool or route, or report what is verified and this concrete blocker.",
+                            tool = call.name,
+                        );
+                        if tool_stall_blocks >= TOOL_STALL_MAX_BLOCKS {
+                            final_answer_only_active = true;
+                            post_tool_batch_messages.push(BrainMessage::text_with_origin(
+                                "user",
+                                "<system-reminder>Repeated calls to a tool the stall guard withheld. The next turn is answer-only: report the verified findings and the concrete blocker; do not claim unfinished work as done.</system-reminder>",
+                                MessageOrigin::SystemReminder,
+                            ));
+                        }
+                        self.log(
+                            "tool_stall_blocked",
+                            json!({
+                                "turn": turn_index + 1,
+                                "tool": call.name,
+                                "failures": failures,
+                                "blocks": tool_stall_blocks,
+                            }),
+                        )?;
+                        self.emit(AgentEvent::ActionBlocked {
+                            tool: call.name.clone(),
+                            reason: reason.clone(),
+                        });
+                        (signature, prior_attempts, Err(PokError::Tool(reason)))
+                    }
+                    PreCallDecision::Execute {
+                        signature,
+                        prior_attempts,
                     } if navigation_locked
                         && DELEGATED_NAVIGATION_TOOLS.contains(&call.name.as_str()) =>
                     {
@@ -2882,6 +2932,58 @@ impl Session {
                 ) {
                     diagnostic_command_streak = 0;
                 }
+                if tool_stall_tracks(&call.name) && !tool_stall_withheld.contains(&call.name) {
+                    let stalled = match &result {
+                        Err(error) => !redirected_to_system_one(error),
+                        Ok(_) => !tool_finished_ok(&call.name, &result),
+                    };
+                    if stalled {
+                        let detail = tool_finished_detail(&call.name, &result);
+                        tool_stall_errors.insert(call.name.clone(), detail.clone());
+                        let failures = {
+                            let count = tool_stall_failures.entry(call.name.clone()).or_insert(0);
+                            *count = count.saturating_add(1);
+                            *count
+                        };
+                        if failures >= TOOL_STALL_WITHHOLD
+                            && tool_stall_withheld.insert(call.name.clone())
+                        {
+                            increment_metric(&mut metrics, "tool_stall_withheld", 1);
+                            strategy_recovery = Some(format!(
+                                "<system-reminder>{tool} failed {failures} times in this run without one success (last error: {detail}). It will not be executed again in this run: choose a different tool or route, or report what is verified and this concrete blocker (an environment limit such as a rate limit is a valid blocker to report).</system-reminder>",
+                                tool = call.name,
+                            ));
+                            self.log(
+                                "tool_stall_withheld",
+                                json!({
+                                    "turn": turn_index + 1,
+                                    "tool": call.name,
+                                    "failures": failures,
+                                    "error": detail,
+                                }),
+                            )?;
+                        } else if failures >= TOOL_STALL_NOTICE
+                            && tool_stall_noticed.insert(call.name.clone())
+                        {
+                            increment_metric(&mut metrics, "tool_stall_notice", 1);
+                            strategy_recovery = Some(format!(
+                                "<system-reminder>{tool} failed {failures} times in this run (last error: {detail}). Stop retrying the same call: change the approach or the tool, and if it is an environment limit, report it instead of retrying.</system-reminder>",
+                                tool = call.name,
+                            ));
+                            self.log(
+                                "tool_stall_notice",
+                                json!({
+                                    "turn": turn_index + 1,
+                                    "tool": call.name,
+                                    "failures": failures,
+                                    "error": detail,
+                                }),
+                            )?;
+                        }
+                    } else {
+                        tool_stall_failures.remove(&call.name);
+                    }
+                }
                 self.emit(AgentEvent::ToolFinished {
                     call_id: call.id.clone(),
                     name: call.name.clone(),
@@ -3026,6 +3128,26 @@ const DISCOVERABLE_GROUPS: [&str; 10] = [
 
 /// Direct actions after which a request's swarm hint is dropped.
 const SWARM_HINT_DIRECT_ACTIONS: u32 = 3;
+
+/// Unsuccessful attempts of one tool before the stall guard speaks up, and
+/// before that tool is withheld for the rest of the run: a run stuck on one
+/// failing resource changes approach, answers, or times out instead of
+/// retrying until the turn budget is gone.
+const TOOL_STALL_NOTICE: u32 = 4;
+const TOOL_STALL_WITHHOLD: u32 = 8;
+/// Calls to withheld tools answered with the guard before the run is put
+/// into answer-only mode.
+const TOOL_STALL_MAX_BLOCKS: u32 = 2;
+
+/// Whether the stall guard counts this tool's failures. Command tools have
+/// their own no-progress guard, and bookkeeping/swarm tools are excluded so
+/// the guard only stops a repeated failing fetch, read, or action.
+fn tool_stall_tracks(name: &str) -> bool {
+    !matches!(
+        name,
+        "run_command" | "manage_command" | "update_task_plan" | "discover_tools" | "run_agents"
+    )
+}
 
 /// Why a raw navigation call is refused while System 1 does the motor work.
 pub(super) const LOCKED_FOR_SYSTEM_ONE: &str =
