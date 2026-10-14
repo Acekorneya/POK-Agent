@@ -241,6 +241,14 @@ hosted gateways such as OpenRouter (which has free models) and OpenCode Zen.
 - Native Windows owns screen capture, OCR/UI Automation queries, and input.
 - WSL is supported for editing, core tests, mock-platform tests, and frontend work.
 - LM Studio is the default provider; Ollama uses the same OpenAI-compatible adapter.
+- Any other OpenAI-compatible server (a self-hosted model, another computer on your network or Tailscale,
+  a proxy) can be added in Settings > Model > Add endpoint: pick a preset or type the address, add an API key
+  if the server needs one, and Test connection (a missing `/v1` is fixed for you, a missing or refused key is
+  named). Endpoints are saved in `custom-providers.json` in the data directory and keys go to Windows
+  Credential Manager; Remove deletes both. Because compatible servers rarely say what a model supports, the
+  first time you pick a model on such an endpoint the app asks it: a tool call, a small picture, and thinking
+  with and without `reasoning_effort`. The answer fills only what the server's own model list leaves unknown,
+  is remembered per model, and can be repeated with Detect capabilities. The model must support tool calling.
 - Model capabilities are discovered from LM Studio and compatible cloud-provider metadata. Vision
   models receive the numbered image and targets; text-only tool models receive the same locally
   generated OCR/UIA targets without image content. If metadata is missing and a provider rejects an

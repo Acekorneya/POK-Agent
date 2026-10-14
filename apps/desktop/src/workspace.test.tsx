@@ -328,6 +328,165 @@ describe("workspace presentation", () => {
     expect(await screen.findByRole("button", { name: "Connect account" })).not.toBeNull();
     expect(screen.queryByText(/Missing API Key/)).toBeNull();
   });
+  const probe = (outcome: string, extra: Record<string, unknown> = {}) => ({
+    outcome, resolved_url: "http://127.0.0.1:8080/v1", models: ["m1"], model_count: 1, latency_ms: 12, detail: "", ...extra,
+  });
+  /** Settings > Model > Add endpoint, with the invoke mock extended for custom endpoints. */
+  async function openAddEndpoint(extra: (name: string, args: any) => unknown) {
+    const previous = mock.invoke.getMockImplementation()!;
+    let custom: Array<{ name: string; label: string; base_url: string }> = [];
+    mock.invoke.mockImplementation((name, args) => {
+      const handled = extra(name, args);
+      if (handled !== undefined) {
+        if (name === "add_custom_provider") custom = [{ name: "home-server", label: args.label, base_url: args.endpoint }];
+        return Promise.resolve(handled);
+      }
+      if (name === "list_providers") return Promise.resolve(["openai", ...custom.map(item => item.name)]);
+      if (name === "list_custom_providers") return Promise.resolve(custom);
+      if (name === "get_status" && args?.provider === "home-server") {
+        return Promise.resolve({ provider: "home-server", model: "", base_url: "http://127.0.0.1:8080/v1", platform: "test", data_dir: "test", requires_api_key: false, accepts_api_key: true, has_api_key: false, data_boundary: "local_device" });
+      }
+      return previous(name, args);
+    });
+    await renderApp();
+    await userEvent.click(screen.getByRole("button", { name: "Settings", expanded: false }));
+    await userEvent.click(within(screen.getByRole("navigation", { name: "Settings sections" })).getByRole("button", { name: /^Model/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Add endpoint" }));
+    return within(screen.getByRole("dialog", { name: "Add OpenAI-compatible endpoint" }));
+  }
+  it("tests a custom endpoint first, adds it with its key, and switches to it", async () => {
+    const dialog = await openAddEndpoint((name) => name === "test_custom_endpoint" ? probe("ready", { resolved_url: "http://127.0.0.1:8080/v1" })
+      : name === "add_custom_provider" ? { name: "home-server", label: "Home server", base_url: "http://127.0.0.1:8080/v1" } : undefined);
+    expect((dialog.getByRole("button", { name: "Add endpoint" }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.type(dialog.getByLabelText("Endpoint name"), "Home server");
+    await userEvent.type(dialog.getByLabelText("New endpoint URL"), "http://127.0.0.1:8080");
+    await userEvent.type(dialog.getByLabelText("API key (optional)"), "secret-key");
+    await userEvent.click(dialog.getByRole("button", { name: "Add endpoint" }));
+    // The address is added as the probe resolved it (the missing /v1 fixed), with the key.
+    await waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("add_custom_provider", { label: "Home server", endpoint: "http://127.0.0.1:8080/v1", runsOnThisDevice: null, apiKey: "secret-key" }));
+    expect(mock.invoke).toHaveBeenCalledWith("test_custom_endpoint", { endpoint: "http://127.0.0.1:8080", apiKey: "secret-key", provider: null });
+    await waitFor(() => expect((screen.getByRole("combobox", { name: "Provider" }) as HTMLSelectElement).value).toBe("home-server"));
+    expect(screen.getByRole("option", { name: "Home server" })).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Remove" })).not.toBeNull();
+    // A server on this computer still offers the optional key controls.
+    expect(screen.getByRole("button", { name: "Connect key" })).not.toBeNull();
+    expect(localStorage.getItem("pok_selected_provider")).toBe("home-server");
+  });
+  it("stops at a missing key and explains it instead of adding a broken endpoint", async () => {
+    let calls = 0;
+    const dialog = await openAddEndpoint((name) => {
+      if (name === "test_custom_endpoint") return probe(++calls === 1 ? "needs_key" : "ready");
+      if (name === "add_custom_provider") return { name: "home-server", label: "Home server", base_url: "x" };
+      return undefined;
+    });
+    await userEvent.type(dialog.getByLabelText("Endpoint name"), "Home server");
+    await userEvent.type(dialog.getByLabelText("New endpoint URL"), "http://127.0.0.1:8080/v1");
+    await userEvent.click(dialog.getByRole("button", { name: "Add endpoint" }));
+    expect(await dialog.findByText(/needs an API key/)).not.toBeNull();
+    expect(mock.invoke.mock.calls.some(c => c[0] === "add_custom_provider")).toBe(false);
+    expect(dialog.queryByRole("button", { name: "Add anyway" })).toBeNull();
+    await userEvent.type(dialog.getByLabelText("API key (optional)"), "late-key");
+    await userEvent.click(dialog.getByRole("button", { name: "Add endpoint" }));
+    await waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("add_custom_provider", expect.objectContaining({ apiKey: "late-key" })));
+  });
+  it("lets an offline server be added anyway, and shows what went wrong", async () => {
+    const dialog = await openAddEndpoint((name) => name === "test_custom_endpoint"
+      ? probe("unreachable", { detail: "nothing is listening at 127.0.0.1:8080: start the server or check the address and port" })
+      : name === "add_custom_provider" ? { name: "home-server", label: "Home server", base_url: "http://127.0.0.1:8080/v1" } : undefined);
+    await userEvent.type(dialog.getByLabelText("Endpoint name"), "Home server");
+    await userEvent.type(dialog.getByLabelText("New endpoint URL"), "http://127.0.0.1:8080/v1");
+    await userEvent.click(dialog.getByRole("button", { name: "Test connection" }));
+    expect(await dialog.findByText(/nothing is listening/)).not.toBeNull();
+    await userEvent.click(dialog.getByRole("button", { name: "Add anyway" }));
+    await waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("add_custom_provider", expect.objectContaining({ endpoint: "http://127.0.0.1:8080/v1", apiKey: null })));
+  });
+  it("fills the address from a preset and reports a good connection", async () => {
+    const dialog = await openAddEndpoint((name) => name === "test_custom_endpoint" ? probe("ready", { model_count: 3, resolved_url: "http://127.0.0.1:8085/v1" }) : undefined);
+    await userEvent.click(dialog.getByRole("button", { name: "POK-Serve / Strata" }));
+    expect((dialog.getByLabelText("New endpoint URL") as HTMLInputElement).value).toBe("http://127.0.0.1:8085/v1");
+    expect((dialog.getByLabelText("Endpoint name") as HTMLInputElement).value).toBe("POK-Serve");
+    await userEvent.click(dialog.getByRole("button", { name: "Test connection" }));
+    expect(await dialog.findByText(/Connected · 3 models/)).not.toBeNull();
+  });
+  it("detects what a custom endpoint's model supports once, then shows it", async () => {
+    localStorage.setItem("pok_selected_provider", "home-server");
+    let detected = false;
+    const previous = mock.invoke.getMockImplementation()!;
+    mock.invoke.mockImplementation((name, args) => {
+      if (name === "list_providers") return Promise.resolve(["openai", "home-server"]);
+      if (name === "list_custom_providers") return Promise.resolve([{ name: "home-server", label: "Home server", base_url: "http://127.0.0.1:8080/v1" }]);
+      if (name === "get_status") return Promise.resolve({ provider: "home-server", model: "test-model", base_url: "http://127.0.0.1:8080/v1", platform: "test", data_dir: "test", requires_api_key: false, accepts_api_key: true, has_api_key: false, data_boundary: "local_device" });
+      if (name === "get_model_capabilities") {
+        return Promise.resolve(detected
+          ? { id: "test-model", vision: true, tool_use: true, reasoning: true, supported_parameters: [], reasoning_efforts: ["off", "low", "high"] }
+          : { id: "test-model", vision: true, tool_use: null, reasoning: null, supported_parameters: [], reasoning_efforts: [] });
+      }
+      if (name === "detect_model_capabilities") { detected = true; return Promise.resolve({ info: {}, notes: ["it thinks, but reasoning_effort does not switch the thinking off"] }); }
+      return previous(name, args);
+    });
+    await renderApp();
+    await waitFor(() => expect(mock.invoke.mock.calls.filter(c => c[0] === "detect_model_capabilities").length).toBe(1));
+    expect(mock.invoke).toHaveBeenCalledWith("detect_model_capabilities", { provider: "home-server", model: "test-model" });
+    await userEvent.click(screen.getByRole("button", { name: "Settings", expanded: false }));
+    await userEvent.click(within(screen.getByRole("navigation", { name: "Settings sections" })).getByRole("button", { name: /^Model/ }));
+    const chips = await screen.findByLabelText("Model capabilities");
+    await waitFor(() => expect(within(chips).getByText(/Tools/).className).toContain("yes"));
+    expect(within(chips).getByText(/Reasoning/).className).toContain("yes");
+    expect(await screen.findByText(/does not switch the thinking off/)).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Detect capabilities" })).not.toBeNull();
+    expect(mock.invoke.mock.calls.filter(c => c[0] === "detect_model_capabilities").length).toBe(1);
+  });
+  /** Settings > Model with a custom endpoint selected and two models listed. */
+  async function openCustomModelPicker(loadModel: () => Promise<boolean>) {
+    localStorage.setItem("pok_selected_provider", "home-server");
+    localStorage.removeItem("pok_selected_model");
+    const previous = mock.invoke.getMockImplementation()!;
+    mock.invoke.mockImplementation((name, args) => {
+      if (name === "list_providers") return Promise.resolve(["openai", "home-server"]);
+      if (name === "list_custom_providers") return Promise.resolve([{ name: "home-server", label: "Home server", base_url: "http://100.1.2.3:8085/v1" }]);
+      if (name === "get_status") return Promise.resolve({ provider: "home-server", model: "", base_url: "http://100.1.2.3:8085/v1", platform: "test", data_dir: "test", requires_api_key: false, accepts_api_key: true, has_api_key: false, data_boundary: "local_device" });
+      if (name === "list_models") return Promise.resolve(["model-a", "model-b"]);
+      if (name === "get_model_capabilities") return Promise.resolve({ id: "model-b", vision: true, tool_use: true, reasoning: true, supported_parameters: [], reasoning_efforts: [] });
+      if (name === "load_custom_model") return loadModel();
+      return previous(name, args);
+    });
+    await renderApp();
+    await userEvent.click(screen.getByRole("button", { name: "Settings", expanded: false }));
+    await userEvent.click(within(screen.getByRole("navigation", { name: "Settings sections" })).getByRole("button", { name: /^Model/ }));
+    const picker = await screen.findByRole("combobox", { name: "Selected model" });
+    await waitFor(() => expect(within(picker).getByRole("option", { name: "model-b" })).not.toBeNull());
+    return picker;
+  }
+  it("asks the server to load a custom endpoint's model the moment it is picked", async () => {
+    let finish!: (value: boolean) => void;
+    const picker = await openCustomModelPicker(() => new Promise<boolean>(resolve => { finish = resolve; }));
+    await userEvent.selectOptions(picker, "model-b");
+    expect(mock.invoke).toHaveBeenCalledWith("load_custom_model", { provider: "home-server", model: "model-b" });
+    expect(await screen.findByText(/LOADING MODEL/)).not.toBeNull(); // shown while the server swaps models
+    act(() => finish(true));
+    expect(await screen.findByText(/MODEL LOADED/)).not.toBeNull();
+  });
+  it("shows a server that could not load the picked model", async () => {
+    const picker = await openCustomModelPicker(() => Promise.reject("HTTP 503: out of memory"));
+    await userEvent.selectOptions(picker, "model-b");
+    expect(await screen.findByText(/MODEL ERROR/)).not.toBeNull();
+  });
+  it("removes a saved API key from any endpoint that has one", async () => {
+    localStorage.setItem("pok_selected_provider", "home-server");
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const previous = mock.invoke.getMockImplementation()!;
+    mock.invoke.mockImplementation((name, args) => {
+      if (name === "list_providers") return Promise.resolve(["openai", "home-server"]);
+      if (name === "list_custom_providers") return Promise.resolve([{ name: "home-server", label: "Home server", base_url: "x" }]);
+      if (name === "get_status") return Promise.resolve({ provider: "home-server", model: "", base_url: "http://100.1.2.3:8085/v1", platform: "test", data_dir: "test", requires_api_key: true, accepts_api_key: true, has_api_key: true, data_boundary: "external_service" });
+      return previous(name, args);
+    });
+    await renderApp();
+    await userEvent.click(screen.getByRole("button", { name: "Settings", expanded: false }));
+    await userEvent.click(within(screen.getByRole("navigation", { name: "Settings sections" })).getByRole("button", { name: /^Model/ }));
+    await userEvent.click(await screen.findByRole("button", { name: "Remove key" }));
+    expect(mock.invoke).toHaveBeenCalledWith("clear_provider_key", { provider: "home-server" });
+  });
   it("keeps guidance, pause, and resume wired during an active task", async () => {
     await renderApp();
     const previous = mock.invoke.getMockImplementation()!;

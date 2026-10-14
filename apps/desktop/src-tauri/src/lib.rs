@@ -14,10 +14,9 @@ use parking_lot::Mutex as SyncMutex;
 use pok_ai_core::{
     Result,
     brain::{
-        LocalModelPhase, LocalModelRuntimeStatus, ModelInfo, from_provider,
-        from_provider_with_session, load_local_model_from_status_with_context,
-        load_local_model_with_context, local_model_status, unload_local_model,
-        unload_local_model_from_status,
+        LocalModelPhase, LocalModelRuntimeStatus, ModelInfo, from_provider_with_session,
+        load_local_model_from_status_with_context, load_local_model_with_context,
+        local_model_status, unload_local_model, unload_local_model_from_status,
     },
     builtins::{register_desktop_tools, register_memory_tools},
     coding::register_coding_tools,
@@ -384,6 +383,8 @@ struct Status {
     data_dir: PathBuf,
     model_runtime: Option<LocalModelRuntimeStatus>,
     requires_api_key: bool,
+    /// The provider can use a key (optional for servers on this computer): show the key controls.
+    accepts_api_key: bool,
     has_api_key: bool,
     data_boundary: ProviderDataBoundary,
 }
@@ -441,6 +442,21 @@ fn persist_provider_endpoint_override(
     overrides
         .endpoints
         .insert(provider.to_owned(), endpoint.to_owned());
+    let bytes = serde_json::to_vec_pretty(&overrides)
+        .map_err(|error| format!("could not encode provider endpoint settings: {error}"))?;
+    atomic_write(&provider_endpoint_overrides_path(data_dir), &bytes)
+        .map_err(|error| format!("could not save provider endpoint settings: {error}"))
+}
+
+/// Drop a saved endpoint override so it cannot shadow a custom endpoint added later under the same name.
+fn forget_provider_endpoint_override(
+    data_dir: &std::path::Path,
+    provider: &str,
+) -> std::result::Result<(), String> {
+    let mut overrides = read_provider_endpoint_overrides(data_dir)?;
+    if overrides.endpoints.remove(provider).is_none() {
+        return Ok(());
+    }
     let bytes = serde_json::to_vec_pretty(&overrides)
         .map_err(|error| format!("could not encode provider endpoint settings: {error}"))?;
     atomic_write(&provider_endpoint_overrides_path(data_dir), &bytes)
@@ -952,6 +968,7 @@ async fn get_status(
         data_dir,
         model_runtime,
         requires_api_key,
+        accepts_api_key: provider_config.api_key_env.is_some(),
         has_api_key,
         data_boundary,
     })
@@ -1020,6 +1037,7 @@ async fn update_provider_endpoint(
         data_dir,
         model_runtime,
         requires_api_key,
+        accepts_api_key: provider_config.api_key_env.is_some(),
         has_api_key,
         data_boundary,
     })
@@ -1110,23 +1128,31 @@ async fn list_models(
             .await
             .map(|models| models.into_iter().map(|model| model.id).collect());
     }
-    let brain = from_provider(&provider_config).map_err(|error| error.to_string())?;
+    let data_dir = runtime.config.lock().data_dir.clone();
+    let brain = from_provider_with_session(
+        &provider_config,
+        None,
+        Some(&provider_name),
+        Some(&data_dir),
+    )
+    .map_err(|error| error.to_string())?;
     brain.list_models().await.map_err(|error| error.to_string())
 }
 
-#[tauri::command]
-async fn get_model_capabilities(
-    provider: String,
-    model: String,
-    runtime: State<'_, AppRuntime>,
+/// The catalog's facts about a model, with what an earlier capability check learned filled into whatever
+/// the server's own model list left unknown.
+async fn merged_model_info(
+    runtime: &AppRuntime,
+    provider: &str,
+    model: &str,
 ) -> std::result::Result<ModelInfo, String> {
-    let provider_config = provider_config(runtime.inner(), &provider)?;
-    let models = provider_model_catalog(runtime.inner(), &provider, &provider_config).await?;
-    Ok(models
+    let provider_config = provider_config(runtime, provider)?;
+    let models = provider_model_catalog(runtime, provider, &provider_config).await?;
+    let mut info = models
         .into_iter()
-        .find(|item| item.id.eq_ignore_ascii_case(&model))
-        .unwrap_or(ModelInfo {
-            id: model,
+        .find(|item| item.id.eq_ignore_ascii_case(model))
+        .unwrap_or_else(|| ModelInfo {
+            id: model.to_owned(),
             context_length: None,
             loaded_context_length: None,
             max_context_length: None,
@@ -1137,7 +1163,93 @@ async fn get_model_capabilities(
             reasoning_efforts: Vec::new(),
             reasoning_default: None,
             loaded: None,
-        }))
+        });
+    let data_dir = runtime.config.lock().data_dir.clone();
+    if let Some(found) = pok_ai_core::custom_providers::load_capability(&data_dir, provider, model)
+    {
+        found.apply_to(&mut info);
+    }
+    Ok(info)
+}
+
+#[tauri::command]
+async fn get_model_capabilities(
+    provider: String,
+    model: String,
+    runtime: State<'_, AppRuntime>,
+) -> std::result::Result<ModelInfo, String> {
+    merged_model_info(runtime.inner(), &provider, &model).await
+}
+
+/// Have the server load `model` now (a gateway that swaps models stops the other one first). Returns
+/// whether the server did so; a plain server with nothing to load answers `false`.
+#[tauri::command]
+async fn load_custom_model(
+    provider: String,
+    model: String,
+    runtime: State<'_, AppRuntime>,
+) -> std::result::Result<bool, String> {
+    let (base_url, key) = {
+        let config = runtime.config.lock();
+        let provider_config = config
+            .provider(Some(&provider))
+            .map_err(|error| error.to_string())?;
+        (
+            provider_config.base_url.clone(),
+            provider_config
+                .api_key_env
+                .as_deref()
+                .and_then(pok_ai_core::brain::get_api_key),
+        )
+    };
+    pok_ai_core::custom_providers::warm_up(&base_url, key.as_deref(), &model).await
+}
+
+#[derive(Serialize)]
+struct DetectedCapabilities {
+    info: ModelInfo,
+    notes: Vec<String>,
+}
+
+/// Ask a model on an OpenAI-compatible endpoint what it can do (tools, images, thinking levels), remember
+/// the answer, and return the model's capabilities with it applied.
+#[tauri::command]
+async fn detect_model_capabilities(
+    provider: String,
+    model: String,
+    runtime: State<'_, AppRuntime>,
+) -> std::result::Result<DetectedCapabilities, String> {
+    let (base_url, key, data_dir) = {
+        let config = runtime.config.lock();
+        let provider_config = config
+            .provider(Some(&provider))
+            .map_err(|error| error.to_string())?;
+        if !matches!(
+            provider_config.protocol,
+            pok_ai_core::config::ProviderProtocol::OpenaiCompatible
+        ) {
+            return Err("capability detection works with OpenAI-compatible endpoints".into());
+        }
+        (
+            provider_config.base_url.clone(),
+            provider_config
+                .api_key_env
+                .as_deref()
+                .and_then(pok_ai_core::brain::get_api_key),
+            config.data_dir.clone(),
+        )
+    };
+    // A server that swaps models must have this one loaded, or the checks would wait out a swap.
+    let _ = pok_ai_core::custom_providers::warm_up(&base_url, key.as_deref(), &model).await;
+    let found =
+        pok_ai_core::custom_providers::probe_capabilities(&base_url, key.as_deref(), &model).await;
+    pok_ai_core::custom_providers::save_capability(&data_dir, &provider, &model, &found)
+        .map_err(|error| error.to_string())?;
+    let info = merged_model_info(runtime.inner(), &provider, &model).await?;
+    Ok(DetectedCapabilities {
+        info,
+        notes: found.notes,
+    })
 }
 
 #[tauri::command]
@@ -1168,7 +1280,10 @@ async fn refresh_models(
             });
         return Ok(model_ids);
     }
-    let brain = from_provider(&provider_config).map_err(|error| error.to_string())?;
+    let data_dir = runtime.config.lock().data_dir.clone();
+    let brain =
+        from_provider_with_session(&provider_config, None, Some(&provider), Some(&data_dir))
+            .map_err(|error| error.to_string())?;
     brain.list_models().await.map_err(|error| error.to_string())
 }
 
@@ -2695,6 +2810,118 @@ fn list_providers(runtime: State<'_, AppRuntime>) -> Vec<String> {
     runtime.config.lock().providers.keys().cloned().collect()
 }
 
+/// Endpoints the user added in Settings (removable, unlike the built-in providers).
+#[tauri::command]
+fn list_custom_providers(
+    runtime: State<'_, AppRuntime>,
+) -> std::result::Result<Vec<pok_ai_core::custom_providers::CustomProvider>, String> {
+    let data_dir = runtime.config.lock().data_dir.clone();
+    pok_ai_core::custom_providers::load(&data_dir).map_err(|error| error.to_string())
+}
+
+/// Check an OpenAI-compatible address before it is saved: reachable, key needed or refused, models listed.
+/// With no key typed, the key already saved for `provider` is used, so a saved endpoint can be re-tested.
+#[tauri::command]
+async fn test_custom_endpoint(
+    endpoint: String,
+    api_key: Option<String>,
+    provider: Option<String>,
+    runtime: State<'_, AppRuntime>,
+) -> std::result::Result<pok_ai_core::custom_providers::ProbeResult, String> {
+    let typed = api_key.filter(|key| !key.trim().is_empty());
+    let key = typed.or_else(|| {
+        let env = provider.as_deref().and_then(|name| {
+            runtime
+                .config
+                .lock()
+                .provider(Some(name))
+                .ok()
+                .and_then(|found| found.api_key_env.clone())
+        })?;
+        pok_ai_core::brain::get_api_key(&env)
+    });
+    Ok(pok_ai_core::custom_providers::probe(&endpoint, key.as_deref()).await)
+}
+
+/// Add (or replace) an OpenAI-compatible endpoint, with its API key when it has one. `runs_on_this_device`
+/// forces the data boundary; `None` decides from the address.
+#[tauri::command]
+fn add_custom_provider(
+    label: String,
+    endpoint: String,
+    runs_on_this_device: Option<bool>,
+    api_key: Option<String>,
+    runtime: State<'_, AppRuntime>,
+) -> std::result::Result<pok_ai_core::custom_providers::CustomProvider, String> {
+    use pok_ai_core::custom_providers::{self, CustomProvider};
+
+    let boundary = runs_on_this_device.map(|local| {
+        if local {
+            ProviderDataBoundary::LocalDevice
+        } else {
+            ProviderDataBoundary::ExternalService
+        }
+    });
+    let provider =
+        CustomProvider::new(&label, &endpoint, boundary).map_err(|error| error.to_string())?;
+    let env_name = provider.api_key_env();
+    let typed_key = api_key
+        .map(|key| key.trim().to_owned())
+        .filter(|key| !key.is_empty());
+    if let Some(key) = &typed_key {
+        // Store the key first: an endpoint that cannot keep its key is not added half-way.
+        persist_provider_key(&env_name, key)?;
+    }
+    let mut config = runtime.config.lock();
+    custom_providers::add(&mut config, provider.clone()).map_err(|error| error.to_string())?;
+    forget_provider_endpoint_override(&config.data_dir, &provider.name)?;
+    if let Some(key) = typed_key.or_else(|| load_provider_key(&env_name)) {
+        pok_ai_core::brain::set_api_key(env_name, key);
+    }
+    Ok(provider)
+}
+
+/// Forget the API key stored for a provider that uses one (subscription logins have their own disconnect).
+#[tauri::command]
+fn clear_provider_key(
+    provider: String,
+    runtime: State<'_, AppRuntime>,
+) -> std::result::Result<(), String> {
+    if matches!(
+        provider.to_ascii_lowercase().as_str(),
+        "copilot" | "chatgpt"
+    ) {
+        return Err("sign out of subscription accounts with Disconnect".into());
+    }
+    let env_name = runtime
+        .config
+        .lock()
+        .provider(Some(&provider))
+        .map_err(|error| error.to_string())?
+        .api_key_env
+        .clone()
+        .ok_or_else(|| format!("provider {provider:?} does not use an API key"))?;
+    persist_provider_key(&env_name, "")?;
+    pok_ai_core::brain::set_api_key(&env_name, "");
+    Ok(())
+}
+
+/// Remove a custom endpoint and forget its stored key.
+#[tauri::command]
+fn remove_custom_provider(
+    name: String,
+    runtime: State<'_, AppRuntime>,
+) -> std::result::Result<(), String> {
+    let mut config = runtime.config.lock();
+    let removed = pok_ai_core::custom_providers::remove(&mut config, &name)
+        .map_err(|error| error.to_string())?;
+    forget_provider_endpoint_override(&config.data_dir, &removed.name)?;
+    let env_name = removed.api_key_env();
+    let _ = persist_provider_key(&env_name, "");
+    pok_ai_core::brain::set_api_key(&env_name, "");
+    Ok(())
+}
+
 /// The device code shown while a subscription login waits for the user.
 #[derive(Serialize, Clone)]
 struct ProviderDeviceCode {
@@ -3657,16 +3884,68 @@ async fn save_decision_router_key(
 
 const CREDENTIAL_SERVICE: &str = "POK-Ai";
 
+/// Credential Manager rejects a password over 2560 bytes (1280 UTF-16 units),
+/// which a subscription login bundle exceeds. Longer values are split across
+/// `<name>`, `<name>#1`, ... with a marker in the first entry.
 #[cfg(windows)]
-fn persist_provider_key(name: &str, api_key: &str) -> std::result::Result<(), String> {
+const CREDENTIAL_CHUNK_CHARS: usize = 1000;
+#[cfg(windows)]
+const CREDENTIAL_CHUNK_MARKER: &str = "\u{1}chunks:";
+
+#[cfg(windows)]
+fn credential_entry(name: &str) -> std::result::Result<keyring_core::Entry, String> {
     use keyring_core::api::CredentialStoreApi;
 
     windows_native_keyring_store::Store::new()
         .map_err(|error| format!("could not open Windows Credential Manager: {error}"))?
         .build(CREDENTIAL_SERVICE, name, None)
-        .map_err(|error| format!("could not create API-key credential: {error}"))?
-        .set_password(api_key)
+        .map_err(|error| format!("could not create API-key credential: {error}"))
+}
+
+#[cfg(windows)]
+fn set_credential(name: &str, value: &str) -> std::result::Result<(), String> {
+    credential_entry(name)?
+        .set_password(value)
         .map_err(|error| format!("could not save API key in Windows Credential Manager: {error}"))
+}
+
+#[cfg(windows)]
+fn get_credential(name: &str) -> Option<String> {
+    credential_entry(name).ok()?.get_password().ok()
+}
+
+#[cfg(windows)]
+fn stored_chunk_count(name: &str) -> usize {
+    get_credential(name)
+        .and_then(|head| head.strip_prefix(CREDENTIAL_CHUNK_MARKER)?.parse().ok())
+        .unwrap_or(0)
+}
+
+#[cfg(windows)]
+fn persist_provider_key(name: &str, api_key: &str) -> std::result::Result<(), String> {
+    let previous = stored_chunk_count(name);
+    let chars: Vec<char> = api_key.chars().collect();
+    let count = if chars.len() > CREDENTIAL_CHUNK_CHARS {
+        let chunks: Vec<String> = chars
+            .chunks(CREDENTIAL_CHUNK_CHARS)
+            .map(|chunk| chunk.iter().collect())
+            .collect();
+        for (index, chunk) in chunks.iter().enumerate() {
+            set_credential(&format!("{name}#{}", index + 1), chunk)?;
+        }
+        set_credential(name, &format!("{CREDENTIAL_CHUNK_MARKER}{}", chunks.len()))?;
+        chunks.len()
+    } else {
+        set_credential(name, api_key)?;
+        0
+    };
+    // Drop chunks left over from a longer earlier value.
+    for index in count + 1..=previous {
+        if let Ok(entry) = credential_entry(&format!("{name}#{index}")) {
+            let _ = entry.delete_credential();
+        }
+    }
+    Ok(())
 }
 
 #[cfg(not(windows))]
@@ -3676,15 +3955,19 @@ fn persist_provider_key(_name: &str, _api_key: &str) -> std::result::Result<(), 
 
 #[cfg(windows)]
 fn load_provider_key(name: &str) -> Option<String> {
-    use keyring_core::api::CredentialStoreApi;
-
-    windows_native_keyring_store::Store::new()
-        .ok()?
-        .build(CREDENTIAL_SERVICE, name, None)
-        .ok()?
-        .get_password()
-        .ok()
-        .filter(|key| !key.trim().is_empty())
+    let head = get_credential(name)?;
+    let value = match head.strip_prefix(CREDENTIAL_CHUNK_MARKER) {
+        Some(count) => {
+            let count: usize = count.parse().ok()?;
+            let mut joined = String::new();
+            for index in 1..=count {
+                joined.push_str(&get_credential(&format!("{name}#{index}"))?);
+            }
+            joined
+        }
+        None => head,
+    };
+    Some(value).filter(|key| !key.trim().is_empty())
 }
 
 #[cfg(not(windows))]
@@ -3829,6 +4112,13 @@ pub fn run() {
             switch_local_model,
             unload_model,
             list_providers,
+            list_custom_providers,
+            add_custom_provider,
+            test_custom_endpoint,
+            clear_provider_key,
+            detect_model_capabilities,
+            load_custom_model,
+            remove_custom_provider,
             connect_copilot,
             connect_chatgpt,
             subscription_account,

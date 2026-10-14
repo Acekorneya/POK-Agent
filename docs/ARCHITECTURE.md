@@ -77,8 +77,8 @@ pluggable provider and `web_fetch`, HTML to paged text, refusing local and
 private addresses at every redirect; see `docs/WEB.md`), `swarm.rs` (the
 `run_agents` swarm: roles, the team board with evaporating leads and
 recruitment, the shared model-request gate, desktop turn-taking and window
-claims, playbooks; see `docs/SWARM.md`), `config.rs`, `context.rs`, and
-`tool.rs`.
+claims, playbooks; see `docs/SWARM.md`), `config.rs`, `custom_providers.rs` (user-added OpenAI-compatible
+endpoints), `context.rs`, and `tool.rs`.
 
 Voice input lives outside the core in `crates/pok-ai-voice`, since it is a
 dashboard feature, not an agent tool. Three threads keep captions live while
@@ -523,6 +523,9 @@ there.
 The harness also takes the planner's first look itself: when an application
 window is in front at the start of a desktop task, it is captured and given to
 the planner as the result of that look, and counts as the run's fresh evidence.
+When a terminal, the agent's own window, or the bare desktop is in front, the
+planner is given the desktop overview (monitors and windows) instead, so it
+never starts blind; the overview orients but does not authorize input.
 
 Learning and curation run after the answer; the CLI waits for them (bounded)
 before exiting, and the live bench gives every arm its own data folder so

@@ -10,6 +10,7 @@ pub mod commands;
 pub mod config;
 pub mod context;
 pub mod conversation_store;
+pub mod custom_providers;
 pub mod decision;
 pub mod error;
 pub mod exam;

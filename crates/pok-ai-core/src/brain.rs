@@ -1188,15 +1188,13 @@ fn openai_model_info(model: &Value) -> Option<ModelInfo> {
     };
     Some(ModelInfo {
         id,
-        context_length: model
-            .get("context_length")
-            .or_else(|| model.get("max_context_length"))
-            .and_then(Value::as_u64),
+        context_length: context_window(model),
         loaded_context_length: None,
         max_context_length: model
             .get("max_context_length")
             .or_else(|| model.get("context_length"))
-            .and_then(Value::as_u64),
+            .and_then(Value::as_u64)
+            .or_else(|| context_window(model)),
         vision: model
             .pointer("/capabilities/vision")
             .and_then(Value::as_bool)
@@ -1228,8 +1226,27 @@ fn openai_model_info(model: &Value) -> Option<ModelInfo> {
             .collect(),
         reasoning_efforts,
         reasoning_default,
-        loaded: None,
+        // llama-swap and Strata report `status.value`; "loaded" is the only state that means resident.
+        loaded: model
+            .pointer("/status/value")
+            .and_then(Value::as_str)
+            .map(|state| state == "loaded"),
     })
+}
+
+/// The context window a compatible server reports, under whichever name it uses: OpenAI-style
+/// `context_length`, LM Studio's `max_context_length`, llama.cpp-style servers' `meta.n_ctx`
+/// (Strata, llama-swap), vLLM's `max_model_len`, or `context_window`.
+fn context_window(model: &Value) -> Option<u64> {
+    [
+        "/context_length",
+        "/max_context_length",
+        "/meta/n_ctx",
+        "/max_model_len",
+        "/context_window",
+    ]
+    .iter()
+    .find_map(|pointer| model.pointer(pointer).and_then(Value::as_u64))
 }
 
 /// GitHub Copilot's model list carries its own capabilities: context window,
@@ -2248,6 +2265,25 @@ mod tests {
         ] {
             assert!(copilot_model_info(&skipped).is_none(), "{skipped}");
         }
+    }
+
+    #[test]
+    fn compatible_servers_context_and_loaded_state_are_read_from_their_own_fields() {
+        let strata = openai_model_info(&json!({
+            "id": "m", "meta": {"n_ctx": 131072}, "status": {"value": "loaded"},
+            "architecture": {"input_modalities": ["text", "image"]}
+        }))
+        .unwrap();
+        assert_eq!(strata.context_length, Some(131072));
+        assert_eq!(strata.max_context_length, Some(131072));
+        assert_eq!(strata.loaded, Some(true));
+        assert_eq!(strata.vision, Some(true));
+        assert_eq!(strata.tool_use, None);
+        let vllm = openai_model_info(&json!({"id": "v", "max_model_len": 32768})).unwrap();
+        assert_eq!(vllm.context_length, Some(32768));
+        assert_eq!(vllm.loaded, None);
+        let openai_style = openai_model_info(&json!({"id": "o", "context_length": 8192})).unwrap();
+        assert_eq!(openai_style.context_length, Some(8192));
     }
 
     #[test]

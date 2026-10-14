@@ -811,7 +811,7 @@ const fn default_command_timeout() -> u64 {
 const fn default_input_text_inter_key_pause_ms() -> u64 {
     50
 }
-const fn default_provider_max_retries() -> u32 {
+pub(crate) const fn default_provider_max_retries() -> u32 {
     3
 }
 const fn default_agent_temperature() -> TemperatureSetting {
@@ -1067,6 +1067,10 @@ impl Config {
         }
         for (name, provider_config) in default_providers() {
             config.providers.entry(name).or_insert(provider_config);
+        }
+        // A damaged custom-endpoint file must not stop the app from starting.
+        if let Err(error) = crate::custom_providers::apply(&mut config) {
+            eprintln!("Ignoring saved custom endpoints: {error}");
         }
         config.validate()?;
         Ok(config)

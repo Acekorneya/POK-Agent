@@ -284,3 +284,14 @@
 .mcp-env-row input { flex: 1; min-width: 0; }
 .mcp-env-row button { padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: transparent; color: var(--muted); cursor: pointer; }
 .mcp-env-row button:hover { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--border)); }
+
+/* Custom endpoints: presets, connection result, capability notes */
+.endpoint-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-button { padding: 3px 10px; border-radius: 999px; font-size: 12px; }
+.endpoint-probe { margin: 4px 0 0; padding: 6px 10px; border-radius: 8px; font-size: 13px; border: 1px solid var(--line, currentColor); }
+.endpoint-probe.ok { border-color: #2f9e6f; color: #2f9e6f; }
+.endpoint-probe.warn { border-color: #c98a1b; color: #c98a1b; }
+.endpoint-probe.error { border-color: #d14b4b; color: #d14b4b; }
+.capability-notes { margin: 6px 0 0; padding-left: 18px; font-size: 12px; opacity: 0.8; }
+.endpoint-dialog input, .endpoint-dialog select { width: 100%; }
+.endpoint-dialog .inline-field input { flex: 1; width: auto; }

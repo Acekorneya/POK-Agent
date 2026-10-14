@@ -40,6 +40,7 @@ type Status = {
   data_dir: string;
   model_runtime?: LocalModelRuntimeStatus;
   requires_api_key?: boolean;
+  accepts_api_key?: boolean;
   has_api_key?: boolean;
   data_boundary: "local_device" | "external_service";
 };
@@ -808,6 +809,35 @@ const PROVIDER_LABELS: Record<string, string> = {
   lm_studio: "LM Studio", ollama: "Ollama", openai: "OpenAI", anthropic: "Anthropic", gemini: "Google Gemini",
   openrouter: "OpenRouter", opencode: "OpenCode Zen", "opencode-go": "OpenCode Go", copilot: "GitHub Copilot", chatgpt: "ChatGPT", groq: "Groq", xai: "xAI",
 };
+/** What probing an OpenAI-compatible address found out (see custom_providers::probe in the core). */
+type EndpointProbe = {
+  outcome: "ready" | "needs_key" | "bad_key" | "not_compatible" | "unreachable" | "invalid_url";
+  resolved_url: string;
+  models: string[];
+  model_count: number;
+  latency_ms: number;
+  detail: string;
+};
+/** Common local servers, to fill the address and name. */
+const ENDPOINT_PRESETS = [
+  { label: "llama.cpp", name: "llama.cpp", url: "http://127.0.0.1:8080/v1" },
+  { label: "vLLM", name: "vLLM", url: "http://127.0.0.1:8000/v1" },
+  { label: "POK-Serve / Strata", name: "POK-Serve", url: "http://127.0.0.1:8085/v1" },
+];
+function probeTone(outcome: EndpointProbe["outcome"]) {
+  return outcome === "ready" ? "ok" : outcome === "needs_key" || outcome === "bad_key" ? "warn" : "error";
+}
+function probeMessage(probe: EndpointProbe, typed: string) {
+  if (probe.outcome === "ready") {
+    const fixed = probe.resolved_url.replace(/\/$/, "") !== typed.trim().replace(/\/$/, "") ? ` · using ${probe.resolved_url}` : "";
+    return `Connected · ${probe.model_count} ${probe.model_count === 1 ? "model" : "models"} · ${probe.latency_ms} ms${fixed}`;
+  }
+  if (probe.outcome === "needs_key") return "This server needs an API key. Enter it above, then test again.";
+  if (probe.outcome === "bad_key") return "The server refused this API key. Check it and test again.";
+  return probe.detail;
+}
+/** An OpenAI-compatible endpoint the user added in Settings. */
+type CustomProvider = { name: string; label: string; base_url: string; data_boundary?: "local_device" | "external_service" | null };
 function providerLabel(provider: string) {
   return PROVIDER_LABELS[provider.toLowerCase()] ?? provider.replaceAll("_", " ");
 }
@@ -952,6 +982,21 @@ export function App() {
   const [apiStatus, setApiStatus] = useState<"connecting" | "ready" | "error">("connecting");
   const [policyMode, setPolicyMode] = useState<"interactive" | "autonomous">("interactive");
   const [providers, setProviders] = useState<string[]>([]);
+  const [customProviders, setCustomProviders] = useState<CustomProvider[]>([]);
+  const [showCustomModal, setShowCustomModal] = useState(false);
+  const [customName, setCustomName] = useState("");
+  const [customUrl, setCustomUrl] = useState("");
+  const [customWhere, setCustomWhere] = useState<"auto" | "device" | "remote">("auto");
+  const [customError, setCustomError] = useState("");
+  const [savingCustom, setSavingCustom] = useState(false);
+  const [customKey, setCustomKey] = useState("");
+  const [showCustomKey, setShowCustomKey] = useState(false);
+  const [customProbe, setCustomProbe] = useState<EndpointProbe | null>(null);
+  const [testingCustom, setTestingCustom] = useState(false);
+  const [endpointTest, setEndpointTest] = useState<EndpointProbe | null>(null);
+  const [detectingCapabilities, setDetectingCapabilities] = useState(false);
+  const [capabilityNotes, setCapabilityNotes] = useState<string[]>([]);
+  const detectedModels = useRef(new Set<string>());
   const [selectedProvider, setSelectedProvider] = useState<string>(() => localStorage.getItem("pok_selected_provider") || "lm_studio");
   const [models, setModels] = useState<string[]>([]);
   const [model, setModel] = useState<string>(() => localStorage.getItem("pok_selected_model") || "");
@@ -1080,7 +1125,7 @@ export function App() {
   const [activeConversationId, setActiveConversationId] = useState("");
   const activeConversationIdRef = useRef("");
   const messageActionPending = useRef(false);
-  useDialogFocus(`${settingsOpen}:${showCloudModal}:${approval?.id ?? ""}:${questionRequest?.id ?? ""}`);
+  useDialogFocus(`${settingsOpen}:${showCloudModal}:${showCustomModal}:${approval?.id ?? ""}:${questionRequest?.id ?? ""}`);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const openSettings = (section = "settings-heading") => {
     setSettingsSection(section === "memory-library" ? "memory" : section === "generated-tools" ? "tools" : section === "system1" ? "system1" : section === "voice" ? "voice" : "general");
@@ -1121,6 +1166,144 @@ export function App() {
         setApiStatus("ready");
       })
       .catch(() => setApiStatus("error"));
+  };
+
+  const refreshProviders = async () => {
+    try {
+      const [names, custom] = await Promise.all([
+        invoke<string[]>("list_providers"),
+        invoke<CustomProvider[]>("list_custom_providers").catch(() => [] as CustomProvider[]),
+      ]);
+      for (const item of custom) PROVIDER_LABELS[item.name] = item.label;
+      setProviders(names);
+      setCustomProviders(custom);
+    } catch {
+      /* the provider list keeps its last value */
+    }
+  };
+
+  const openCustomEndpoint = () => {
+    setCustomName("");
+    setCustomUrl("");
+    setCustomWhere("auto");
+    setCustomError("");
+    setCustomKey("");
+    setShowCustomKey(false);
+    setCustomProbe(null);
+    setShowCustomModal(true);
+  };
+
+  const testCustomEndpoint = async (): Promise<EndpointProbe | null> => {
+    setTestingCustom(true);
+    setCustomError("");
+    try {
+      const result = await invoke<EndpointProbe>("test_custom_endpoint", {
+        endpoint: customUrl, apiKey: customKey.trim() || null, provider: null,
+      });
+      setCustomProbe(result);
+      return result;
+    } catch (error) {
+      setCustomProbe(null);
+      setCustomError(compactValue(String(error), 240) ?? "Could not test the endpoint");
+      return null;
+    } finally {
+      setTestingCustom(false);
+    }
+  };
+
+  /** Test first, so a wrong key or a typo is caught here; `anyway` adds a server that is simply offline now. */
+  const handleAddCustomProvider = async (anyway = false) => {
+    if (!customName.trim() || !customUrl.trim()) return;
+    setSavingCustom(true);
+    setCustomError("");
+    try {
+      let endpoint = customUrl.trim();
+      if (!anyway) {
+        const result = await testCustomEndpoint();
+        if (!result) return;
+        if (result.outcome !== "ready") return;
+        endpoint = result.resolved_url;
+      } else if (customProbe?.outcome === "ready") {
+        endpoint = customProbe.resolved_url;
+      }
+      const added = await invoke<CustomProvider>("add_custom_provider", {
+        label: customName,
+        endpoint,
+        runsOnThisDevice: customWhere === "auto" ? null : customWhere === "device",
+        apiKey: customKey.trim() || null,
+      });
+      await refreshProviders();
+      setShowCustomModal(false);
+      setCustomKey("");
+      await handleProviderChange(added.name);
+    } catch (error) {
+      setCustomError(compactValue(String(error), 240) ?? "Could not add the endpoint");
+    } finally {
+      setSavingCustom(false);
+    }
+  };
+
+  const testCurrentEndpoint = async () => {
+    setEndpointTest(null);
+    try {
+      setEndpointTest(await invoke<EndpointProbe>("test_custom_endpoint", {
+        endpoint: customEndpoint, apiKey: null, provider: selectedProvider,
+      }));
+    } catch (error) {
+      setEndpointTest({ outcome: "unreachable", resolved_url: customEndpoint, models: [], model_count: 0, latency_ms: 0,
+        detail: compactValue(String(error), 200) ?? "Could not test the endpoint" });
+    }
+  };
+
+  const handleClearKey = async () => {
+    if (!window.confirm(`Remove the saved API key for ${providerLabel(selectedProvider)}?`)) return;
+    try {
+      await invoke("clear_provider_key", { provider: selectedProvider });
+      checkApiStatus(selectedProvider, model);
+    } catch (error) {
+      setLiveActivity({ phase: "failed", label: "Could not remove the key", detail: compactValue(String(error), 160), startedAt: Date.now() });
+    }
+  };
+
+  /** Ask the model what it supports (tools, pictures, thinking levels): compatible servers rarely say. */
+  const detectCapabilities = async (provider = selectedProvider, targetModel = model) => {
+    if (!targetModel) return;
+    setDetectingCapabilities(true);
+    setCapabilityNotes([]);
+    try {
+      const found = await invoke<{ info: ModelCapabilities; notes: string[] }>("detect_model_capabilities", { provider, model: targetModel });
+      setCapabilityNotes(found.notes);
+      refreshModelCapabilities(provider, targetModel);
+    } catch (error) {
+      setCapabilityNotes([compactValue(String(error), 200) ?? "Could not check the model"]);
+    } finally {
+      setDetectingCapabilities(false);
+    }
+  };
+
+  // A compatible server rarely says what a model supports, so ask the model once per session and remember it.
+  useEffect(() => {
+    if (!model || !modelCapabilities || busy || detectingCapabilities || modelTransitioning) return;
+    if (!customProviders.some((item) => item.name === selectedProvider)) return;
+    if (modelCapabilities.tool_use != null && modelCapabilities.vision != null && modelCapabilities.reasoning != null) return;
+    const attempted = `${selectedProvider}\n${model}`;
+    if (detectedModels.current.has(attempted)) return;
+    detectedModels.current.add(attempted);
+    void detectCapabilities(selectedProvider, model);
+  }, [selectedProvider, model, modelCapabilities, customProviders, busy, modelTransitioning]);
+
+  const handleRemoveCustomProvider = async () => {
+    const target = customProviders.find((item) => item.name === selectedProvider);
+    if (!target) return;
+    if (!window.confirm(`Remove ${target.label}? Its saved endpoint and API key are deleted from this computer.`)) return;
+    try {
+      await invoke("remove_custom_provider", { name: target.name });
+      delete PROVIDER_LABELS[target.name];
+      await refreshProviders();
+      await handleProviderChange("lm_studio");
+    } catch (error) {
+      setLiveActivity({ phase: "failed", label: "Could not remove the endpoint", detail: compactValue(String(error), 160), startedAt: Date.now() });
+    }
   };
 
   const handleSaveEndpoint = async () => {
@@ -1200,6 +1383,21 @@ export function App() {
     setModel(newModel);
     localStorage.setItem("pok_selected_model", newModel);
     setModelSearch("");
+    if (newModel && customProviders.some((item) => item.name === selectedProvider)) {
+      // A server that holds several models loads this one now (and stops the other), so the first message
+      // does not wait for it. A plain server has nothing to load and answers at once.
+      setModelRuntime({ provider: selectedProvider, model: newModel, phase: "loading", detail: `Loading ${newModel} on the server`, instance_ids: [] });
+      setLiveActivity({ phase: "starting", label: `Loading ${newModel}`, detail: "The server is loading the model; big ones take a few minutes", startedAt: Date.now() });
+      try {
+        const loaded = await invoke<boolean>("load_custom_model", { provider: selectedProvider, model: newModel });
+        setModelRuntime({ provider: selectedProvider, model: newModel, phase: "loaded", detail: loaded ? "Loaded on the server" : "Ready", instance_ids: [] });
+        setLiveActivity({ phase: "idle", label: "Ready for a task", detail: loaded ? "Model loaded on the server" : undefined, startedAt: Date.now() });
+      } catch (error) {
+        setModelRuntime({ provider: selectedProvider, model: newModel, phase: "error", detail: compactValue(String(error), 160) ?? "Could not load the model", instance_ids: [] });
+        setLiveActivity({ phase: "failed", label: "Could not load the model", detail: compactValue(String(error), 160), startedAt: Date.now() });
+      }
+      return;
+    }
     if (!newModel || (selectedProvider !== "lm_studio" && selectedProvider !== "ollama")) return;
     const previous = activeLocalSelection.current;
     setModelRuntime({
@@ -1228,6 +1426,8 @@ export function App() {
   const handleProviderChange = async (newProvider: string) => {
     const previous = activeLocalSelection.current;
     setSelectedProvider(newProvider);
+    setEndpointTest(null);
+    setCapabilityNotes([]);
     localStorage.setItem("pok_selected_provider", newProvider);
     setModel("");
     setModelRuntime(null);
@@ -1652,13 +1852,13 @@ export function App() {
   useEffect(() => {
     if (!settingsOpen) return;
     const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || approval || questionRequest || showCloudModal) return;
+      if (event.key !== "Escape" || approval || questionRequest || showCloudModal || showCustomModal) return;
       setSettingsOpen(false);
       settingsButtonRef.current?.focus();
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [settingsOpen, approval, questionRequest, showCloudModal]);
+  }, [settingsOpen, approval, questionRequest, showCloudModal, showCustomModal]);
 
   const closeSettings = () => {
     setSettingsOpen(false);
@@ -1725,7 +1925,7 @@ export function App() {
 
   useEffect(() => {
     checkApiStatus();
-    invoke<string[]>("list_providers").then(setProviders).catch(() => undefined);
+    void refreshProviders();
     invoke<DecisionRouterStatus>("get_decision_router_status").then(async (next) => {
       // The training log is a remembered, opt-in choice: re-apply it.
       let savedTraining = false;
@@ -3185,11 +3385,17 @@ export function App() {
               ? "External service. Full task context is sent only after you confirm it for a conversation."
               : "Runs on this device. Requests stay on the configured local provider."}>
             <SettingRow label="Provider">
-              <select aria-label="Provider" disabled={busy || modelTransitioning} value={selectedProvider} onChange={(event) => void handleProviderChange(event.target.value)}>
-                {providers.map((p) => <option key={p} value={p}>{providerLabel(p)}</option>)}
-              </select>
+              <div className="inline-field">
+                <select aria-label="Provider" disabled={busy || modelTransitioning} value={selectedProvider} onChange={(event) => void handleProviderChange(event.target.value)}>
+                  {providers.map((p) => <option key={p} value={p}>{providerLabel(p)}</option>)}
+                </select>
+                <button type="button" disabled={busy || modelTransitioning} onClick={openCustomEndpoint}>Add endpoint</button>
+                {customProviders.some((item) => item.name === selectedProvider) && (
+                  <button type="button" className="danger" disabled={busy || modelTransitioning} onClick={() => void handleRemoveCustomProvider()}>Remove</button>
+                )}
+              </div>
             </SettingRow>
-            {status?.requires_api_key && (SUBSCRIPTION_PROVIDERS.has(selectedProvider) ? (
+            {(status?.requires_api_key || (status?.accepts_api_key && (customProviders.some((item) => item.name === selectedProvider) || status.has_api_key))) && (SUBSCRIPTION_PROVIDERS.has(selectedProvider) ? (
               <SettingRow label="Subscription" help="Sign in with your account. The credential stays in Windows Credential Manager; nothing is pasted.">
                 <div className="subscription-connect">
                   {status?.has_api_key ? (
@@ -3216,8 +3422,11 @@ export function App() {
                 </div>
               </SettingRow>
             ) : (
-              <SettingRow label="API key" help="Stored in Windows Credential Manager, never in files.">
-                <button type="button" className={status?.has_api_key ? "" : "primary"} onClick={() => setShowCloudModal(true)}>{status?.has_api_key ? "Replace key" : "Connect key"}</button>
+              <SettingRow label="API key" help={status?.requires_api_key ? "Stored in Windows Credential Manager, never in files." : "Optional: only if the server asks for one. Stored in Windows Credential Manager."}>
+                <div className="inline-field">
+                  <button type="button" className={status?.has_api_key || !status?.requires_api_key ? "" : "primary"} onClick={() => setShowCloudModal(true)}>{status?.has_api_key ? "Replace key" : "Connect key"}</button>
+                  {status?.has_api_key && <button type="button" className="danger" onClick={() => void handleClearKey()}>Remove key</button>}
+                </div>
               </SettingRow>
             ))}
             <SettingRow label="Endpoint" help="Only change this for a custom or self-hosted server.">
@@ -3225,13 +3434,19 @@ export function App() {
                 <input aria-label="Endpoint URL" type="text" value={customEndpoint} onChange={(e) => setCustomEndpoint(e.target.value)}
                   placeholder="http://127.0.0.1:1234/v1" onKeyDown={(e) => { if (e.key === "Enter") handleSaveEndpoint(); }} />
                 <button type="button" onClick={handleSaveEndpoint}>Save</button>
+                <button type="button" onClick={() => void testCurrentEndpoint()}>Test</button>
               </div>
+              {endpointTest && <p className={`endpoint-probe ${probeTone(endpointTest.outcome)}`} role="status">{probeMessage(endpointTest, customEndpoint)}</p>}
             </SettingRow>
           </SettingsCard>
 
           <SettingsCard title="Model" description={`${models.length} available`}
-            actions={(selectedProvider === "lm_studio" || selectedProvider === "ollama") && <button type="button" title="Refresh models added or removed from the local server"
-              disabled={busy || modelTransitioning || refreshingModels} onClick={() => void refreshLocalModels()}>{refreshingModels ? "Refreshing…" : "Refresh"}</button>}>
+            actions={<>
+              {customProviders.some((item) => item.name === selectedProvider) && model && <button type="button" title="Ask the model what it supports: tools, pictures and thinking levels"
+                disabled={busy || detectingCapabilities} onClick={() => void detectCapabilities()}>{detectingCapabilities ? "Checking…" : "Detect capabilities"}</button>}
+              {(selectedProvider === "lm_studio" || selectedProvider === "ollama") && <button type="button" title="Refresh models added or removed from the local server"
+                disabled={busy || modelTransitioning || refreshingModels} onClick={() => void refreshLocalModels()}>{refreshingModels ? "Refreshing…" : "Refresh"}</button>}
+            </>}>
             <input className="settings-input" type="search" aria-label="Filter models" placeholder="Search models" value={modelSearch} onChange={(e) => setModelSearch(e.target.value)} />
             {modelSearch.trim() ? (
               <div className="model-search-results" role="listbox" aria-label="Filtered models">
@@ -3249,8 +3464,10 @@ export function App() {
             )}
             <div className="capability-chips" aria-label="Model capabilities">
               {([["Vision", modelCapabilities?.vision], ["Tools", modelCapabilities?.tool_use], ["Reasoning", modelCapabilities?.reasoning]] as const).map(([name, value]) =>
-                <span key={name} className={`capability-chip ${value === undefined ? "unknown" : value ? "yes" : "no"}`}>{value === undefined ? "?" : value ? "✓" : "–"} {name}</span>)}
+                <span key={name} className={`capability-chip ${value == null ? "unknown" : value ? "yes" : "no"}`}>{value == null ? "?" : value ? "✓" : "–"} {name}</span>)}
             </div>
+            {detectingCapabilities && <p className="muted" role="status">Checking what this model can do: tool calls, pictures and thinking levels…</p>}
+            {capabilityNotes.length > 0 && <ul className="capability-notes">{capabilityNotes.map((note) => <li key={note}>{note}</li>)}</ul>}
           </SettingsCard>
 
           <SettingsCard title="Request tuning" description="Leave these on Auto unless a model needs something specific."
@@ -3770,6 +3987,56 @@ export function App() {
             <button onClick={() => setShowCloudModal(false)} disabled={savingCloudKey}>Cancel</button>
             <button className="primary" onClick={handleSaveCloudKey} disabled={savingCloudKey}>
               {savingCloudKey ? "Connecting…" : "Save & connect"}
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+    {showCustomModal && (
+      <div className="modal">
+        <div className="dialog key-dialog endpoint-dialog" role="dialog" aria-label="Add OpenAI-compatible endpoint">
+          <h2>Add an OpenAI-compatible endpoint</h2>
+          <p>Connect any server that speaks the OpenAI API: a model you host yourself, another computer, or a hosted service. The agent needs a model that supports tool calling.</p>
+          <div className="endpoint-presets" role="group" aria-label="Common servers">
+            {ENDPOINT_PRESETS.map((preset) => (
+              <button type="button" key={preset.label} className="chip-button"
+                onClick={() => { setCustomUrl(preset.url); setCustomName((current) => current.trim() ? current : preset.name); setCustomProbe(null); setCustomError(""); }}>
+                {preset.label}
+              </button>
+            ))}
+          </div>
+          <input type="text" aria-label="Endpoint name" value={customName} placeholder="Name, for example Home server"
+            onChange={(e) => { setCustomName(e.target.value); setCustomError(""); }} />
+          <input type="text" aria-label="New endpoint URL" value={customUrl} placeholder="http://127.0.0.1:8080/v1"
+            onChange={(e) => { setCustomUrl(e.target.value); setCustomProbe(null); setCustomError(""); }}
+            onKeyDown={(e) => { if (e.key === "Enter" && !savingCustom) void handleAddCustomProvider(); }} />
+          <div className="inline-field">
+            <input type={showCustomKey ? "text" : "password"} aria-label="API key (optional)" value={customKey}
+              placeholder="API key (optional)" autoComplete="off"
+              onChange={(e) => { setCustomKey(e.target.value); setCustomProbe(null); setCustomError(""); }}
+              onKeyDown={(e) => { if (e.key === "Enter" && !savingCustom) void handleAddCustomProvider(); }} />
+            <button type="button" onClick={() => setShowCustomKey((shown) => !shown)} aria-pressed={showCustomKey}>{showCustomKey ? "Hide" : "Show"}</button>
+          </div>
+          <select aria-label="Where it runs" value={customWhere} onChange={(e) => setCustomWhere(e.target.value as "auto" | "device" | "remote")}>
+            <option value="auto">Where it runs: decide from the address</option>
+            <option value="device">This computer, or a network I trust</option>
+            <option value="remote">Another computer or an online service</option>
+          </select>
+          <p className="muted">The key is stored in Windows Credential Manager, never in a file. A hosted service gets task context only after you confirm it.</p>
+          {customProbe && (
+            <p className={`endpoint-probe ${probeTone(customProbe.outcome)}`} role="status">{probeMessage(customProbe, customUrl)}</p>
+          )}
+          {customError && <p className="error-text">{customError}</p>}
+          <div className="actions">
+            <button onClick={() => setShowCustomModal(false)} disabled={savingCustom}>Cancel</button>
+            <button onClick={() => void testCustomEndpoint()} disabled={testingCustom || savingCustom || !customUrl.trim()}>
+              {testingCustom ? "Testing…" : "Test connection"}
+            </button>
+            {customProbe && customProbe.outcome !== "ready" && customProbe.outcome !== "needs_key" && customProbe.outcome !== "bad_key" && customProbe.outcome !== "invalid_url" && (
+              <button onClick={() => void handleAddCustomProvider(true)} disabled={savingCustom || !customName.trim()}>Add anyway</button>
+            )}
+            <button className="primary" onClick={() => void handleAddCustomProvider()} disabled={savingCustom || testingCustom || !customName.trim() || !customUrl.trim()}>
+              {savingCustom ? "Adding…" : "Add endpoint"}
             </button>
           </div>
         </div>
