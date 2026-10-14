@@ -31,6 +31,12 @@ function Assert-NativeSuccess([string]$CommandName) {
     if ($LASTEXITCODE -ne 0) { throw "$CommandName failed with exit code $LASTEXITCODE" }
 }
 
+# UTF-8 without a BOM: Windows PowerShell 5.1's `Set-Content -Encoding utf8`
+# prepends one, and a BOM can break Cargo.toml / tauri.conf.json parsing.
+function Write-Utf8NoBom([string]$Path, [string]$Value) {
+    [System.IO.File]::WriteAllText($Path, $Value, (New-Object System.Text.UTF8Encoding($false)))
+}
+
 Push-Location $ProjectDir
 try {
     if (@(git status --porcelain).Count -gt 0) {
@@ -45,15 +51,25 @@ try {
     $regex = [regex]'(?m)^version\s*=\s*"[^"]+"'
     if (-not $regex.IsMatch($cargo)) { throw "No version line found in Cargo.toml." }
     $cargo = $regex.Replace($cargo, "version = `"$Version`"", 1)
-    Set-Content -Path $CargoToml -Value $cargo -NoNewline -Encoding utf8
+    Write-Utf8NoBom $CargoToml $cargo
 
     $tauri = Get-Content $TauriConf -Raw
     $tauriRegex = [regex]'"version"\s*:\s*"[^"]+"'
     if (-not $tauriRegex.IsMatch($tauri)) { throw "No version found in tauri.conf.json." }
     $tauri = $tauriRegex.Replace($tauri, "`"version`": `"$Version`"", 1)
-    Set-Content -Path $TauriConf -Value $tauri -NoNewline -Encoding utf8
+    Write-Utf8NoBom $TauriConf $tauri
 
-    cargo update --workspace --offline 2>$null
+    # Windows PowerShell raises NativeCommandError for a native command's
+    # stderr while $ErrorActionPreference is Stop, which aborted the offline
+    # probe and skipped the commit; keep it quiet and restore the preference.
+    $previousPreference = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        cargo update --workspace --offline 2>$null
+    }
+    finally {
+        $ErrorActionPreference = $previousPreference
+    }
     if ($LASTEXITCODE -ne 0) { cargo update --workspace }
     Assert-NativeSuccess "cargo update --workspace"
 
