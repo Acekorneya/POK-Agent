@@ -761,6 +761,15 @@ pub(super) fn is_grounding_evidence_tool(name: &str) -> bool {
     )
 }
 
+/// Tools that only report a fact with no effect on the screen or system, where
+/// an identical second call adds nothing the first did not already give.
+pub(super) fn is_pure_lookup_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "get_current_time" | "read_clipboard" | "list_windows" | "observe_desktop"
+    )
+}
+
 pub(super) fn qualifies_as_fresh_evidence(name: &str, value: &Value, ok: bool) -> bool {
     is_grounding_evidence_tool(name)
         && ok

@@ -78,7 +78,7 @@ pub(super) fn active_task_reminder(
         "Use tools as needed and answer only this active request."
     };
     let verified = verified_state.map_or_else(
-        || "- none yet".into(),
+        || "- no window observed yet. Results from other tools above (the clock, files, web, commands) are evidence too: when they already answer the request, answer.".into(),
         |verified| {
             format!(
                 "- outcome: {}\n- last action: {}\n- application: {}\n- title: {}\n- observed URL: {}\n- page status: {}\n- evidence: {}",

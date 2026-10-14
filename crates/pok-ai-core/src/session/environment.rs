@@ -585,18 +585,16 @@ impl Session {
     /// The planner's first call on a desktop task is almost always a look at
     /// the screen (129 of 152 arena tasks). When an application window is in
     /// front, capture it before the first turn and hand it over as that
-    /// call's result, so the first turn can already act. A terminal, the
-    /// agent's own window, or the bare desktop is left to the planner.
+    /// call's result, so the first turn can already act. When a terminal, the
+    /// agent's own window, or the bare desktop is in front, the planner still
+    /// starts knowing the state of the computer: it is handed the desktop
+    /// overview (monitors and windows), which orients but never authorizes
+    /// input.
     pub(super) async fn initial_look(&mut self, send_images: bool) -> Result<()> {
-        if !self
-            .tools
-            .names()
-            .iter()
-            .any(|name| name == "capture_screen")
-        {
-            return Ok(());
-        }
-        let Some(window) = self
+        let names = self.tools.names();
+        let can_capture = names.iter().any(|name| name == "capture_screen");
+        let can_overview = names.iter().any(|name| name == "observe_desktop");
+        let foreground = self
             .context
             .platform
             .foreground_window()
@@ -608,14 +606,25 @@ impl Session {
                     && !window.minimized
                     && !window.elevated
                     && !shell_or_agent_window(window)
-            })
-        else {
-            return Ok(());
-        };
-        let call = CompletedToolCall {
-            id: format!("initial-look-{}", Uuid::new_v4()),
-            name: "capture_screen".into(),
-            arguments: json!({"scope": "window", "window_id": window.id}),
+            });
+        let (call, window) = match foreground {
+            Some(window) if can_capture => (
+                CompletedToolCall {
+                    id: format!("initial-look-{}", Uuid::new_v4()),
+                    name: "capture_screen".into(),
+                    arguments: json!({"scope": "window", "window_id": window.id}),
+                },
+                Some(window),
+            ),
+            _ if can_overview => (
+                CompletedToolCall {
+                    id: format!("initial-look-{}", Uuid::new_v4()),
+                    name: "observe_desktop".into(),
+                    arguments: json!({}),
+                },
+                None,
+            ),
+            _ => return Ok(()),
         };
         let result = self
             .tools
@@ -646,7 +655,12 @@ impl Session {
             .extend(tool_result_messages(&call, result, send_images));
         self.log(
             "initial_look",
-            json!({"window": {"title": window.title, "application": window.process_name}}),
+            match &window {
+                Some(window) => {
+                    json!({"window": {"title": window.title, "application": window.process_name}})
+                }
+                None => json!({"overview": true}),
+            },
         )?;
         Ok(())
     }

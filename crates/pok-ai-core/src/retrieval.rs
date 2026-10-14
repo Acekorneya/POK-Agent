@@ -3,6 +3,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     path::{Path, PathBuf},
+    time::{Duration, Instant},
 };
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -13,6 +14,15 @@ use crate::{Result, memory::sanitize_fts_query};
 
 const SCHEMA_VERSION: i64 = 1;
 const MAX_FILE_BYTES: u64 = 256 * 1024;
+/// Changed files are written in batches of this many per transaction.
+const REFRESH_BATCH: usize = 200;
+/// A workspace is indexed up to this many files and this much text; a folder
+/// past either is a data dump or a system tree, not a project, and its
+/// remainder is left to the search and read tools.
+const MAX_INDEXED_FILES: usize = 4_000;
+const MAX_INDEXED_BYTES: u64 = 48 * 1024 * 1024;
+/// Directory entries visited in one walk before it gives up.
+const MAX_WALK_ENTRIES: usize = 60_000;
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -96,25 +106,64 @@ impl RetrievalService {
     }
 
     pub fn refresh(&mut self) -> Result<usize> {
+        self.refresh_within(None)
+    }
+
+    /// Bring the index up to date, giving up after `budget` so a first index
+    /// of a large workspace never stalls a run: the next refresh continues
+    /// from the files already stored. Files that vanished are only pruned by
+    /// a pass that finished the whole walk.
+    pub fn refresh_within(&mut self, budget: Option<Duration>) -> Result<usize> {
+        let started = Instant::now();
+        self.connection.execute_batch("BEGIN")?;
+        let outcome = self.refresh_walk(started, budget);
+        let finished = match &outcome {
+            Ok(_) => self.connection.execute_batch("COMMIT"),
+            Err(_) => self.connection.execute_batch("ROLLBACK"),
+        };
+        let changed = outcome?;
+        finished?;
+        Ok(changed)
+    }
+
+    fn refresh_walk(&mut self, started: Instant, budget: Option<Duration>) -> Result<usize> {
         let mut seen = HashSet::new();
         let mut changed = 0usize;
+        let mut pending = 0usize;
+        let root = self.workspace.clone();
+        // Unwanted directories are pruned, not walked and then filtered.
         let walker = ignore::WalkBuilder::new(&self.workspace)
             .hidden(false)
             .git_ignore(true)
             .git_global(true)
             .git_exclude(true)
+            .filter_entry(move |entry| {
+                entry.depth() == 0 || !entry.path().strip_prefix(&root).is_ok_and(generated_path)
+            })
             .build();
+        let (mut walked, mut indexed_bytes) = (0usize, 0u64);
         for entry in walker.filter_map(std::result::Result::ok) {
+            if budget.is_some_and(|budget| started.elapsed() > budget) {
+                return Ok(changed);
+            }
+            walked += 1;
+            if walked > MAX_WALK_ENTRIES || seen.len() >= MAX_INDEXED_FILES {
+                break;
+            }
             let path = entry.path();
             let Ok(metadata) = entry.metadata() else {
                 continue;
             };
             if !path.is_file()
                 || metadata.len() > MAX_FILE_BYTES
+                || !indexable_path(path)
                 || sensitive_path(path)
-                || generated_path(path)
             {
                 continue;
+            }
+            indexed_bytes += metadata.len();
+            if indexed_bytes > MAX_INDEXED_BYTES {
+                break;
             }
             let relative = path
                 .strip_prefix(&self.workspace)
@@ -157,20 +206,24 @@ impl RetrievalService {
                 )?;
                 continue;
             }
-            let transaction = self.connection.transaction()?;
-            transaction.execute("DELETE FROM chunks WHERE path=?1", [&relative])?;
+            self.connection
+                .execute("DELETE FROM chunks WHERE path=?1", [&relative])?;
             for chunk in chunk_source(&relative, &text) {
-                transaction.execute(
+                self.connection.execute(
                     "INSERT INTO chunks(path,start_line,end_line,symbol,content,is_source,fingerprint) VALUES(?1,?2,?3,?4,?5,?6,?7)",
                     params![relative, chunk.0 as i64, chunk.1 as i64, chunk.2, chunk.3, is_source_path(Path::new(&relative)) as i64, fingerprint],
                 )?;
             }
-            transaction.execute(
+            self.connection.execute(
                 "INSERT OR REPLACE INTO files(path,fingerprint,modified_ns) VALUES(?1,?2,?3)",
                 params![relative, fingerprint, modified_ns],
             )?;
-            transaction.commit()?;
             changed += 1;
+            pending += 1;
+            if pending >= REFRESH_BATCH {
+                self.connection.execute_batch("COMMIT; BEGIN")?;
+                pending = 0;
+            }
         }
         let stored = {
             let mut statement = self.connection.prepare("SELECT path FROM files")?;
@@ -179,10 +232,10 @@ impl RetrievalService {
                 .collect::<std::result::Result<Vec<_>, _>>()?
         };
         for path in stored.into_iter().filter(|path| !seen.contains(path)) {
-            let transaction = self.connection.transaction()?;
-            transaction.execute("DELETE FROM chunks WHERE path=?1", [&path])?;
-            transaction.execute("DELETE FROM files WHERE path=?1", [&path])?;
-            transaction.commit()?;
+            self.connection
+                .execute("DELETE FROM chunks WHERE path=?1", [&path])?;
+            self.connection
+                .execute("DELETE FROM files WHERE path=?1", [&path])?;
             changed += 1;
         }
         Ok(changed)
@@ -364,6 +417,8 @@ fn sensitive_path(path: &Path) -> bool {
         || name.ends_with(".p12")
 }
 
+/// A path (relative to the workspace) inside a dependency, build-output, cache,
+/// or system directory.
 fn generated_path(path: &Path) -> bool {
     path.components().any(|component| {
         matches!(
@@ -372,9 +427,100 @@ fn generated_path(path: &Path) -> bool {
                 .to_string_lossy()
                 .to_ascii_lowercase()
                 .as_str(),
-            ".git" | "node_modules" | "target" | "dist" | "build" | ".next" | "vendor"
+            ".git"
+                | ".hg"
+                | ".svn"
+                | "node_modules"
+                | "target"
+                | "dist"
+                | "build"
+                | "out"
+                | "obj"
+                | ".next"
+                | ".nuxt"
+                | ".gradle"
+                | ".idea"
+                | ".vs"
+                | ".venv"
+                | "venv"
+                | "site-packages"
+                | "__pycache__"
+                | ".cache"
+                | ".pytest_cache"
+                | ".mypy_cache"
+                | "coverage"
+                | "vendor"
+                | "$recycle.bin"
+                | "system volume information"
         )
     })
+}
+
+/// Text a person would search for: source, scripts, configuration, and
+/// documentation. Images, binaries, resource and data dumps (.res, .csv, .log,
+/// .mof, ...) are never indexed; the file tools still read them when asked.
+fn indexable_path(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if matches!(
+        name.as_str(),
+        "dockerfile" | "makefile" | "cmakelists.txt" | "readme" | "license"
+    ) {
+        return true;
+    }
+    if name.ends_with(".min.js") || name.ends_with(".lock") || name.ends_with(".map") {
+        return false;
+    }
+    is_source_path(path)
+        || matches!(
+            path.extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase()
+                .as_str(),
+            "rb" | "php"
+                | "scala"
+                | "lua"
+                | "dart"
+                | "r"
+                | "sql"
+                | "sh"
+                | "bash"
+                | "zsh"
+                | "ps1"
+                | "psm1"
+                | "bat"
+                | "cmd"
+                | "vue"
+                | "svelte"
+                | "mjs"
+                | "cjs"
+                | "html"
+                | "htm"
+                | "css"
+                | "scss"
+                | "md"
+                | "mdx"
+                | "rst"
+                | "txt"
+                | "toml"
+                | "yaml"
+                | "yml"
+                | "json"
+                | "jsonc"
+                | "xml"
+                | "ini"
+                | "cfg"
+                | "conf"
+                | "csproj"
+                | "gradle"
+                | "cmake"
+                | "proto"
+                | "graphql"
+        )
 }
 
 fn overlap_at_least_half(a_start: usize, a_end: usize, b_start: usize, b_end: usize) -> bool {
@@ -426,6 +572,67 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn refresh_stops_at_its_budget_and_continues_next_time() {
+        let root = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        for index in 0..3 {
+            std::fs::write(
+                root.path().join(format!("file{index}.md")),
+                format!("overview number {index}"),
+            )
+            .unwrap();
+        }
+        let mut service = RetrievalService::open(data.path(), root.path()).unwrap();
+        assert_eq!(service.refresh_within(Some(Duration::ZERO)).unwrap(), 0);
+        assert!(
+            service
+                .search("overview", RetrievalIntent::General, 10)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(service.refresh().unwrap(), 3);
+        assert_eq!(
+            service
+                .search("overview", RetrievalIntent::General, 10)
+                .unwrap()
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    fn only_searchable_text_outside_generated_folders_is_indexed() {
+        let root = tempfile::tempdir().unwrap();
+        let data = tempfile::tempdir().unwrap();
+        let write = |relative: &str| {
+            let path = root.path().join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "searchable widget text").unwrap();
+        };
+        for kept in [
+            "src/lib.rs",
+            "docs/guide.md",
+            "scripts/run.ps1",
+            "Dockerfile",
+        ] {
+            write(kept);
+        }
+        for skipped in [
+            "logo.png",
+            "data/export.csv",
+            "resource/strings.res",
+            "node_modules/pkg/index.js",
+            "target/debug/notes.md",
+            "app.min.js",
+            "Cargo.lock",
+        ] {
+            write(skipped);
+        }
+        let mut service = RetrievalService::open(data.path(), root.path()).unwrap();
+        assert_eq!(service.refresh().unwrap(), 4);
     }
 
     #[test]

@@ -2208,6 +2208,10 @@ pub fn workspace_code_context_candidates(
     }).collect()
 }
 
+/// How long one run may spend bringing the workspace index up to date; a large
+/// first index continues over the following runs.
+const WORKSPACE_INDEX_BUDGET: Duration = Duration::from_secs(4);
+
 pub fn indexed_workspace_context_candidates(
     task: &str,
     workspace: &Path,
@@ -2216,7 +2220,7 @@ pub fn indexed_workspace_context_candidates(
     limit: usize,
 ) -> Result<(Vec<DecisionCandidate>, usize)> {
     let mut retrieval = RetrievalService::open(data_dir, workspace)?;
-    let changed_files = retrieval.refresh()?;
+    let changed_files = retrieval.refresh_within(Some(WORKSPACE_INDEX_BUDGET))?;
     let candidates = retrieval
         .search(task, intent, limit)?
         .into_iter()

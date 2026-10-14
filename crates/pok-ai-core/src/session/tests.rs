@@ -5885,6 +5885,82 @@ async fn a_tool_that_keeps_failing_is_withheld_and_the_run_answers() {
     assert!(refused, "{:?}", session.messages);
 }
 
+/// Asks for the time every turn while the tool is offered and answers once it
+/// is withdrawn: the shape of the desktop run that made thirteen identical
+/// get_current_time calls.
+struct KeepsAskingTheTimeBrain {
+    tool_requests: AtomicU64,
+}
+
+#[async_trait]
+impl Brain for KeepsAskingTheTimeBrain {
+    async fn list_models(&self) -> Result<Vec<String>> {
+        Ok(vec!["mock".into()])
+    }
+    fn stream(&self, request: BrainRequest) -> crate::brain::BrainStream {
+        if request
+            .tools
+            .iter()
+            .any(|tool| tool.name == "get_current_time")
+        {
+            let attempt = self.tool_requests.fetch_add(1, Ordering::SeqCst) + 1;
+            Box::pin(futures::stream::iter(vec![
+                Ok(BrainEvent::ToolCall {
+                    call: CompletedToolCall {
+                        id: format!("time-{attempt}"),
+                        name: "get_current_time".into(),
+                        arguments: json!({}),
+                    },
+                }),
+                Ok(BrainEvent::Finished {
+                    reason: Some("tool_calls".into()),
+                }),
+            ]))
+        } else {
+            Box::pin(futures::stream::iter(vec![
+                Ok(BrainEvent::TextDelta {
+                    text: "It is the time the tool reported.".into(),
+                }),
+                Ok(BrainEvent::Finished {
+                    reason: Some("stop".into()),
+                }),
+            ]))
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_lookup_the_model_keeps_repeating_is_withdrawn_so_it_answers() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let brain = Arc::new(KeepsAskingTheTimeBrain {
+        tool_requests: AtomicU64::new(0),
+    });
+    let mut registry = ToolRegistry::new();
+    crate::builtins::register_desktop_tools(&mut registry);
+    let context = crate::builtins::tests::mock_input_context(
+        Arc::new(crate::platform::MockDesktop::default()),
+        &temp_dir,
+    );
+    let mut session = Session::new(
+        brain.clone(),
+        Arc::new(registry),
+        context,
+        "mock-model".into(),
+        64,
+    )
+    .unwrap();
+    let summary = session.run("what time is right now").await.unwrap();
+    assert!(
+        summary.answer.contains("time the tool reported"),
+        "{}",
+        summary.answer
+    );
+    // The first call, one warned repeat, one more, then the tool is withdrawn.
+    assert_eq!(brain.tool_requests.load(Ordering::SeqCst), 3);
+    let trace = std::fs::read_to_string(summary.artifact_dir.join("trace.jsonl")).unwrap();
+    assert!(trace.contains("\"kind\":\"repeated_lookup\""), "{trace}");
+}
+
 /// Calls click_target on its first turn whether or not it was offered, as a
 /// model that read the tool's name in the catalog does.
 struct CallsLockedClickBrain {
@@ -7007,7 +7083,7 @@ fn replay_harness() -> FastHarness {
         calls: harness.clicks.clone(),
         static_screen: harness.static_screen.clone(),
     });
-    for name in ["activate_window", "capture_screen"] {
+    for name in ["activate_window", "capture_screen", "observe_desktop"] {
         tools.register(RecordingInputTool {
             name,
             calls: Default::default(),
@@ -7796,7 +7872,8 @@ async fn the_first_turn_starts_with_the_application_on_screen() {
     // It counts as the run's fresh evidence, as the planner's own look would:
     // a run that acts from it and succeeds is verified, and its skill learns.
     assert!(harness.session.decision_router_fresh_evidence);
-    // A terminal in front (a question typed at the command line): nothing.
+    // A terminal in front (a question typed at the command line): the planner
+    // still starts with the desktop overview, not blind.
     let mut harness = replay_harness();
     if let Some(observation) = harness.session.context.latest_observation.lock().as_mut() {
         observation.foreground_window.as_mut().unwrap().process_name = "WindowsTerminal.exe".into();
@@ -7811,7 +7888,9 @@ async fn the_first_turn_starts_with_the_application_on_screen() {
     harness.session.context.platform = crate::platform::MockDesktop::new(observation);
     let before = harness.session.messages.len();
     harness.session.initial_look(true).await.unwrap();
-    assert_eq!(harness.session.messages.len(), before);
+    let added = &harness.session.messages[before..];
+    assert_eq!(added[0].tool_calls[0].name, "observe_desktop");
+    assert_eq!(added[1].role, "tool");
 }
 
 #[test]

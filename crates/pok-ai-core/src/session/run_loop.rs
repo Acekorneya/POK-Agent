@@ -162,15 +162,33 @@ impl Session {
         }
         let retrieval_intent = self.retrieval_intent(&prompt).await?;
         if self.active_tool_groups.contains("coding") {
-            let indexed = indexed_workspace_context_candidates(
-                &prompt,
-                &self.context.workspace,
-                &self.context.data_dir,
-                retrieval_intent,
-                self.decision_router_config
+            // Indexing walks and reads the workspace: off the async threads,
+            // and cancellable, so Stop works while a large index builds.
+            let index_task = {
+                let (prompt, workspace, data_dir) = (
+                    prompt.clone(),
+                    self.context.workspace.clone(),
+                    self.context.data_dir.clone(),
+                );
+                let limit = self
+                    .decision_router_config
                     .as_ref()
-                    .map_or(12, |config| config.max_candidates),
-            );
+                    .map_or(12, |config| config.max_candidates);
+                tokio::task::spawn_blocking(move || {
+                    indexed_workspace_context_candidates(
+                        &prompt,
+                        &workspace,
+                        &data_dir,
+                        retrieval_intent,
+                        limit,
+                    )
+                })
+            };
+            let indexed = tokio::select! {
+                () = self.context.cancellation.cancelled() => return Err(PokError::Cancelled),
+                joined = index_task => joined
+                    .map_err(|error| PokError::Tool(format!("workspace index task failed: {error}")))?,
+            };
             let (candidates, changed_files) = match indexed {
                 Ok(value) => value,
                 Err(error) => {
@@ -512,6 +530,9 @@ impl Session {
         // completes the run. Recovery retries must never silently restore tools.
         let mut final_answer_only_active = false;
         let mut reasoning_output_limit_streak = 0_u32;
+        // The last pure lookup and how many times in a row it was repeated
+        // unchanged: a model that keeps re-asking for what it already holds.
+        let mut repeated_lookup: (String, u32) = (String::new(), 0);
         let mut grounded_evidence_observed = false;
         let mut ui_evidence_since_artifact = false;
         let mut clean_visual_title: Option<String> = None;
@@ -3047,6 +3068,35 @@ impl Session {
                     Some(stub) => Ok(stub),
                     None => result,
                 };
+                if is_pure_lookup_tool(&call.name) && result.is_ok() {
+                    let signature = format!("{}:{}", call.name, call.arguments);
+                    if repeated_lookup.0 == signature {
+                        repeated_lookup.1 += 1;
+                    } else {
+                        repeated_lookup = (signature, 0);
+                    }
+                    if repeated_lookup.1 >= 1 {
+                        self.log(
+                            "repeated_lookup",
+                            json!({"tool": call.name, "repeats": repeated_lookup.1}),
+                        )?;
+                    }
+                    if repeated_lookup.1 == 1 {
+                        post_tool_batch_messages.push(BrainMessage::text_with_origin(
+                            "user",
+                            format!(
+                                "<system-reminder>You already called {} with the same arguments and have its result above. Asking again returns the same information. Use it and answer now, or take a different step.</system-reminder>",
+                                call.name
+                            ),
+                            MessageOrigin::SystemReminder,
+                        ));
+                    } else if repeated_lookup.1 >= 2 {
+                        // Still asking: withdraw the tools so the answer is written.
+                        final_answer_only_active = true;
+                    }
+                } else if !is_pure_lookup_tool(&call.name) {
+                    repeated_lookup = (String::new(), 0);
+                }
                 for message in tool_result_messages(&call, result, send_images) {
                     if message.role == "tool" {
                         self.messages.push(message);
