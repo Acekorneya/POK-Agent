@@ -30,6 +30,14 @@ pub(super) struct ScrollViewArgs {
     pub(super) repeat: u8,
     #[serde(default)]
     pub(super) target_id: Option<TargetId>,
+    /// Put the wheel at this X pixel of the supplied model image (with y), over the content that
+    /// should move. Takes the place of target_id. The observation's pointer_over says what the
+    /// pointer is over now.
+    #[serde(default)]
+    pub(super) x: Option<i32>,
+    /// Y pixel of the supplied model image; see x.
+    #[serde(default)]
+    pub(super) y: Option<i32>,
 }
 
 pub(super) const fn one_scroll() -> u8 {
@@ -47,6 +55,12 @@ pub(super) struct ScrollUntilTextArgs {
     pub(super) max_pages: u8,
     #[serde(default)]
     pub(super) target_id: Option<TargetId>,
+    /// Put the wheel at this X pixel of the supplied model image (with y); see scroll_view.
+    #[serde(default)]
+    pub(super) x: Option<i32>,
+    /// Y pixel of the supplied model image; see x.
+    #[serde(default)]
+    pub(super) y: Option<i32>,
 }
 
 pub(super) const fn scroll_down() -> ScrollDirection {
@@ -74,7 +88,7 @@ impl Tool for ScrollViewTool {
     }
 
     fn description(&self) -> &'static str {
-        "Scroll the latest observed Windows page, list, dialog, or POS panel using semantic direction and distance. Use amount=page for normal navigation or small for fine movement. Optionally target a fresh numbered control. The tool verifies content movement and falls back from the wheel to keyboard and then a positively detected scrollbar. It automatically recaptures and returns the new grounded view, scroll_method, attempts, and stop_reason; do not call capture_screen immediately afterward."
+        "Scroll the latest observed Windows page, list, dialog, or POS panel using semantic direction and distance. Use amount=page for normal navigation or small for fine movement. Optionally target a fresh numbered control (target_id) or put the wheel at an x/y of the supplied image. Every observation's pointer_over says what the pointer is over. The tool verifies content movement and falls back from the wheel to keyboard and then a positively detected scrollbar. It automatically recaptures and returns the new grounded view, scroll_method, attempts, and stop_reason; do not call capture_screen immediately afterward."
     }
 
     fn input_schema(&self) -> Value {
@@ -92,31 +106,53 @@ impl Tool for ScrollViewTool {
         }
         let before = current_observation(context, args.observation_id.as_deref(), "scroll_view")?;
         ensure_targeted_capture(&before)?;
-        let inferred_target = args
-            .target_id
-            .is_none()
+        let explicit_point = explicit_scroll_point(&before, args.x, args.y)?;
+        let inferred_target = (args.target_id.is_none() && explicit_point.is_none())
             .then(|| infer_scroll_target(&before))
             .flatten();
         let effective_target = args
             .target_id
             .as_ref()
             .or(inferred_target.as_ref().map(|target| &target.0));
-        let (point, target_label) = scroll_point(&before, effective_target)?;
+        let (point, target_label) = match explicit_point {
+            Some(point) => (point, None),
+            None => scroll_point(&before, effective_target)?,
+        };
         let notches = scroll_notches(args.direction, args.amount);
         let initial_observation = before.clone();
         let mut observation = before;
         let mut attempts = Vec::new();
         let mut scroll_method = None;
         let mut edge_reached = false;
-        for _ in 0..args.repeat {
-            let result =
-                verified_scroll(context, observation, point, args.direction, args.amount).await?;
-            observation = result.observation;
-            attempts.extend(result.attempts);
-            if result.viewport_changed {
-                scroll_method = result.method;
-            } else {
-                edge_reached = result.edge_reached;
+        // A target the harness chose may sit where the wheel does nothing;
+        // the middle of the page or window is the second place to try.
+        let mut points = vec![point];
+        if inferred_target.is_some()
+            && let Ok((middle, _)) = scroll_point(&initial_observation, None)
+            && middle != point
+        {
+            points.push(middle);
+        }
+        let mut wheel_point = point;
+        for point in points {
+            wheel_point = point;
+            edge_reached = false;
+            for _ in 0..args.repeat {
+                let result =
+                    verified_scroll(context, observation, point, args.direction, args.amount)
+                        .await?;
+                observation = result.observation;
+                attempts.extend(result.attempts);
+                if result.viewport_changed {
+                    scroll_method = result.method;
+                } else {
+                    edge_reached = result.edge_reached;
+                    break;
+                }
+            }
+            if edge_reached
+                || observation_view_changed(&initial_observation, &observation, args.direction)
+            {
                 break;
             }
         }
@@ -139,6 +175,7 @@ impl Tool for ScrollViewTool {
             "wheel_notches": {"x": notches.0, "y": notches.1},
             "target_id": args.target_id.as_ref().map(TargetId::normalized),
             "target_label": target_label,
+            "model_point": args.x.zip(args.y),
             "inferred_target_id": inferred_target.as_ref().map(|target| target.0.normalized()),
             "inferred_target_basis": inferred_target.as_ref().map(|target| target.1.clone()),
         });
@@ -148,11 +185,8 @@ impl Tool for ScrollViewTool {
         value["stop_reason"] = json!(stop_reason);
         value["viewport_changed"] = json!(viewport_changed);
         value["edge_reached"] = json!(edge_reached);
-        if !viewport_changed {
-            value["suggested_scroll_targets"] = suggested_scroll_targets(&initial_observation);
-            value["instruction"] = json!(
-                "The untargeted scroll did not move the intended content. Retry with target_id from suggested_scroll_targets or use scroll_until_text with the known label."
-            );
+        if !viewport_changed && !edge_reached {
+            describe_missed_wheel(&mut value, &initial_observation, wheel_point);
         }
         value["state_change"] = state_change_value(
             &initial_observation,
@@ -198,6 +232,15 @@ fn centre_inside(inner: &Rect, outer: &Rect) -> bool {
         && y < i64::from(outer.y) + i64::from(outer.height)
 }
 
+/// Whether `bounds` is a slice cut off at the top or bottom of the captured
+/// view. An element covering most of the view's height is the content itself.
+fn cut_by_view_edge(bounds: &Rect, view: &Rect) -> bool {
+    let top = i64::from(bounds.y);
+    let bottom = top + i64::from(bounds.height);
+    let touches = top <= i64::from(view.y) || bottom >= i64::from(view.y) + i64::from(view.height);
+    touches && i64::from(bounds.height) * 2 < i64::from(view.height)
+}
+
 pub(super) fn infer_scroll_target(observation: &Observation) -> Option<(TargetId, String)> {
     // Never scroll over browser chrome (tabs, toolbar, bookmarks bar): a
     // bookmark whose name shares a word with the task once received every
@@ -213,6 +256,19 @@ pub(super) fn infer_scroll_target(observation: &Observation) -> Option<(TargetId
                 .is_none_or(|region| centre_inside(&target.bounds, region))
         })
         .collect::<Vec<_>>();
+    // An element cut off by the top or bottom of the view (a message half
+    // under the channel header) has its centre over whatever covers it, not
+    // over the scrolling content: use a fully visible one when there is one.
+    if let Some(capture) = observation.target.as_ref().map(|target| &target.bounds) {
+        let visible = candidates
+            .iter()
+            .copied()
+            .filter(|target| !cut_by_view_edge(&target.bounds, capture))
+            .collect::<Vec<_>>();
+        if !visible.is_empty() {
+            candidates = visible;
+        }
+    }
     candidates.sort_by_key(|target| std::cmp::Reverse(target.rank_score));
     let best = candidates.first()?;
     if candidates
@@ -228,6 +284,53 @@ pub(super) fn infer_scroll_target(observation: &Observation) -> Option<(TargetId
             best.control_type, best.name
         ),
     ))
+}
+
+/// The wheel point a model asked for in image pixels, in screen coordinates.
+/// `None` when it gave none; both coordinates must come together.
+pub(super) fn explicit_scroll_point(
+    observation: &Observation,
+    x: Option<i32>,
+    y: Option<i32>,
+) -> Result<Option<(i32, i32)>> {
+    match (x, y) {
+        (Some(x), Some(y)) => model_point_to_physical(observation, x, y).map(Some),
+        (None, None) => Ok(None),
+        _ => Err(PokError::Tool(
+            "give both x and y for the wheel point, or neither".into(),
+        )),
+    }
+}
+
+/// Tell the model where a scroll that moved nothing had its pointer and how
+/// to place it on the content instead.
+fn describe_missed_wheel(value: &mut Value, observation: &Observation, point: (i32, i32)) {
+    let over = target_under_point(observation, point);
+    value["suggested_scroll_targets"] = suggested_scroll_targets(observation);
+    value["instruction"] = json!(format!(
+        "The wheel turned over {} and nothing moved, so the pointer was not over the scrolling content. Retry with target_id of a fully visible item inside the content that should move (suggested_scroll_targets) or an x/y over it, or use scroll_until_text with the known label. The tool moves the pointer itself only if the wheel is needed.",
+        over["label"]
+            .as_str()
+            .map_or_else(|| "empty space".to_owned(), |label| format!("{label:?}"))
+    ));
+    value["target_under_point"] = over;
+}
+
+/// The smallest numbered target under the wheel's point, so a scroll that
+/// moved nothing can say where the pointer was, as a person sees it.
+pub(super) fn target_under_point(observation: &Observation, point: (i32, i32)) -> Value {
+    observation
+        .targets
+        .iter()
+        .filter(|target| target.bounds.contains(point.0, point.1))
+        .min_by_key(|target| u64::from(target.bounds.width) * u64::from(target.bounds.height))
+        .map_or(Value::Null, |target| {
+            json!({
+                "id": target.id,
+                "label": target.name.chars().take(80).collect::<String>(),
+                "role": target.control_type,
+            })
+        })
 }
 
 pub(super) fn suggested_scroll_targets(observation: &Observation) -> Value {
@@ -283,7 +386,10 @@ impl Tool for ScrollUntilTextTool {
             current_observation(context, args.observation_id.as_deref(), "scroll_until_text")?;
         ensure_targeted_capture(&observation)?;
         let initial_observation = observation.clone();
-        let (point, target_label) = scroll_point(&observation, args.target_id.as_ref())?;
+        let (point, target_label) = match explicit_scroll_point(&observation, args.x, args.y)? {
+            Some(point) => (point, None),
+            None => scroll_point(&observation, args.target_id.as_ref())?,
+        };
         let scan_started = Instant::now();
         let mut page_timings = Vec::new();
         let mut matched = visible_text_match_any(&observation, &queries);
@@ -359,11 +465,12 @@ impl Tool for ScrollUntilTextTool {
             scroll_method.map_or(Value::Null, |method| Value::String(method.to_owned()));
         value["stop_reason"] = json!(stop_reason);
         value["edge_reached"] = json!(stop_reason == "edge_reached");
-        value["viewport_changed"] = json!(observation_view_changed(
-            &initial_observation,
-            &observation,
-            args.direction,
-        ));
+        let viewport_changed =
+            observation_view_changed(&initial_observation, &observation, args.direction);
+        value["viewport_changed"] = json!(viewport_changed);
+        if stop_reason == "no_scroll_effect" && !viewport_changed {
+            describe_missed_wheel(&mut value, &initial_observation, point);
+        }
         value["state_change"] = state_change_value(
             &initial_observation,
             &observation,

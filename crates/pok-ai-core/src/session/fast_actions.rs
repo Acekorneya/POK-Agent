@@ -445,6 +445,25 @@ pub(super) fn is_read_only_fast_tool(tool: &str) -> bool {
 
 /// The default step when a named target is not on screen: continue down the
 /// page by one page.
+/// The scroll a replayed program step records in its goal ("scroll up by 1 x
+/// page ..."), as a candidate for the current screen.
+pub(super) fn replay_scroll_candidate(
+    goal: &str,
+    observation: &crate::types::Observation,
+) -> Option<DecisionCandidate> {
+    let mut words = goal.strip_prefix("scroll ")?.split_whitespace();
+    let direction = words.next()?;
+    let (Some("by"), Some(_), Some("x"), Some(amount)) =
+        (words.next(), words.next(), words.next(), words.next())
+    else {
+        return None;
+    };
+    let id = format!("scroll_{direction}_{amount}");
+    fast_scroll_candidates(observation)
+        .into_iter()
+        .find(|candidate| candidate.id == id)
+}
+
 pub(super) fn default_scroll_down(candidates: &[DecisionCandidate]) -> Option<&DecisionCandidate> {
     candidates.iter().find(|candidate| {
         is_read_only_fast_tool(&candidate.tool)
@@ -2830,6 +2849,7 @@ impl Session {
                 .fold(0.0_f64, f64::max);
             let pick_started = Instant::now();
             let mut picked_named_target = false;
+            let mut replayed_scroll = false;
             let candidate = if let Some(interrupt) = interrupt_hint.as_deref() {
                 let Some(matched) = crate::decision::exact_quoted_match(&candidates, interrupt)
                 else {
@@ -2908,6 +2928,18 @@ impl Session {
                     }),
                 )?;
                 matched.clone()
+            } else if self.skill_replay_active
+                && allowed.contains(&FastOperation::Scroll)
+                && let Some(scroll) = observation
+                    .as_ref()
+                    .and_then(|observation| replay_scroll_candidate(&goal, observation))
+            {
+                settle_interrupt!();
+                settle_completion!();
+                // A saved program scrolled here: the direction and size are
+                // the recorded ones, not a new choice.
+                replayed_scroll = true;
+                scroll
             } else if scroll_search
                 && !config.model_targets_trusted()
                 && let Some(default) = default_scroll_down(&candidates)
@@ -3398,6 +3430,12 @@ impl Session {
                 }),
             )?;
             if status == "stalled" {
+                break;
+            }
+            // A recorded scroll is complete once it moved the view: no
+            // router judgement of "this recorded step took effect" is needed.
+            if replayed_scroll && ok && feedback.outcome == "progress" {
+                status = "done";
                 break;
             }
             if ok && matches!(feedback.outcome.as_str(), "progress" | "observed") {

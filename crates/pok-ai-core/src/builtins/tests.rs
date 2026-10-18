@@ -2314,6 +2314,121 @@ fn unique_task_matching_target_is_inferred_for_nested_scroll() {
 }
 
 #[test]
+fn an_inferred_scroll_target_cut_by_the_view_edge_yields_to_a_visible_one() {
+    // A chat message half under the header outranks the others, but the
+    // wheel over its centre lands on the header, not the message list.
+    let mut observation = scroll_observation(&[], "image");
+    let view = observation.target.as_ref().unwrap().bounds.clone();
+    let item = |id: &str, y: i32, height: u32, rank_score: u16| InteractionTarget {
+        id: id.into(),
+        name: format!("Example message {id}"),
+        control_type: "list item".into(),
+        bounds: Rect {
+            x: view.x + 200,
+            y,
+            width: 600,
+            height,
+        },
+        source: TargetSource::Uia,
+        confidence: None,
+        enabled: true,
+        actionable: false,
+        click_point: None,
+        selected: None,
+        focused: false,
+        desktop_shell: false,
+        grounding_variant: None,
+        rank_score,
+        rank_reasons: vec!["task_match:1".into()],
+    };
+    observation.targets = vec![item("2", view.y, 60, 52), item("33", view.y + 200, 40, 44)];
+    let inferred = infer_scroll_target(&observation).expect("a visible target");
+    assert_eq!(inferred.0.normalized(), "33");
+
+    // With nothing else visible the clipped one is still better than none.
+    observation.targets.truncate(1);
+    let inferred = infer_scroll_target(&observation).expect("the only target");
+    assert_eq!(inferred.0.normalized(), "2");
+}
+
+#[test]
+fn a_missed_wheel_names_the_smallest_target_under_it() {
+    let mut observation = scroll_observation(&[], "image");
+    let view = observation.target.as_ref().unwrap().bounds.clone();
+    let target = |id: &str, name: &str, bounds: Rect| InteractionTarget {
+        id: id.into(),
+        name: name.into(),
+        control_type: "button".into(),
+        bounds,
+        source: TargetSource::Uia,
+        confidence: None,
+        enabled: true,
+        actionable: true,
+        click_point: None,
+        selected: None,
+        focused: false,
+        desktop_shell: false,
+        grounding_variant: None,
+        rank_score: 1,
+        rank_reasons: Vec::new(),
+    };
+    observation.targets = vec![
+        target(
+            "1",
+            "Example header",
+            Rect {
+                x: view.x,
+                y: view.y,
+                width: 800,
+                height: 80,
+            },
+        ),
+        target(
+            "2",
+            "Example search",
+            Rect {
+                x: view.x + 100,
+                y: view.y + 10,
+                width: 100,
+                height: 30,
+            },
+        ),
+    ];
+    let over = target_under_point(&observation, (view.x + 120, view.y + 20));
+    assert_eq!(over["label"], "Example search");
+    assert!(target_under_point(&observation, (view.x + 500, view.y + 500)).is_null());
+}
+
+#[test]
+fn a_scroll_point_in_image_pixels_needs_both_coordinates_and_maps_into_the_capture() {
+    let observation = scroll_observation(&[], "image");
+    let capture = observation.target.as_ref().unwrap().bounds.clone();
+    assert_eq!(
+        explicit_scroll_point(&observation, None, None).unwrap(),
+        None
+    );
+    assert!(explicit_scroll_point(&observation, Some(10), None).is_err());
+    assert!(explicit_scroll_point(&observation, None, Some(10)).is_err());
+    let (x, y) = explicit_scroll_point(&observation, Some(10), Some(20))
+        .unwrap()
+        .expect("a point");
+    assert!(capture.contains(x, y));
+    assert!(explicit_scroll_point(&observation, Some(-1), Some(20)).is_err());
+}
+
+#[test]
+fn the_observation_says_when_the_pointer_is_outside_the_captured_window() {
+    let mut observation = scroll_observation(&[], "image");
+    let view = observation.target.as_ref().unwrap().bounds.clone();
+    observation.cursor = None;
+    assert!(pointer_over(&observation).is_null());
+    observation.cursor = Some((view.x - 50, view.y - 50));
+    assert_eq!(pointer_over(&observation)["outside_capture"], json!(true));
+    observation.cursor = Some((view.x + 5, view.y + 5));
+    assert!(pointer_over(&observation).is_null());
+}
+
+#[test]
 fn desktop_windows_are_task_ranked_compact_and_monitor_mapped() {
     let monitors = vec![
         MonitorInfo {

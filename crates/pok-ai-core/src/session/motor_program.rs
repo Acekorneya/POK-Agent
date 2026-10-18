@@ -131,6 +131,22 @@ pub(super) fn motor_steps(tool: &str, arguments: &Value, result: &Value) -> Vec<
         // The user's own browser: opening a page and clicking a control by
         // its label replay through System 1; typing and choosing there do
         // not yet.
+        // A scroll that moved the view replays as a System 1 scroll choice;
+        // the planner's wheel point is not repeated, only the direction.
+        "scroll_view" => {
+            if result.get("viewport_changed").and_then(Value::as_bool) != Some(true) {
+                return Vec::new();
+            }
+            let text = |key: &str| action.get(key).and_then(Value::as_str);
+            match (text("direction"), text("amount")) {
+                (Some(direction), Some(amount)) => vec![json!({"scroll": {
+                    "direction": direction,
+                    "amount": amount,
+                    "repeat": action.get("repeat").and_then(Value::as_u64).unwrap_or(1).min(5),
+                }})],
+                _ => Vec::new(),
+            }
+        }
         "user_browser_navigate" => arguments
             .get("url")
             .and_then(Value::as_str)
@@ -447,6 +463,8 @@ pub(super) fn program_nodes(
     let original_words = signature_words(original_request);
     let request_words = signature_words(request);
     let mut nodes: Vec<(Option<String>, Option<&'static str>, Vec<Value>)> = Vec::new();
+    // The wording a scroll node adds to its goal (its direction and size).
+    let mut scroll_goals: BTreeMap<usize, String> = BTreeMap::new();
     let steps = program
         .get("steps")
         .and_then(Value::as_array)
@@ -481,6 +499,25 @@ pub(super) fn program_nodes(
                 None
             };
             nodes.push((Some(label.to_owned()), operation, Vec::new()));
+            continue;
+        }
+        if let Some(scroll) = step.get("scroll") {
+            let word = |key: &str| scroll.get(key).and_then(Value::as_str);
+            let (Some(direction @ ("up" | "down" | "left" | "right")), Some(amount)) =
+                (word("direction"), word("amount"))
+            else {
+                break;
+            };
+            // One node per page: each System 1 pick performs a single scroll.
+            let repeat = scroll
+                .get("repeat")
+                .and_then(Value::as_u64)
+                .unwrap_or(1)
+                .clamp(1, 5);
+            for _ in 0..repeat {
+                scroll_goals.insert(nodes.len(), format!("scroll {direction} by 1 x {amount}"));
+                nodes.push((None, Some("scroll"), Vec::new()));
+            }
             continue;
         }
         let entry = if let Some(key) = step.get("key").and_then(Value::as_str) {
@@ -535,6 +572,16 @@ pub(super) fn program_nodes(
                 "goal": format!("replay step {} of saved skill \"{}\"", index + 1, skill_title),
                 "done_when": done_when,
             });
+            if scroll_goals.contains_key(&index) {
+                // One recorded scroll is one scroll, not a search.
+                node["max_steps"] = json!(1);
+            }
+            if let Some(note) = scroll_goals.get(&index) {
+                node["goal"] = json!(format!(
+                    "{note} (step {} of saved skill \"{skill_title}\")",
+                    index + 1
+                ));
+            }
             if let Some(label) = label {
                 node["target_hint"] = json!(format!("\"{label}\""));
             }

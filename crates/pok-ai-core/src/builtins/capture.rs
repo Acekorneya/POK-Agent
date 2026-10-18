@@ -1113,6 +1113,9 @@ pub(crate) fn model_observation_value(observation: &Observation, annotate: bool)
             "origin": "top_left"
         },
         "cursor": observation.cursor.map(|(x, y)| local_point(x, y, &target.bounds, screenshot)),
+        // What the pointer sits on, as a person sees it under their hand: a
+        // scroll or click goes where this is, so the model can move it first.
+        "pointer_over": pointer_over(observation),
         "screenshots": screenshots,
         "annotation_mode": if annotate { "action_registry" } else { "none" },
         "annotated_target_ids": annotated_target_ids,
@@ -1481,6 +1484,21 @@ pub(super) fn ocr_value(observation: &Observation, task_hint: &str, limit: usize
         "line_count": total,
         "truncated": total > limit,
     }))
+}
+
+/// What the pointer is over in this capture: a target, nothing numbered
+/// (null), or `{"outside_capture": true}` when it is not over the captured
+/// window at all: the agent works cursor-free, so that is normal, and the
+/// model moves the pointer only when an action needs it.
+pub(super) fn pointer_over(observation: &Observation) -> Value {
+    let (Some(point), Some(target)) = (observation.cursor, observation.target.as_ref()) else {
+        return Value::Null;
+    };
+    if target.bounds.contains(point.0, point.1) {
+        target_under_point(observation, point)
+    } else {
+        json!({"outside_capture": true, "note": "the pointer is elsewhere; no need to move it unless an action needs it"})
+    }
 }
 
 pub(super) fn local_point(x: i32, y: i32, target: &Rect, screenshot: &Screenshot) -> (i32, i32) {

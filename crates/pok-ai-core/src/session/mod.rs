@@ -106,6 +106,10 @@ Use move_pointer for hover-only controls and drag_target or drag_pointer for sli
 direct-manipulation controls. Derived views are crops of the current authoritative observation, not new desktop
 states. Post-action tool results already contain the newest authoritative observation, so reuse them without a
 duplicate capture; omit observation_id when necessary rather than copying an older id.
+Tools act through UI Automation without moving the user's mouse where they can, so you know where things are
+from each target's box and never need the pointer for that. The observation's cursor and pointer_over only say where the
+real pointer is now (outside_capture means it is elsewhere, which is normal): move it only when an action needs it, for
+example a hover, a drag, or a wheel scroll over content, and prefer target_id (or x/y) on scroll_view to moving it yourself.
 For reading tasks, prefer primary_content when present: it contains compact semantic messages, rows,
 or list items and omits unrelated navigation and sidebars. Use ordered_content only when primary_content
 is empty or the task requires the wider page context.

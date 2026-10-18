@@ -7417,6 +7417,43 @@ fn a_long_horizon_plan_fits_in_one_call() {
 }
 
 #[test]
+fn a_scroll_that_moved_the_view_is_recorded_and_replays_as_a_scroll_node() {
+    let action = json!({"kind": "scroll", "direction": "up", "amount": "page", "repeat": 2});
+    let moved = json!({"action": action, "viewport_changed": true});
+    let steps = motor_steps("scroll_view", &json!({}), &moved);
+    assert_eq!(
+        steps,
+        vec![json!({"scroll": {"direction": "up", "amount": "page", "repeat": 2}})]
+    );
+    // A scroll that moved nothing is not part of the program.
+    let idle = json!({"action": action, "viewport_changed": false});
+    assert!(motor_steps("scroll_view", &json!({}), &idle).is_empty());
+
+    let program = json!({"steps": [{"click": "Example Channel"}, steps[0].clone()]});
+    let nodes = program_nodes(
+        &program,
+        "Read a channel",
+        "read the channel",
+        "read the channel",
+    );
+    // One node per recorded page, each a single System 1 scroll.
+    assert_eq!(nodes.len(), 3);
+    for node in &nodes[1..] {
+        assert_eq!(node["allowed_operations"], json!(["scroll"]));
+        let goal = node["goal"].as_str().unwrap();
+        assert!(goal.starts_with("scroll up by 1 x page"));
+        assert_eq!(node["max_steps"], json!(1));
+        let observation = launch_observation(None);
+        let candidate = replay_scroll_candidate(goal, &observation).expect("a scroll candidate");
+        assert_eq!(candidate.id, "scroll_up_page");
+    }
+    // Only a recorded scroll goal is read as one.
+    let observation = launch_observation(None);
+    assert!(replay_scroll_candidate("replay step 1 of saved skill", &observation).is_none());
+    assert!(replay_scroll_candidate("scroll sideways by 1 x page", &observation).is_none());
+}
+
+#[test]
 fn a_run_records_its_motor_steps_from_every_acting_tool() {
     let click = motor_steps(
         "click_target",
