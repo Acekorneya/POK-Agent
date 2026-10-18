@@ -2487,6 +2487,15 @@ mod native {
         if element.is_password().unwrap_or(false) || !element.is_enabled().unwrap_or(false) {
             return Ok(false);
         }
+        // Web editors (Discord's composer, chat boxes) keep their own model of
+        // the text: a Value-pattern write changes the DOM only, so Enter and
+        // Backspace act on stale state. They get real key presses instead.
+        if matches!(
+            element.get_framework_id().unwrap_or_default().as_str(),
+            "Chrome" | "Gecko"
+        ) {
+            return Ok(false);
+        }
         let Ok(pattern) = element.get_pattern::<UIValuePattern>() else {
             return Ok(false);
         };
