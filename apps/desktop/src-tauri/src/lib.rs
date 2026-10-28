@@ -2391,6 +2391,68 @@ async fn run_prompt(
                 .insert(acknowledgment_key);
         }
     }
+    if requested_backend == DecisionRouterBackend::LlmChoice {
+        if !decision_router_config.llm_choice.is_direct() {
+            return Err("Choose a System 1 model in Settings before using Any model.".into());
+        }
+        let fast_provider = decision_router_config
+            .llm_choice
+            .provider
+            .clone()
+            .unwrap_or_default();
+        let fast = fast_model_status(runtime.inner());
+        if !fast.ready {
+            return Err(format!(
+                "The System 1 provider {fast_provider} has no API key saved."
+            ));
+        }
+        // The planner's provider was already confirmed above; another hosted
+        // service receiving task and screen metadata needs its own yes.
+        if fast.external && fast_provider != provider {
+            let acknowledgment_key = format!(
+                "fast-model-v1\n{}\n{}\n{}",
+                fast_provider.to_ascii_lowercase(),
+                decision_router_config.llm_choice.model.to_ascii_lowercase(),
+                workspace.display()
+            );
+            let acknowledged = runtime
+                .external_provider_acknowledgments
+                .lock()
+                .await
+                .contains(&acknowledgment_key);
+            if !acknowledged {
+                let endpoint = decision_router_config
+                    .llm_choice
+                    .base_url
+                    .clone()
+                    .unwrap_or_default();
+                let decision = broker
+                    .approve(
+                        "external_decision_router_data",
+                        &serde_json::json!({
+                            "provider": fast_provider,
+                            "model": decision_router_config.llm_choice.model,
+                            "endpoint": endpoint,
+                            "data_boundary": "external_service",
+                            "context": ["active task", "current task step", "workspace paths and compact UI labels", "bounded related memory snippets"],
+                        }),
+                        "The System 1 model runs on an external service. Compact task and UI metadata may leave this device. Screenshots, full OCR, unrestricted history, ignored files, and detected secrets remain excluded. Confirm before sending the first request.",
+                    )
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if decision == ApprovalDecision::Deny {
+                    return Err(
+                        "external decision routing cancelled before task context was sent".into(),
+                    );
+                }
+                runtime
+                    .external_provider_acknowledgments
+                    .lock()
+                    .await
+                    .insert(acknowledgment_key);
+            }
+        }
+    }
     if local_lifecycle_supported(&provider) {
         let _transition = runtime.model_transition.lock().await;
         tokio::select! {
@@ -3048,12 +3110,25 @@ fn save_provider_key(
     Ok(())
 }
 
+/// The "any model" System 1: a small model on one of the user's providers,
+/// called directly (no sidecar).
+#[derive(Serialize)]
+struct FastModelStatus {
+    provider: Option<String>,
+    model: String,
+    /// A provider and model are chosen, and the provider's key is available
+    /// when it is a hosted service.
+    ready: bool,
+    external: bool,
+}
+
 #[derive(Serialize)]
 struct DecisionRouterStatus {
     enabled: bool,
     backend: DecisionRouterBackend,
     model: String,
     has_api_key: bool,
+    fast: FastModelStatus,
     laya: LayaRuntimeStatus,
     judge: JudgeRuntimeStatus,
     /// The opt-in router training log is on, and where its files go.
@@ -3531,19 +3606,51 @@ async fn ensure_judge_started(
     Ok((endpoint, token))
 }
 
+fn fast_model_status(runtime: &AppRuntime) -> FastModelStatus {
+    let config = runtime.config.lock();
+    let choice = &config.decision_router.llm_choice;
+    let provider = choice.provider.clone().filter(|_| choice.is_direct());
+    let (external, has_key) = provider
+        .as_deref()
+        .and_then(|name| {
+            config.provider(Some(name)).ok().map(|entry| {
+                (
+                    entry.resolved_data_boundary(name) == ProviderDataBoundary::ExternalService,
+                    entry
+                        .api_key_env
+                        .as_deref()
+                        .and_then(pok_ai_core::brain::get_api_key)
+                        .is_some_and(|key| !key.trim().is_empty()),
+                )
+            })
+        })
+        .unwrap_or((false, false));
+    FastModelStatus {
+        ready: provider.is_some() && (!external || has_key),
+        model: if provider.is_some() {
+            choice.model.clone()
+        } else {
+            String::new()
+        },
+        provider,
+        external,
+    }
+}
+
 async fn decision_router_status(runtime: &AppRuntime) -> DecisionRouterStatus {
     let config = runtime.config.lock().decision_router.clone();
     let has_api_key = pok_ai_core::brain::get_api_key(&config.api_key_env)
         .is_some_and(|key| !key.trim().is_empty());
+    let fast = fast_model_status(runtime);
     DecisionRouterStatus {
         enabled: config.enabled
             && config.backend != DecisionRouterBackend::Off
             && match config.backend {
                 DecisionRouterBackend::Jev => has_api_key,
                 DecisionRouterBackend::Laya => laya_installed(runtime),
-                // The LLM-choice and kev servers are started and managed
-                // outside the app.
-                DecisionRouterBackend::LlmChoice | DecisionRouterBackend::Kev => true,
+                DecisionRouterBackend::LlmChoice => fast.ready,
+                // The kev server is started and managed outside the app.
+                DecisionRouterBackend::Kev => true,
                 DecisionRouterBackend::Off => false,
             },
         backend: if config.enabled {
@@ -3553,6 +3660,7 @@ async fn decision_router_status(runtime: &AppRuntime) -> DecisionRouterStatus {
         },
         model: config.active_model().to_owned(),
         has_api_key,
+        fast,
         laya: laya_runtime_status(runtime).await,
         judge: judge_runtime_status(runtime).await,
         training_log: config.training_log,
@@ -3641,6 +3749,24 @@ async fn set_decision_router_backend(
         config.decision_router.backend = backend;
         config.decision_router.enabled = backend != DecisionRouterBackend::Off;
     }
+    Ok(decision_router_status(runtime.inner()).await)
+}
+
+/// Choose the model that answers System 1 questions: any model on any of the
+/// configured providers. It takes effect when "Any model" is the router.
+#[tauri::command]
+async fn set_fast_model(
+    provider: String,
+    model: String,
+    runtime: State<'_, AppRuntime>,
+) -> std::result::Result<DecisionRouterStatus, String> {
+    runtime
+        .config
+        .lock()
+        .use_fast_model(&provider, &model)
+        .map_err(|error| error.to_string())?;
+    // A live conversation baked in the previous model; rebuild it next message.
+    *runtime.conversation_decision_router_backend.lock().await = None;
     Ok(decision_router_status(runtime.inner()).await)
 }
 
@@ -4128,6 +4254,7 @@ pub fn run() {
             get_decision_router_status,
             set_decision_router_enabled,
             set_decision_router_backend,
+            set_fast_model,
             install_laya,
             prepare_laya,
             install_judge,

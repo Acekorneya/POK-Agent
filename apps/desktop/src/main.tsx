@@ -48,11 +48,13 @@ type DecisionRouterBackend = "off" | "jev" | "laya" | "llm_choice" | "kev";
 type LayaDevicePreference = "auto" | "gpu" | "cpu";
 type LayaRuntimeStatus = { installed: boolean; running: boolean; phase: string; detail: string; model: string; checkpoint: string; endpoint?: string; device?: string; device_reason?: string; preference: LayaDevicePreference };
 type JudgeRuntimeStatus = { installed: boolean; enabled: boolean; running: boolean; phase: string; detail: string; model: string; checkpoint: string; endpoint?: string; device?: string; device_reason?: string };
+type FastModelStatus = { provider?: string | null; model: string; ready: boolean; external: boolean };
 type DecisionRouterStatus = {
   enabled: boolean;
   backend: DecisionRouterBackend;
   model: string;
   has_api_key: boolean;
+  fast: FastModelStatus;
   laya: LayaRuntimeStatus;
   judge: JudgeRuntimeStatus;
   training_log?: boolean;
@@ -1023,6 +1025,12 @@ export function App() {
   const [jevWarning, setJevWarning] = useState<string | null>(null);
   const [decisionRouterKey, setDecisionRouterKey] = useState("");
   const [decisionRouterError, setDecisionRouterError] = useState("");
+  // "Any model": the System 1 model chosen from any configured provider.
+  const [fastProvider, setFastProvider] = useState("");
+  const [fastModel, setFastModel] = useState("");
+  const [fastModelOptions, setFastModelOptions] = useState<string[]>([]);
+  const [fastModelsLoading, setFastModelsLoading] = useState(false);
+  const [savingFastModel, setSavingFastModel] = useState(false);
   const [jevMetrics, setJevMetrics] = useState<JevMetrics>(emptyJevMetrics);
   const decisionRouterBackendRef = useRef<DecisionRouterBackend>("off");
   decisionRouterBackendRef.current = decisionRouterBackend;
@@ -1030,7 +1038,7 @@ export function App() {
     decisionRouterBackendRef.current === "laya"
       ? "Laya"
       : decisionRouterBackendRef.current === "llm_choice"
-        ? "LLM choice"
+        ? "the fast model"
         : decisionRouterBackendRef.current === "kev"
           ? "kev"
           : "JEV";
@@ -1550,6 +1558,13 @@ export function App() {
       setDecisionRouterError("Install Laya in Settings before selecting it.");
       return;
     }
+    if (backend === "llm_choice" && !decisionRouter?.fast?.ready) {
+      openSettings("system1");
+      setDecisionRouterError(decisionRouter?.fast?.provider
+        ? "Save the provider's API key before using its model for System 1."
+        : "Choose a provider and model under Any model first.");
+      return;
+    }
     if ((messages.length > 0 || activeConversationId) && !window.confirm("Start a new conversation with the selected decision router? Your current conversation will remain in history.")) return;
     if (messages.length > 0 || activeConversationId) await newConversation();
     setDecisionRouterError("");
@@ -1564,6 +1579,39 @@ export function App() {
     } catch (error) {
       setDecisionRouterError(compactValue(String(error), 300) ?? "Decision router could not be prepared");
       openSettings("system1");
+    }
+  };
+
+  const loadFastModels = async (provider: string) => {
+    setFastModelsLoading(true);
+    setFastModelOptions([]);
+    try {
+      setFastModelOptions(await invoke<string[]>("list_models", { provider }));
+    } catch {
+      setFastModelOptions([]);
+    } finally {
+      setFastModelsLoading(false);
+    }
+  };
+
+  const handleFastProviderChange = (provider: string) => {
+    setFastProvider(provider);
+    setFastModel("");
+    if (provider) void loadFastModels(provider);
+  };
+
+  const saveFastModel = async (provider: string, chosen: string) => {
+    if (!provider || !chosen.trim() || savingFastModel) return;
+    setSavingFastModel(true);
+    setDecisionRouterError("");
+    try {
+      const next = await invoke<DecisionRouterStatus>("set_fast_model", { provider, model: chosen.trim() });
+      setDecisionRouter(next);
+      try { localStorage.setItem("pok_fast_model", JSON.stringify({ provider, model: chosen.trim() })); } catch { /* storage unavailable */ }
+    } catch (error) {
+      setDecisionRouterError(compactValue(String(error), 300) ?? "That model could not be used for System 1");
+    } finally {
+      setSavingFastModel(false);
     }
   };
 
@@ -1933,6 +1981,17 @@ export function App() {
       try { savedTraining = localStorage.getItem("pok_router_training") === "on"; } catch { /* storage unavailable */ }
       if (savedTraining !== Boolean(next.training_log)) {
         next = await invoke<DecisionRouterStatus>("set_router_training", { enabled: savedTraining }).catch(() => next);
+      }
+      // The chosen "Any model" is a remembered choice too.
+      try {
+        const saved = JSON.parse(localStorage.getItem("pok_fast_model") || "null") as { provider?: string; model?: string } | null;
+        if (saved?.provider && saved.model && saved.provider !== next.fast?.provider) {
+          next = await invoke<DecisionRouterStatus>("set_fast_model", { provider: saved.provider, model: saved.model }).catch(() => next);
+        }
+      } catch { /* storage unavailable or damaged */ }
+      if (next.fast?.provider) {
+        setFastProvider(next.fast?.provider);
+        setFastModel(next.fast?.model);
       }
       setDecisionRouter(next);
       setJevEnabled(next.enabled);
@@ -3519,13 +3578,14 @@ export function App() {
 
         {settingsSection === "system1" && <>
           <SettingsCard title="Decision router"
-            status={decisionRouterBackend === "off" ? <StatusPill tone="off">Off</StatusPill> : <StatusPill tone="ok">{decisionRouterBackend === "jev" ? "JEV" : "Laya"}</StatusPill>}
+            status={decisionRouterBackend === "off" ? <StatusPill tone="off">Off</StatusPill> : <StatusPill tone="ok">{decisionRouterBackend === "jev" ? "JEV" : decisionRouterBackend === "llm_choice" ? "Any model" : "Laya"}</StatusPill>}
             description="A small, fast model that carries out the planner's steps on screen, so the main model is called less often. Off is the default: the main model then handles every decision itself.">
-            <div className="choice-cards three" role="radiogroup" aria-label="Router for new conversations">
+            <div className="choice-cards" role="radiogroup" aria-label="Router for new conversations">
               {([
                 ["off", "Off", "Main model does everything", true],
                 ["jev", "JEV", decisionRouter?.has_api_key ? "Hosted by TypeSafe" : "Needs a TypeSafe key", decisionRouter?.has_api_key],
                 ["laya", "Laya", decisionRouter?.laya.installed ? "Local, open source" : "Install below first", decisionRouter?.laya.installed],
+                ["llm_choice", "Any model", decisionRouter?.fast?.ready ? `${decisionRouter.fast.model} · ${providerLabel(decisionRouter.fast.provider ?? "")}` : "Pick a provider and model below", decisionRouter?.fast?.ready],
               ] as const).map(([value, title, text, available]) => <button key={value} type="button" role="radio" aria-checked={decisionRouterBackend === value}
                 className={decisionRouterBackend === value ? "selected" : ""} disabled={busy || installingLaya || !available}
                 onClick={() => void handleRouterBackendChange(value)}>
@@ -3533,6 +3593,39 @@ export function App() {
               </button>)}
             </div>
             {decisionRouterError && <p className="error-text">{decisionRouterError}</p>}
+          </SettingsCard>
+
+          <SettingsCard title="Any model"
+            status={decisionRouter?.fast?.ready ? <StatusPill tone="ok">{decisionRouter.fast.model}</StatusPill>
+              : decisionRouter?.fast?.provider ? <StatusPill tone="warn">Needs an API key</StatusPill> : <StatusPill tone="off">Not chosen</StatusPill>}
+            description="Use a small, cheap or local model from any of your providers as System 1, with no extra software. A big model plans; this one handles the quick on-screen decisions. Its answers must agree across two shuffled asks before they are trusted.">
+            <SettingRow label="Provider">
+              <select aria-label="System 1 provider" disabled={busy || savingFastModel} value={fastProvider} onChange={(event) => handleFastProviderChange(event.target.value)}>
+                <option value="">Choose a provider…</option>
+                {providers.map((name) => <option key={name} value={name}>{providerLabel(name)}</option>)}
+              </select>
+            </SettingRow>
+            <SettingRow label="Model" help={fastProvider && !fastModelsLoading && fastModelOptions.length === 0 ? "No model list from this provider; type a model id." : undefined}>
+              <input aria-label="System 1 model" list="fast-model-options" disabled={busy || savingFastModel || !fastProvider} value={fastModel}
+                onChange={(event) => setFastModel(event.target.value)} placeholder={fastModelsLoading ? "Loading models…" : "Model id"} />
+              <datalist id="fast-model-options">{fastModelOptions.map((name) => <option key={name} value={name} />)}</datalist>
+            </SettingRow>
+            <div className="inline-field">
+              <button type="button" className="primary" disabled={busy || savingFastModel || !fastProvider || !fastModel.trim()} onClick={() => void saveFastModel(fastProvider, fastModel)}>
+                {savingFastModel ? "Saving…" : "Use this model"}
+              </button>
+              {providers.includes("nebius") && (
+                <button type="button" disabled={busy || savingFastModel} onClick={() => {
+                  setFastProvider("nebius"); setFastModel("nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"); void loadFastModels("nebius");
+                  void saveFastModel("nebius", "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B");
+                }}>Nemotron Nano on Nebius</button>
+              )}
+            </div>
+            {decisionRouter?.fast?.provider && decisionRouter.fast?.external && (
+              <p className="settings-note" role="status">
+                {providerLabel(decisionRouter.fast.provider)} is a hosted service: compact task and screen labels go to it. Screenshots stay with the planner.
+              </p>
+            )}
           </SettingsCard>
 
           <SettingsCard title="JEV" status={decisionRouter?.has_api_key ? <StatusPill tone="ok">Key saved</StatusPill> : <StatusPill tone="off">No key</StatusPill>}
@@ -3933,6 +4026,7 @@ export function App() {
             <option value="off">Router Off</option>
             <option value="jev" disabled={!decisionRouter?.has_api_key}>JEV</option>
             <option value="laya" disabled={!decisionRouter?.laya.installed}>Laya{decisionRouter?.laya.phase === "loading" ? " · Loading…" : decisionRouter?.laya.running ? ` · ${decisionRouter.laya.device ?? "Ready"}` : ""}</option>
+            <option value="llm_choice" disabled={!decisionRouter?.fast?.ready}>Any model{decisionRouter?.fast?.ready ? ` · ${decisionRouter.fast.model}` : ""}</option>
           </select>
           {jevEnabled && jevWarning && (
             <span className="jev-warning" role="status" title={`No suitable bounded candidate was selected. The main model continued normally and ${activeRouterName()} remains enabled.`}>

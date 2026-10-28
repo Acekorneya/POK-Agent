@@ -92,12 +92,20 @@ min_terminal_probability = 0.55
 
 # Small OpenAI-compatible LLM as a fast decision backend (backend = "llm_choice").
 # Start scripts/llm_choice_sidecar.py on this loopback port; it forwards each
-# typed choice question to the configured model (for example on LM Studio).
-# A hosted model works too, for example NVIDIA Nemotron on Nebius Token Factory:
+# typed choice question to a small model. Easiest: name a provider from this
+# file's catalog and POK-Agent calls its chat endpoint itself, with no sidecar
+# (hosted or local; Settings > System 1 > Any model sets the same thing):
+#   provider = "nebius"
+#   model = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
+# A model that needs a request flag (for example to stop it thinking) can take
+# it with extra_body = { chat_template_kwargs = { enable_thinking = false } };
+# Nemotron and Qwen3 get that one automatically.
+# For a server that only speaks raw /completions, leave provider unset and run
+# scripts/llm_choice_sidecar.py on the loopback endpoint below. Hosted chat
+# models also work through it:
 #   NEBIUS_API_KEY=... python scripts/llm_choice_sidecar.py --chat \
 #     --api-key-env NEBIUS_API_KEY --base-url https://api.tokenfactory.nebius.com/v1 \
 #     --model nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B --port 43211
-# and set model below to the same id.
 [decision_router.llm_choice]
 endpoint = "http://127.0.0.1:43211/v1/systemone"
 model = "lfm2.5-8b-a1b"

@@ -285,6 +285,9 @@ pub struct TypeSafeDecisionRouter {
     /// loading or restarted is picked up again instead of lost for the run.
     last_failure: parking_lot::Mutex<Option<std::time::Instant>>,
     training: parking_lot::Mutex<Option<Arc<crate::router_training::TrainingRecorder>>>,
+    /// Set when System 1 is a provider's chat model called in-process
+    /// (`[decision_router.llm_choice]` with a provider) rather than a sidecar.
+    choice_model: Option<crate::choice_model::ChoiceModel>,
 }
 
 /// A router request failure with its cause spelled out: reqwest's message
@@ -331,6 +334,14 @@ impl TypeSafeDecisionRouter {
             ))
             .build()
             .map_err(|error| PokError::Provider(error.to_string()))?;
+        let choice_model = if config.backend == crate::config::DecisionRouterBackend::LlmChoice {
+            crate::choice_model::ChoiceModel::from_config(
+                &config.llm_choice,
+                Duration::from_millis(timeout_ms),
+            )?
+        } else {
+            None
+        };
         Ok(Self {
             client,
             judge_client,
@@ -338,7 +349,37 @@ impl TypeSafeDecisionRouter {
             consecutive_failures: AtomicU8::new(0),
             last_failure: parking_lot::Mutex::new(None),
             training: parking_lot::Mutex::new(None),
+            choice_model,
         })
+    }
+
+    /// Send one `/v1/systemone` body and parse the answers: to the backend's
+    /// endpoint, or to the in-process choice model when System 1 is a
+    /// provider's chat model.
+    async fn post_systemone(&self, body: &Value, api_key: Option<String>) -> Result<ApiResponse> {
+        if let Some(model) = &self.choice_model {
+            let answers = model.answer(body).await?;
+            return serde_json::from_value(answers)
+                .map_err(|error| PokError::Provider(error.to_string()));
+        }
+        let mut request = self.client.post(self.config.active_endpoint()).json(body);
+        if let Some(api_key) = api_key {
+            request = request.bearer_auth(api_key);
+        }
+        let response = request
+            .send()
+            .await
+            .map_err(|error| PokError::Provider(request_failure(&error)))?;
+        let status = response.status();
+        if !status.is_success() {
+            return Err(PokError::Provider(format!(
+                "decision router returned HTTP {status}"
+            )));
+        }
+        response
+            .json()
+            .await
+            .map_err(|error| PokError::Provider(error.to_string()))
     }
 
     pub fn from_config(config: &DecisionRouterConfig) -> Result<Option<Arc<dyn DecisionRouter>>> {
@@ -602,24 +643,7 @@ impl TypeSafeDecisionRouter {
                 "decision router payload exceeds the 32 KiB outbound limit".into(),
             ));
         }
-        let mut http_request = self.client.post(self.config.active_endpoint()).json(&body);
-        if let Some(api_key) = api_key {
-            http_request = http_request.bearer_auth(api_key);
-        }
-        let response = http_request
-            .send()
-            .await
-            .map_err(|error| PokError::Provider(request_failure(&error)))?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(PokError::Provider(format!(
-                "decision router returned HTTP {status}"
-            )));
-        }
-        let response: ApiResponse = response
-            .json()
-            .await
-            .map_err(|error| PokError::Provider(error.to_string()))?;
+        let response = self.post_systemone(&body, api_key).await?;
         self.record_training("router", &body, &response);
         let mut selected_operation = None;
         let mut selected_operation_probability = None;
@@ -1051,24 +1075,7 @@ impl TypeSafeDecisionRouter {
                 "{what} payload exceeds the 32 KiB outbound limit"
             )));
         }
-        let mut request = self.client.post(self.config.active_endpoint()).json(&body);
-        if let Some(api_key) = api_key {
-            request = request.bearer_auth(api_key);
-        }
-        let response = request
-            .send()
-            .await
-            .map_err(|error| PokError::Provider(request_failure(&error)))?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(PokError::Provider(format!(
-                "decision router returned HTTP {status}"
-            )));
-        }
-        let response: ApiResponse = response
-            .json()
-            .await
-            .map_err(|error| PokError::Provider(error.to_string()))?;
+        let response = self.post_systemone(&body, api_key).await?;
         self.record_training("router", &body, &response);
         Ok(response)
     }
@@ -3797,6 +3804,96 @@ mod tests {
         assert_eq!(body["questions"]["operation"]["type"], "choice");
         assert_eq!(body["questions"]["target_READ_FILE"]["type"], "choice");
         assert!(body["questions"].get("candidate_0").is_none());
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn a_provider_model_answers_system_one_questions_without_a_sidecar() {
+        /// Each request the fake chat endpoint saw: its Authorization header and body.
+        type Seen = Arc<StdMutex<Vec<(Option<String>, Value)>>>;
+        let seen = Seen::default();
+        let app = Router::new()
+            .route(
+                "/v1/chat/completions",
+                post(
+                    |State(seen): State<Seen>,
+                     headers: axum::http::HeaderMap,
+                     Json(body): Json<Value>| async move {
+                        let authorization = headers
+                            .get("authorization")
+                            .and_then(|value| value.to_str().ok())
+                            .map(str::to_owned);
+                        let prompt = body["messages"][0]["content"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_owned();
+                        // Pick the option describing the screen capture.
+                        let letter = prompt
+                            .lines()
+                            .find(|line| {
+                                line.chars().nth(1) == Some(':')
+                                    && line.contains("Capture the visible screen")
+                            })
+                            .and_then(|line| line.chars().next())
+                            .unwrap_or('Z');
+                        seen.lock().unwrap().push((authorization, body));
+                        Json(json!({"choices": [{"message": {
+                            "content": format!("{{\"answer\": \"{letter}\"}}")
+                        }}]}))
+                    },
+                ),
+            )
+            .with_state(seen.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let key_name = format!("POK_FAST_TEST_KEY_{}", Uuid::new_v4());
+        crate::brain::set_api_key(&key_name, "fast-model-test-key");
+        let router = TypeSafeDecisionRouter::new(DecisionRouterConfig {
+            enabled: true,
+            backend: crate::config::DecisionRouterBackend::LlmChoice,
+            mode: crate::config::DecisionRouterMode::RouterFirst,
+            llm_choice: crate::config::LlmChoiceRouterConfig {
+                // Nothing listens here: the sidecar path must not be used.
+                endpoint: "http://127.0.0.1:1/v1/systemone".into(),
+                model: "nvidia/Test-Nemotron".into(),
+                base_url: Some(base_url),
+                api_key_env: Some(key_name),
+                ..crate::config::LlmChoiceRouterConfig::default()
+            },
+            ..DecisionRouterConfig::default()
+        })
+        .unwrap();
+        let candidate = |id: &str, tool: &str, description: &str| DecisionCandidate {
+            id: id.into(),
+            tool: tool.into(),
+            arguments: json!({}),
+            description: description.into(),
+            kind: DecisionCandidateKind::Action,
+            local_score: 0.9,
+        };
+        let result = router
+            .decide(DecisionRequest {
+                purpose: DecisionPurpose::NextAction,
+                task: "Look at the screen".into(),
+                current_step: "Capture it".into(),
+                candidates: vec![
+                    candidate("cap", "capture_screen", "Capture the visible screen"),
+                    candidate("win", "list_windows", "List the open windows"),
+                ],
+                state: json!({"state_revision": 1}),
+            })
+            .await
+            .unwrap();
+        assert_eq!(result.candidate_id.as_deref(), Some("cap"));
+        assert_eq!(result.operation.as_deref(), Some("CAPTURE"));
+        assert_eq!(result.operation_probability, Some(1.0));
+        let requests = seen.lock().unwrap();
+        assert!(!requests.is_empty());
+        assert!(requests.iter().all(|(authorization, body)| {
+            authorization.as_deref() == Some("Bearer fast-model-test-key")
+                && body["model"] == "nvidia/Test-Nemotron"
+        }));
         server.abort();
     }
 

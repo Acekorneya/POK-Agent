@@ -94,27 +94,25 @@ pok-ai models --provider nebius --details
 pok-ai run --provider nebius --model nvidia/Nemotron-3.5-Super-VL "Open Notepad and write a two-line note"
 ```
 
-**Fast decisions.** Start the sidecar once (`python -m pip install fastapi uvicorn pydantic`); it
-keeps the key and sends Token Factory only the bounded state and the question:
-
-```powershell
-$env:POK_LLM_CHOICE_TOKEN = "any-local-token"
-python scripts/llm_choice_sidecar.py --chat --api-key-env NEBIUS_API_KEY `
-  --base-url https://api.tokenfactory.nebius.com/v1 `
-  --model nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B --port 43211
-```
+**Fast decisions.** In the desktop app open *Settings → System 1 → Any model*, pick *Nebius Token
+Factory* and a model (or press *Nemotron Nano on Nebius*), then choose *Any model* as the router.
+POK-Agent calls the model itself, with no extra software: each question is asked twice with the
+options shuffled, and the answer is trusted only when both agree. Any provider works the same way,
+including a local model in LM Studio or Ollama. The same setting in `pok-ai.toml`:
 
 ```toml
 [decision_router]
 enabled = true
 backend = "llm_choice"
 mode = "delegated"
-trust_model_targets = true
-trust_model_conditions = true
 
 [decision_router.llm_choice]
+provider = "nebius"
 model = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
 ```
+
+A server that only speaks raw `/completions` can still be reached through
+`scripts/llm_choice_sidecar.py` (see `pok-ai.example.toml`).
 
 **Measured as System 1.** `pok-ai router-bench` replays 57 questions from real captures (27
 completion checks, 19 target picks, 11 condition choices) through the production request code. The
@@ -127,7 +125,9 @@ planner. "Accepted wrong" counts answers the gates let through that were wrong.
 | `NVIDIA-Nemotron-3-Nano-30B-A3B` | 18 / 19 | 23 / 27 | 10 / 11 | 4 | 1.0 to 2.1 s |
 | `nemotron-3-super-120b-a12b` | 19 / 19 | 27 / 27 | 10 / 11 | 1 | 1.2 to 2.7 s |
 
-Lightning is the fastest, Super the most accurate. See
+Lightning is the fastest, Super the most accurate. The table was measured through the sidecar; the
+in-process client reproduces Nano within a case or two (22 / 27, 9 / 11, 17 / 19, median 0.7 to
+1.0 s, because the questions run concurrently). See
 [docs/NEBIUS-HACKATHON.md](docs/NEBIUS-HACKATHON.md) for how the pieces fit and what was added.
 
 ## Research: System 1 and System 2 for computer use

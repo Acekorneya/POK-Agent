@@ -288,10 +288,15 @@ fn default_kev_token_env() -> String {
     "POK_KEV_TOKEN".into()
 }
 
-/// Loopback sidecar that turns typed choice questions into single-token
-/// calls against a small OpenAI-compatible model (see
-/// `scripts/llm_choice_sidecar.py`). Its gates reuse the Laya probability
-/// thresholds, since both return native per-option probabilities.
+/// A small OpenAI-compatible model that answers typed choice questions with
+/// a single option letter. Its gates reuse the Laya probability thresholds,
+/// since both return native per-option probabilities.
+///
+/// Two ways to reach the model. With `provider` (or `base_url`) set, POK-Agent
+/// calls that provider's chat endpoint itself (`choice_model.rs`): any
+/// catalog provider works, hosted or local, with no sidecar. Otherwise
+/// requests go to the loopback sidecar at `endpoint` (see
+/// `scripts/llm_choice_sidecar.py`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmChoiceRouterConfig {
     #[serde(default = "default_llm_choice_endpoint")]
@@ -300,6 +305,21 @@ pub struct LlmChoiceRouterConfig {
     pub model: String,
     #[serde(default = "default_llm_choice_token_env")]
     pub token_env: String,
+    /// Catalog provider whose chat endpoint answers directly.
+    #[serde(default)]
+    pub provider: Option<String>,
+    /// Chat endpoint base URL; filled in from `provider` when it is set.
+    #[serde(default)]
+    pub base_url: Option<String>,
+    /// Environment variable (or saved key) holding that provider's API key.
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    /// Extra JSON fields merged into each chat request, for example
+    /// `{ chat_template_kwargs = { enable_thinking = false } }` to stop a
+    /// reasoning model spending its token budget thinking. Models known to
+    /// need it get it automatically.
+    #[serde(default)]
+    pub extra_body: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl Default for LlmChoiceRouterConfig {
@@ -308,7 +328,20 @@ impl Default for LlmChoiceRouterConfig {
             endpoint: default_llm_choice_endpoint(),
             model: default_llm_choice_model(),
             token_env: default_llm_choice_token_env(),
+            provider: None,
+            base_url: None,
+            api_key_env: None,
+            extra_body: None,
         }
+    }
+}
+
+impl LlmChoiceRouterConfig {
+    /// True when the model is called directly instead of through a sidecar.
+    pub fn is_direct(&self) -> bool {
+        self.base_url
+            .as_deref()
+            .is_some_and(|url| !url.trim().is_empty())
     }
 }
 
@@ -412,10 +445,16 @@ impl DecisionRouterConfig {
     /// calls. Quoted-label grounding and the local agreement checks still run
     /// for every backend.
     fn backend_trusted_by_default(&self) -> bool {
-        matches!(
-            self.backend,
-            DecisionRouterBackend::Jev | DecisionRouterBackend::Kev | DecisionRouterBackend::Laya
-        )
+        match self.backend {
+            DecisionRouterBackend::Jev
+            | DecisionRouterBackend::Kev
+            | DecisionRouterBackend::Laya => true,
+            // A model chosen in Settings is meant to act, not only to
+            // advise; its two order-rotated votes must still agree and clear
+            // the same probability gates.
+            DecisionRouterBackend::LlmChoice => self.llm_choice.is_direct(),
+            DecisionRouterBackend::Off => false,
+        }
     }
 
     pub fn native_choice_probabilities(&self) -> bool {
@@ -1084,8 +1123,32 @@ impl Config {
         if let Err(error) = crate::custom_providers::apply(&mut config) {
             eprintln!("Ignoring saved custom endpoints: {error}");
         }
+        if let Some(provider) = config.decision_router.llm_choice.provider.clone() {
+            let model = config.decision_router.llm_choice.model.clone();
+            config.use_fast_model(&provider, &model)?;
+        }
         config.validate()?;
         Ok(config)
+    }
+
+    /// Point the LLM-choice System 1 at `model` on a catalog provider, copying
+    /// the provider's endpoint and key name. It still has to be selected with
+    /// `decision_router.backend = "llm_choice"`.
+    pub fn use_fast_model(&mut self, provider: &str, model: &str) -> Result<()> {
+        let (base_url, api_key_env) = {
+            let entry = self.provider(Some(provider))?;
+            (entry.base_url.clone(), entry.api_key_env.clone())
+        };
+        let model = model.trim();
+        if model.is_empty() {
+            return Err(PokError::Config("choose a model for System 1".into()));
+        }
+        let choice = &mut self.decision_router.llm_choice;
+        choice.provider = Some(provider.to_owned());
+        choice.base_url = Some(base_url);
+        choice.api_key_env = api_key_env;
+        choice.model = model.to_owned();
+        Ok(())
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -1113,6 +1176,28 @@ impl Config {
                     return Err(PokError::Config(
                         "JEV decision_router.endpoint must use https".into(),
                     ));
+                }
+                DecisionRouterBackend::LlmChoice if self.decision_router.llm_choice.is_direct() => {
+                    let base_url = self
+                        .decision_router
+                        .llm_choice
+                        .base_url
+                        .as_deref()
+                        .unwrap_or_default();
+                    let url = reqwest::Url::parse(base_url).map_err(|_| {
+                        PokError::Config("llm_choice.base_url must be a valid URL".into())
+                    })?;
+                    let loopback = url.host_str().is_some_and(|host| {
+                        host.eq_ignore_ascii_case("localhost")
+                            || host
+                                .parse::<std::net::IpAddr>()
+                                .is_ok_and(|ip| ip.is_loopback())
+                    });
+                    if url.scheme() != "https" && !(url.scheme() == "http" && loopback) {
+                        return Err(PokError::Config(
+                            "llm_choice.base_url must use https (http only on localhost)".into(),
+                        ));
+                    }
                 }
                 DecisionRouterBackend::Laya
                 | DecisionRouterBackend::LlmChoice

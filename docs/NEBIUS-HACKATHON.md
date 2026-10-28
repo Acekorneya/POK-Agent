@@ -51,9 +51,12 @@ The repository's first commit is 2026-09-24 and v0.1.0 shipped 2026-09-30; v0.1.
 - `nebius` provider in the catalog (`crates/pok-ai-core/src/config.rs`) and in the desktop
   Settings; `pok-ai models --provider nebius --details` lists its models with vision, tools and
   reasoning levels.
-- `scripts/llm_choice_sidecar.py --chat --api-key-env`: hosted chat endpoints as the System 1
-  backend, with thinking switched off so a reasoning model answers instead of spending the token
-  budget (see feedback below).
+- **System 1 from any provider, no sidecar.** `crates/pok-ai-core/src/choice_model.rs` asks a
+  provider's chat model the router's typed questions in-process (JSON-schema constrained reply,
+  two order-rotated votes, thinking switched off so a reasoning model answers instead of spending
+  the token budget; see feedback below). Settings, System 1, *Any model* picks the provider and
+  model; the same works for LM Studio or Ollama. `scripts/llm_choice_sidecar.py --chat` remains
+  for servers that only speak raw completions.
 - `scripts/live_bench.py` arms `nemotron` (planner) and `nemotron_nano` (System 1) to compare
   planner calls with and without System 1 on live Windows tasks.
 - Measured router-bench results above and the setup steps in the README.

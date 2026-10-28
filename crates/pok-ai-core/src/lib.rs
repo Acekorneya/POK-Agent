@@ -4,6 +4,7 @@ pub mod agent_window;
 pub mod brain;
 pub mod browser;
 pub mod builtins;
+pub mod choice_model;
 pub mod codex;
 pub mod coding;
 pub mod commands;
