@@ -984,6 +984,18 @@ fn default_providers() -> BTreeMap<String, ProviderConfig> {
                 max_retries: default_provider_max_retries(),
             },
         ),
+        // Nebius Token Factory: OpenAI-compatible hosted open models
+        // (including NVIDIA Nemotron). Key from https://tokenfactory.nebius.com.
+        (
+            "nebius".into(),
+            ProviderConfig {
+                protocol: ProviderProtocol::OpenaiCompatible,
+                base_url: "https://api.tokenfactory.nebius.com/v1/".into(),
+                data_boundary: Some(ProviderDataBoundary::ExternalService),
+                api_key_env: Some("NEBIUS_API_KEY".into()),
+                max_retries: default_provider_max_retries(),
+            },
+        ),
         (
             "grok".into(),
             ProviderConfig {

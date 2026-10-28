@@ -55,6 +55,8 @@ LLMS = {
         "lm_models": ["qwen3.8-27b@q2_k_xl"],
     },
     "deepseek": {"provider": "openrouter", "model": "deepseek/deepseek-v4.1-flash", "lm_models": []},
+    # NVIDIA Nemotron on Nebius Token Factory (vision and tools); NEBIUS_API_KEY.
+    "nemotron": {"provider": "nebius", "model": "nvidia/Nemotron-3.5-Super-VL", "lm_models": []},
     # Free OpenRouter planner with vision and tools, for when the GPU is busy
     # with a local decision model.
     "nexpro": {"provider": "openrouter", "model": "nex-agi/nex-n2.5-pro:free", "lm_models": []},
@@ -77,6 +79,12 @@ ARMS = {
             "llm_model": "lfm2.5-8b-a1b"},
     "minicpm": {"backend": "llm_choice", "trust": True, "llm_endpoint": "http://127.0.0.1:43212/v1/systemone",
                 "llm_model": "minicpm5-2b@q8_0"},
+    # A hosted model, so nothing is loaded in LM Studio. Start the sidecar
+    # yourself: scripts/llm_choice_sidecar.py --chat --api-key-env NEBIUS_API_KEY
+    # --base-url https://api.tokenfactory.nebius.com/v1 --port 43213 --model <this model>
+    "nemotron_nano": {"backend": "llm_choice", "trust": True, "hosted": True,
+                      "llm_endpoint": "http://127.0.0.1:43213/v1/systemone",
+                      "llm_model": "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"},
     # Local typed-contract servers reached through the local-backend path.
     "kev": {"backend": "laya", "trust": True, "laya_endpoint": "http://127.0.0.1:43216/v1/systemone",
             "laya_model": "jaredpalmer/kev-4b", "laya_token_env": "POK_KEV_TOKEN"},
@@ -379,6 +387,7 @@ def run(args: argparse.Namespace) -> None:
     env = dict(os.environ)
     env["OPENROUTER_API_KEY"] = read_credential("OPENROUTER_API_KEY")
     env["TYPESAFE_API_KEY"] = read_credential("TYPESAFE_API_KEY")
+    env["NEBIUS_API_KEY"] = os.environ.get("NEBIUS_API_KEY") or read_credential("NEBIUS_API_KEY")
     env.setdefault("POK_LAYA_TOKEN", "dev-laya-token")
     env.setdefault("POK_JUDGE_TOKEN", "dev-judge-token")
     env.setdefault("POK_LLM_CHOICE_TOKEN", "dev-llm-token")
@@ -387,7 +396,8 @@ def run(args: argparse.Namespace) -> None:
         for arm in args.arms.split(","):
             config_path = LIVE_DIR / "configs" / f"{llm}-{arm}.toml"
             config_path.write_text(arm_config(llm, arm, LIVE_DIR / "data" / f"{args.tag}-{llm}-{arm}"), encoding="utf-8")
-            wanted = LLMS[llm]["lm_models"] + ([ARMS[arm]["llm_model"]] if "llm_model" in ARMS[arm] else [])
+            local_router = "llm_model" in ARMS[arm] and not ARMS[arm].get("hosted")
+            wanted = LLMS[llm]["lm_models"] + ([ARMS[arm]["llm_model"]] if local_router else [])
             if wanted or args.unload_idle:
                 lmstudio_models.ensure(LM_SERVER, wanted)
             sidecar = start_sidecar(SIDECARS[arm]) if arm in SIDECARS else None

@@ -70,6 +70,66 @@ through one interface (`DesktopPlatform`), so a port means adding an
 implementation based on AT-SPI accessibility and X11 or Wayland capture and
 input.
 
+## NVIDIA Nemotron on Nebius Token Factory
+
+POK-Agent runs both halves of its System 1 / System 2 design on NVIDIA Nemotron models served by
+[Nebius Token Factory](https://tokenfactory.nebius.com), an OpenAI-compatible API (provider
+`nebius`, key in `NEBIUS_API_KEY`). A large model plans (System 2); a small, fast one makes the
+bounded on-screen decisions (System 1) so the planner is called as rarely as possible.
+
+| Role | Nemotron model on Token Factory |
+| --- | --- |
+| Planner (System 2) | `nvidia/Nemotron-3.5-Super-VL` (reads screenshots, tool calling); `nvidia/Nemotron-3-Ultra-550b-a55b` (text only, 1M context) for harder reasoning |
+| Fast decisions (System 1) | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`, `nvidia/nemotron-3-super-120b-a12b`, or `nvidia/Nemotron-3_5-Lightning`, answering typed choice questions through `scripts/llm_choice_sidecar.py` |
+
+Web research can use [Tavily](https://tavily.com) (`[web] search_provider = "tavily"` and
+`TAVILY_API_KEY`).
+
+**Planner.** Create a key in the Token Factory console. In the desktop app choose *Nebius Token
+Factory* in Settings and paste it (it goes to Windows Credential Manager), or from a terminal:
+
+```powershell
+$env:NEBIUS_API_KEY = "<your key>"
+pok-ai models --provider nebius --details
+pok-ai run --provider nebius --model nvidia/Nemotron-3.5-Super-VL "Open Notepad and write a two-line note"
+```
+
+**Fast decisions.** Start the sidecar once (`python -m pip install fastapi uvicorn pydantic`); it
+keeps the key and sends Token Factory only the bounded state and the question:
+
+```powershell
+$env:POK_LLM_CHOICE_TOKEN = "any-local-token"
+python scripts/llm_choice_sidecar.py --chat --api-key-env NEBIUS_API_KEY `
+  --base-url https://api.tokenfactory.nebius.com/v1 `
+  --model nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B --port 43211
+```
+
+```toml
+[decision_router]
+enabled = true
+backend = "llm_choice"
+mode = "delegated"
+trust_model_targets = true
+trust_model_conditions = true
+
+[decision_router.llm_choice]
+model = "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B"
+```
+
+**Measured as System 1.** `pok-ai router-bench` replays 57 questions from real captures (27
+completion checks, 19 target picks, 11 condition choices) through the production request code. The
+router only acts on an answer that clears the confidence gates; everything else goes back to the
+planner. "Accepted wrong" counts answers the gates let through that were wrong.
+
+| Model | Targets right | Completion right | Conditions right | Accepted wrong | Median latency |
+| --- | --- | --- | --- | --- | --- |
+| `Nemotron-3_5-Lightning` | 18 / 19 | 16 / 27 | 10 / 11 | 2 | 0.8 to 1.6 s |
+| `NVIDIA-Nemotron-3-Nano-30B-A3B` | 18 / 19 | 23 / 27 | 10 / 11 | 4 | 1.0 to 2.1 s |
+| `nemotron-3-super-120b-a12b` | 19 / 19 | 27 / 27 | 10 / 11 | 1 | 1.2 to 2.7 s |
+
+Lightning is the fastest, Super the most accurate. See
+[docs/NEBIUS-HACKATHON.md](docs/NEBIUS-HACKATHON.md) for how the pieces fit and what was added.
+
 ## Research: System 1 and System 2 for computer use
 
 Most computer-use agents send every click through a large language model. POK-Agent splits the

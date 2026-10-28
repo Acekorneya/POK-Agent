@@ -178,6 +178,14 @@ base_url = "https://api.groq.com/openai/v1"
 data_boundary = "external_service"
 api_key_env = "GROQ_API_KEY"
 
+# Nebius Token Factory: OpenAI-compatible hosted open models (NVIDIA Nemotron
+# and others). Set NEBIUS_API_KEY (https://tokenfactory.nebius.com).
+[providers.nebius]
+protocol = "openai_compatible"
+base_url = "https://api.tokenfactory.nebius.com/v1/"
+data_boundary = "external_service"
+api_key_env = "NEBIUS_API_KEY"
+
 [providers.grok]
 protocol = "openai_compatible"
 base_url = "https://api.x.ai/v1"

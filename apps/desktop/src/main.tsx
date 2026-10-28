@@ -807,7 +807,7 @@ function ModelPicker({ models, value, onChange, disabled }: {
 
 const PROVIDER_LABELS: Record<string, string> = {
   lm_studio: "LM Studio", ollama: "Ollama", openai: "OpenAI", anthropic: "Anthropic", gemini: "Google Gemini",
-  openrouter: "OpenRouter", opencode: "OpenCode Zen", "opencode-go": "OpenCode Go", copilot: "GitHub Copilot", chatgpt: "ChatGPT", groq: "Groq", xai: "xAI",
+  openrouter: "OpenRouter", opencode: "OpenCode Zen", "opencode-go": "OpenCode Go", copilot: "GitHub Copilot", chatgpt: "ChatGPT", groq: "Groq", xai: "xAI", nebius: "Nebius Token Factory",
 };
 /** What probing an OpenAI-compatible address found out (see custom_providers::probe in the core). */
 type EndpointProbe = {
@@ -874,6 +874,7 @@ const PROVIDER_URLS: Record<string, { name: string; url: string }> = {
   copilot: { name: "GitHub Copilot settings", url: "https://github.com/settings/copilot" },
   chatgpt: { name: "ChatGPT settings", url: "https://chatgpt.com" },
   groq: { name: "Groq Console Keys", url: "https://console.groq.com/keys" },
+  nebius: { name: "Nebius Token Factory", url: "https://tokenfactory.nebius.com" },
   lm_studio: { name: "LM Studio Official Site", url: "https://lmstudio.ai" },
   ollama: { name: "Ollama Official Site", url: "https://ollama.com" },
 };
