@@ -49,7 +49,7 @@ beforeEach(() => {
   });
 });
 afterEach(cleanup);
-function emit(payload: Record<string, unknown>, name = "agent_event") { act(() => mock.listeners.get(name)?.({ payload })); }
+function emit(payload: Record<string, unknown> | string, name = "agent_event") { act(() => mock.listeners.get(name)?.({ payload })); }
 async function renderApp() { render(<App />); await screen.findByText("Explore the project"); }
 
 describe("workspace presentation", () => {
@@ -278,6 +278,17 @@ describe("workspace presentation", () => {
     expect(mock.invoke).toHaveBeenCalledWith("resolve_approval", { id: "approval-1", allow: true, rememberAlways: false });
     await userEvent.click(screen.getByRole("button", { name: /Emergency stop/ }));
     expect(mock.invoke).toHaveBeenCalledWith("emergency_stop");
+  });
+  it("closes a permission dialog that was answered from Telegram, and only that one", async () => {
+    await renderApp();
+    emit({ id: "approval-2", tool: "write_file", reason: "Write the file?", arguments: { filepath: "notes.md" } }, "approval_requested");
+    expect(screen.getByRole("button", { name: "Allow once" })).toBeTruthy();
+    // Some other request being resolved must not dismiss this one.
+    emit("approval-other", "approval_resolved");
+    expect(screen.getByRole("button", { name: "Allow once" })).toBeTruthy();
+    emit("approval-2", "approval_resolved");
+    expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull();
+    expect(mock.invoke.mock.calls.some(c => c[0] === "resolve_approval")).toBe(false);
   });
   it("does not submit while composing text", async () => {
     await renderApp(); const input = screen.getByRole("textbox", { name: "Message the agent" });

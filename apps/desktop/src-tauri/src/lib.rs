@@ -4208,7 +4208,16 @@ pub fn run() {
     let question_broker = Arc::new(QuestionBroker::default());
     let question_broker_setup = question_broker.clone();
     let emergency_shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::ALT), Code::Escape);
+    // Started at sign-in by the Run entry: stay in the tray if the gateway is on.
+    let background = std::env::args().any(|argument| argument == "--background");
     let app = tauri::Builder::default()
+        // First, so a second launch never gets as far as starting another
+        // gateway: two pollers on one Telegram bot take messages from each other.
+        .plugin(tauri_plugin_single_instance::init(
+            |app, _arguments, _directory| {
+                gateway::show_main_window(app);
+            },
+        ))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
@@ -4245,6 +4254,7 @@ pub fn run() {
             voice::register_saved_hotkey(app.handle());
             gateway::install_tray(app)?;
             gateway::autostart(app.handle());
+            gateway::place_window_at_launch(app, background);
             Ok(())
         })
         .on_window_event(|window, event| gateway::keep_running_on_close(window, event))
@@ -4269,6 +4279,8 @@ pub fn run() {
             gateway::gateway_remove_job,
             gateway::gateway_set_job_enabled,
             gateway::gateway_task_done,
+            gateway::get_autostart,
+            gateway::set_autostart,
             update_provider_endpoint,
             get_local_model_status,
             load_model,

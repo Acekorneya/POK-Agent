@@ -29,6 +29,11 @@ use super::{AppRuntime, ApprovalBroker, ApprovalRequest};
 /// Windows Credential Manager entry), like a provider key.
 const TOKEN_ENV: &str = "POK_TELEGRAM_BOT_TOKEN";
 const POLL_SECONDS: u64 = 25;
+const TRAY_ID: &str = "main";
+/// The value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
+const AUTOSTART_NAME: &str = "POK-Agent";
+#[cfg(windows)]
+const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 /// A task that never reports back (the window crashed) frees the gateway after this long.
 const TASK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60 * 60 * 3);
 
@@ -226,6 +231,8 @@ impl GatewayHost for AppHost {
             pok_ai_core::policy::ApprovalDecision::Deny
         };
         let _ = sender.send(decision);
+        // The dashboard may still show this request: close it there too.
+        let _ = self.app.emit("approval_resolved", id.to_string());
         if allow { "Approved." } else { "Denied." }.into()
     }
 
@@ -345,6 +352,7 @@ async fn start(app: &tauri::AppHandle) -> Result<(), String> {
     *state.shared.error.lock() = None;
     state.shared.running.store(true, Ordering::SeqCst);
     tauri::async_runtime::spawn(gateway.run(cancel));
+    refresh_tray(app);
     Ok(())
 }
 
@@ -359,6 +367,7 @@ async fn stop(app: &tauri::AppHandle) {
     *state.shared.in_flight.lock() = None;
     *state.shared.pending_approval.lock() = None;
     state.shared.running.store(false, Ordering::SeqCst);
+    refresh_tray(app);
 }
 
 /// Start the gateway at launch when it was left on.
@@ -420,6 +429,7 @@ pub async fn gateway_set_enabled(
     } else {
         stop(&app).await;
         *state.shared.bot.lock() = None;
+        refresh_tray(&app);
     }
     save_settings(runtime.inner(), &GatewaySettings { enabled })?;
     Ok(status(runtime.inner(), state.inner()))
@@ -525,6 +535,67 @@ pub fn gateway_set_job_enabled(
     Ok(status(runtime.inner(), state.inner()))
 }
 
+#[cfg(windows)]
+fn reg(args: &[&str]) -> std::io::Result<std::process::Output> {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    std::process::Command::new("reg")
+        .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+}
+
+/// Whether POK-Agent starts, hidden in the tray, when the user signs in.
+#[tauri::command]
+pub fn get_autostart() -> bool {
+    #[cfg(windows)]
+    {
+        reg(&["query", RUN_KEY, "/v", AUTOSTART_NAME]).is_ok_and(|output| output.status.success())
+    }
+    #[cfg(not(windows))]
+    {
+        false
+    }
+}
+
+/// Start with Windows (per user, no admin rights): a Run entry that launches
+/// this executable with `--background`.
+#[tauri::command]
+pub fn set_autostart(enabled: bool) -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        if enabled {
+            let exe = std::env::current_exe().map_err(|error| error.to_string())?;
+            let command = format!("\"{}\" --background", exe.display());
+            let output = reg(&[
+                "add",
+                RUN_KEY,
+                "/v",
+                AUTOSTART_NAME,
+                "/t",
+                "REG_SZ",
+                "/d",
+                &command,
+                "/f",
+            ])
+            .map_err(|error| error.to_string())?;
+            if !output.status.success() {
+                return Err("Windows would not save the start-up entry.".into());
+            }
+        } else {
+            // Removing an entry that is not there is already the wanted state.
+            reg(&["delete", RUN_KEY, "/v", AUTOSTART_NAME, "/f"])
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(get_autostart())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = enabled;
+        Err("Start with Windows is available in the Windows build.".into())
+    }
+}
+
 /// The dashboard finished (or could not start) a gateway task: send the
 /// answer back to the chat that asked.
 #[tauri::command]
@@ -572,7 +643,31 @@ pub fn keep_running_on_close(window: &tauri::Window, event: &tauri::WindowEvent)
     }
 }
 
-fn show_main_window(app: &tauri::AppHandle) {
+/// Say in the tray tooltip whether the agent is listening on Telegram.
+fn refresh_tray(app: &tauri::AppHandle) {
+    let state = app.state::<GatewayState>();
+    let text = match (state.is_running(), state.shared.bot.lock().clone()) {
+        (true, Some(bot)) => format!("POK-Agent · listening on Telegram (@{bot})"),
+        _ => "POK-Agent".to_owned(),
+    };
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        let _ = tray.set_tooltip(Some(text));
+    }
+}
+
+/// The window starts hidden. Show it, unless the app was started with
+/// `--background` (at sign-in) and the gateway is about to come back up, in
+/// which case it stays in the tray and just listens.
+pub fn place_window_at_launch(app: &tauri::App, background: bool) {
+    let runtime = app.state::<AppRuntime>();
+    let will_listen = load_settings(runtime.inner()).enabled
+        && pok_ai_core::brain::get_api_key(TOKEN_ENV).is_some_and(|token| !token.trim().is_empty());
+    if !(background && will_listen) {
+        show_main_window(app.handle());
+    }
+}
+
+pub fn show_main_window(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -589,7 +684,7 @@ pub fn install_tray(app: &tauri::App) -> tauri::Result<()> {
     let open = MenuItem::with_id(app, "open", "Open POK-Agent", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&open, &quit])?;
-    let mut builder = TrayIconBuilder::new()
+    let mut builder = TrayIconBuilder::with_id(TRAY_ID)
         .tooltip("POK-Agent")
         .menu(&menu)
         .show_menu_on_left_click(false)

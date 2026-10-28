@@ -1046,6 +1046,7 @@ export function App() {
   const [gateway, setGateway] = useState<GatewayStatus | null>(null);
   const [gatewayToken, setGatewayToken] = useState("");
   const [gatewayBusy, setGatewayBusy] = useState(false);
+  const [autostart, setAutostart] = useState(false);
   const [gatewayError, setGatewayError] = useState("");
   const [jobName, setJobName] = useState("");
   const [jobSchedule, setJobSchedule] = useState("daily 09:00");
@@ -1632,6 +1633,7 @@ export function App() {
   useEffect(() => {
     if (!settingsOpen || settingsSection !== "gateway") return;
     refreshGatewayRef.current();
+    void invoke<boolean>("get_autostart").then(setAutostart).catch(() => undefined);
     const timer = window.setInterval(() => refreshGatewayRef.current(), 4000);
     return () => window.clearInterval(timer);
   }, [settingsOpen, settingsSection]);
@@ -2983,6 +2985,15 @@ export function App() {
     });
     
     const unlistenGatewayTask = listen<RemoteTask>("gateway_task", ({ payload }) => { void runRef.current(payload); });
+    // A permission answered from Telegram closes the dialog on the PC as well.
+    const unlistenApprovalResolved = listen<string>("approval_resolved", ({ payload }) => {
+      if (activeApproval.current?.id === payload) {
+        activeApproval.current = null;
+        setApproval((pending) => pending?.id === payload ? null : pending);
+        setApprovalChoice(null);
+        setApprovalError("");
+      }
+    });
     const unlistenGatewayNew = listen("gateway_new_conversation", () => { void newConversationRef.current(); });
     const unlistenGatewayChanged = listen("gateway_changed", () => refreshGatewayRef.current());
     refreshGatewayRef.current();
@@ -2998,6 +3009,7 @@ export function App() {
     return () => {
       void unlistenGatewayTask.then((fn) => fn());
       void unlistenGatewayNew.then((fn) => fn());
+      void unlistenApprovalResolved.then((fn) => fn());
       void unlistenGatewayChanged.then((fn) => fn());
       void unlisten.then((fn) => fn());
       void unlistenStop.then((fn) => fn());
@@ -3800,6 +3812,13 @@ export function App() {
             <SettingRow label="Always on" help="While on, closing the window keeps POK-Agent running in the system tray so scheduled tasks and messages still arrive.">
               <Switch label="Run the Telegram gateway" checked={gateway?.running ?? false} disabled={!gateway?.has_token || gatewayBusy}
                 onChange={(checked) => void gatewayCall("gateway_set_enabled", { enabled: checked })} />
+            </SettingRow>
+            <SettingRow label="Start with Windows" help="Starts hidden in the system tray when you sign in, so the agent is already listening. The PC has to be awake and signed in: a locked or sleeping PC cannot run tasks.">
+              <Switch label="Start POK-Agent with Windows" checked={autostart} disabled={gatewayBusy}
+                onChange={(checked) => {
+                  void invoke<boolean>("set_autostart", { enabled: checked }).then(setAutostart)
+                    .catch((error) => setGatewayError(compactValue(String(error), 200) ?? "Could not change start-up"));
+                }} />
             </SettingRow>
             {gatewayError && <p className="error-text">{gatewayError}</p>}
             {!gatewayError && gateway?.error && <p className="error-text">{gateway.error}</p>}

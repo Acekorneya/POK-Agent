@@ -148,6 +148,13 @@ dashboard's permission mode is, tasks that arrive from Telegram or a schedule al
 they never get an automatic first look at whatever window is in front. The bot token is kept
 in Windows Credential Manager.
 
+**Always on.** Turn on *Start with Windows* (Settings → Gateway) and POK-Agent starts hidden in the
+system tray when you sign in, already listening. While the gateway is on, closing the window just
+hides it; the tray icon's tooltip says whether it is listening on Telegram, and its menu has *Open*
+and *Quit*. Only one copy runs: starting it again brings the running one forward instead of starting
+a second poller on the same bot. The PC has to be awake and signed in, since a locked or sleeping
+PC cannot run desktop tasks (set Windows to stay awake while plugged in).
+
 | Command | Does |
 | --- | --- |
 | `/status`, `/stop`, `/new` | what it is doing, cancel the task, start a fresh conversation |

@@ -60,7 +60,8 @@ The repository's first commit is 2026-09-24 and v0.1.0 shipped 2026-09-30; v0.1.
 - **Always on.** A Telegram gateway (`crates/pok-ai-core/src/gateway/`) lets the owner message the
   agent from a phone and schedule recurring tasks. Default-deny allowlist with one-time pairing
   codes approved on the computer, private chats only, stale messages dropped, permission prompts
-  answerable from the chat, and a system tray so it keeps running with the window closed. See the
+  answerable from the chat, a system tray so it keeps running with the window closed, a single running
+  copy, and an optional start with Windows (hidden in the tray, already listening). See the
   README section "Message it from your phone".
 - `scripts/live_bench.py` arms `nemotron` (planner) and `nemotron_nano` (System 1) to compare
   planner calls with and without System 1 on live Windows tasks.
