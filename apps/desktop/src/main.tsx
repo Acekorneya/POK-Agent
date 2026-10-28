@@ -60,6 +60,15 @@ type DecisionRouterStatus = {
   training_log?: boolean;
   training_dir?: string;
 };
+type GatewayStatus = {
+  running: boolean; enabled: boolean; has_token: boolean; bot?: string | null; error?: string | null;
+  busy: boolean; task?: string | null; home_chat?: number | null;
+  allowed: { id: number; name: string }[];
+  pending: { code: string; user_id: number; chat_id: number; name: string; expires_in: number }[];
+  jobs: { id: string; name: string; prompt: string; schedule: string; enabled: boolean; last_run?: string | null }[];
+};
+/** A task that arrived through the Telegram gateway or a scheduled job. */
+type RemoteTask = { id: string; prompt: string; source: "telegram" | "schedule"; who: string };
 type MemoryRecord = {
   id: string; source: string; text: string; approved: boolean; enabled: boolean; created_at: string;
   updated_at: string; reinforcement_count: number; review_status: string; related_memory_id?: string;
@@ -1032,6 +1041,17 @@ export function App() {
   const [fastModelsLoading, setFastModelsLoading] = useState(false);
   const [savingFastModel, setSavingFastModel] = useState(false);
   const [jevMetrics, setJevMetrics] = useState<JevMetrics>(emptyJevMetrics);
+  const [gateway, setGateway] = useState<GatewayStatus | null>(null);
+  const [gatewayToken, setGatewayToken] = useState("");
+  const [gatewayBusy, setGatewayBusy] = useState(false);
+  const [gatewayError, setGatewayError] = useState("");
+  const [jobName, setJobName] = useState("");
+  const [jobSchedule, setJobSchedule] = useState("daily 09:00");
+  const [jobPrompt, setJobPrompt] = useState("");
+  // The mount-time listeners call these; the refs keep them on the latest render.
+  const runRef = useRef<(remote?: RemoteTask) => Promise<void>>(async () => undefined);
+  const newConversationRef = useRef<() => Promise<void>>(async () => undefined);
+  const refreshGatewayRef = useRef<() => void>(() => undefined);
   const decisionRouterBackendRef = useRef<DecisionRouterBackend>("off");
   decisionRouterBackendRef.current = decisionRouterBackend;
   const activeRouterName = () =>
@@ -1582,6 +1602,38 @@ export function App() {
     }
   };
 
+  const gatewayCall = async (command: string, args: Record<string, unknown> = {}) => {
+    setGatewayBusy(true);
+    setGatewayError("");
+    try {
+      setGateway(await invoke<GatewayStatus>(command, args));
+      return true;
+    } catch (error) {
+      setGatewayError(compactValue(String(error), 300) ?? "That did not work");
+      refreshGatewayRef.current();
+      return false;
+    } finally {
+      setGatewayBusy(false);
+    }
+  };
+  const saveGatewayToken = async () => {
+    if (await gatewayCall("gateway_save_token", { token: gatewayToken })) setGatewayToken("");
+  };
+  const addGatewayJob = async () => {
+    if (await gatewayCall("gateway_add_job", { name: jobName, schedule: jobSchedule, prompt: jobPrompt })) {
+      setJobName("");
+      setJobPrompt("");
+    }
+  };
+
+  // While the Gateway page is open, keep pairing requests and task status fresh.
+  useEffect(() => {
+    if (!settingsOpen || settingsSection !== "gateway") return;
+    refreshGatewayRef.current();
+    const timer = window.setInterval(() => refreshGatewayRef.current(), 4000);
+    return () => window.clearInterval(timer);
+  }, [settingsOpen, settingsSection]);
+
   const loadFastModels = async (provider: string) => {
     setFastModelsLoading(true);
     setFastModelOptions([]);
@@ -1970,6 +2022,12 @@ export function App() {
   const handleConsolePointerDown = () => {
     followOutput.current = false;
     setShowJump(true);
+  };
+
+  runRef.current = run;
+  newConversationRef.current = newConversation;
+  refreshGatewayRef.current = () => {
+    void invoke<GatewayStatus>("gateway_status").then(setGateway).catch(() => undefined);
   };
 
   useEffect(() => {
@@ -2922,7 +2980,15 @@ export function App() {
       void invoke("open_external", { url: payload.verification_uri }).catch(() => undefined);
     });
     
+    const unlistenGatewayTask = listen<RemoteTask>("gateway_task", ({ payload }) => { void runRef.current(payload); });
+    const unlistenGatewayNew = listen("gateway_new_conversation", () => { void newConversationRef.current(); });
+    const unlistenGatewayChanged = listen("gateway_changed", () => refreshGatewayRef.current());
+    refreshGatewayRef.current();
+
     return () => {
+      void unlistenGatewayTask.then((fn) => fn());
+      void unlistenGatewayNew.then((fn) => fn());
+      void unlistenGatewayChanged.then((fn) => fn());
       void unlisten.then((fn) => fn());
       void unlistenStop.then((fn) => fn());
       void unlistenModelRuntime.then((fn) => fn());
@@ -2942,7 +3008,14 @@ export function App() {
     void import("./components/agent-view");
   }, []);
 
-  async function run() {
+  async function run(remote?: RemoteTask) {
+    if (remote && (busy || !model || modelTransitioning)) {
+      void invoke("gateway_task_done", {
+        id: remote.id, ok: false,
+        text: busy ? "The desktop agent is busy with another task." : "No model is ready in POK-Agent yet.",
+      }).catch(() => undefined);
+      return;
+    }
     if (busy) {
       if (pauseState !== "running") return;
       if (!prompt.trim()) return;
@@ -2962,9 +3035,9 @@ export function App() {
       return;
     }
 
-    const images = attachments.items.map((item) => item.dataUrl);
-    const files = attachments.files.map((file) => file.path);
-    if ((!prompt.trim() && images.length === 0 && files.length === 0) || !model || modelTransitioning) return;
+    const images = remote ? [] : attachments.items.map((item) => item.dataUrl);
+    const files = remote ? [] : attachments.files.map((file) => file.path);
+    if (!remote && ((!prompt.trim() && images.length === 0 && files.length === 0) || !model || modelTransitioning)) return;
     if (images.length > 0 && !modelCanSee) {
       attachments.setError(`${model} can't see images. Choose a vision model, or turn Vision input on in Settings → Model if it can.`);
       return;
@@ -2972,21 +3045,21 @@ export function App() {
     setBusy(true);
     setAgentFrame(null);
     emergencyStopRequested.current = false;
-    const currentPrompt = prompt.trim() ? prompt
+    const currentPrompt = remote ? remote.prompt : prompt.trim() ? prompt
       : files.length > 0 ? (files.length + images.length > 1 ? "Look at these and tell me what they contain." : "Look at this and tell me what it contains.")
       : images.length > 1 ? "What is in these images?" : "What is in this image?";
-    attachments.clear();
+    if (!remote) attachments.clear();
     setCurrentTurn(0);
     setLiveActivity({ phase: "starting", label: "Starting the task", startedAt: Date.now() });
     setTaskProgress({ rootRequest: currentPrompt, status: "in_progress", currentStep: "Starting task", steps: [] });
-    setPrompt("");
+    if (!remote) setPrompt("");
     setMessages((prev) => [
       ...prev,
       {
         id: 'user-prompt-' + Date.now(),
         sender: "user",
         type: "prompt",
-        text: currentPrompt,
+        text: remote ? `${remote.source === "schedule" ? `Scheduled · ${remote.who}` : "Telegram"}: ${currentPrompt}` : currentPrompt,
         timestamp: new Date(),
         images: images.length > 0 ? images : undefined,
         files: files.length > 0 ? files : undefined,
@@ -2995,8 +3068,10 @@ export function App() {
     
     try {
       saveModelRequestSettings();
-      await invoke<string>("run_prompt", {
-        prompt: currentPrompt, workspace, model, provider: selectedProvider, policyMode,
+      const answer = await invoke<string>("run_prompt", {
+        // A message from outside the app never runs with more freedom than a
+        // person at the keyboard: it always asks before consequential actions.
+        prompt: currentPrompt, workspace, model, provider: selectedProvider, policyMode: remote ? "interactive" : policyMode,
         temperature: requestTemperature.trim() && (manualCapabilityOverride || modelCapabilities?.supported_parameters.includes("temperature")) ? Number(requestTemperature) : null,
         maxOutputTokens: requestMaxOutput.trim() && (manualCapabilityOverride || modelCapabilities?.supported_parameters.some((item) => ["max_tokens", "max_output_tokens"].includes(item))) ? Number(requestMaxOutput) : null,
         seed: requestSeed.trim() && (manualCapabilityOverride || modelCapabilities?.supported_parameters.includes("seed")) ? Number(requestSeed) : null,
@@ -3008,9 +3083,11 @@ export function App() {
         images: images.length > 0 ? images : null,
         files: files.length > 0 ? files : null,
       });
+      if (remote) void invoke("gateway_task_done", { id: remote.id, ok: true, text: answer }).catch(() => undefined);
     }
     catch (error) {
       const errorText = String(error);
+      if (remote) void invoke("gateway_task_done", { id: remote.id, ok: false, text: errorText }).catch(() => undefined);
       if (!emergencyStopRequested.current && !errorText.toLowerCase().includes("cancel")) {
         setLiveActivity({ phase: "failed", label: "Task failed", detail: compactValue(String(error), 160), startedAt: Date.now() });
         setMessages((prev) => [
@@ -3681,6 +3758,92 @@ export function App() {
           </SettingsCard>
         </>}
 
+        {settingsSection === "gateway" && <>
+          <SettingsCard title="Telegram"
+            status={gateway?.running ? <StatusPill tone="ok">Online · @{gateway.bot}</StatusPill>
+              : gateway?.error ? <StatusPill tone="error">Offline</StatusPill> : <StatusPill tone="off">Off</StatusPill>}
+            description="Message your agent from your phone. It does the work on this computer and sends the answer back. Only people you approve below can use it, and a task that needs permission waits for your yes.">
+            <SettingRow label="Bot token" help="Create a bot with @BotFather in Telegram and paste its token. It is stored in Windows Credential Manager.">
+              <div className="inline-field">
+                <input type="password" aria-label="Telegram bot token" value={gatewayToken} onChange={(event) => setGatewayToken(event.target.value)}
+                  placeholder={gateway?.has_token ? "Paste a new token to replace it" : "123456789:AA…"} />
+                <button type="button" className="primary" disabled={!gatewayToken.trim() || gatewayBusy} onClick={() => void saveGatewayToken()}>Save token</button>
+              </div>
+            </SettingRow>
+            <SettingRow label="Always on" help="While on, closing the window keeps POK-Agent running in the system tray so scheduled tasks and messages still arrive.">
+              <Switch label="Run the Telegram gateway" checked={gateway?.running ?? false} disabled={!gateway?.has_token || gatewayBusy}
+                onChange={(checked) => void gatewayCall("gateway_set_enabled", { enabled: checked })} />
+            </SettingRow>
+            {gatewayError && <p className="error-text">{gatewayError}</p>}
+            {!gatewayError && gateway?.error && <p className="error-text">{gateway.error}</p>}
+            {gateway?.running && (
+              <p className="settings-note" role="status">
+                Message @{gateway.bot} on Telegram. {gateway.busy ? `Working on: ${gateway.task ?? "a task"}` : "Idle, waiting for a message."}
+              </p>
+            )}
+          </SettingsCard>
+
+          <SettingsCard title="People"
+            status={<StatusPill tone={gateway?.allowed.length ? "ok" : "off"}>{gateway?.allowed.length ?? 0} approved</StatusPill>}
+            description="Anyone else who messages the bot gets a one-time pairing code and nothing more. Approve a code only if you recognise the name; approving gives that person control of this agent.">
+            {(gateway?.pending ?? []).map((request) => (
+              <div className="memory" key={request.code}>
+                <strong>{request.name} wants access</strong>
+                <small>Pairing code {request.code} · expires in {Math.max(1, Math.round(request.expires_in / 60))} min</small>
+                <div className="memory-actions">
+                  <button type="button" className="primary" disabled={gatewayBusy} onClick={() => void gatewayCall("gateway_approve_pairing", { code: request.code })}>Approve</button>
+                  <button type="button" disabled={gatewayBusy} onClick={() => void gatewayCall("gateway_deny_pairing", { code: request.code })}>Deny</button>
+                </div>
+              </div>
+            ))}
+            {(gateway?.allowed ?? []).map((person) => (
+              <div className="memory" key={person.id}>
+                <strong>{person.name}</strong>
+                <small>Approved{gateway?.home_chat === person.id ? " · receives scheduled results" : ""}</small>
+                <div className="memory-actions">
+                  <button type="button" disabled={gatewayBusy} onClick={() => void gatewayCall("gateway_remove_user", { userId: person.id })}>Remove</button>
+                </div>
+              </div>
+            ))}
+            {!gateway?.pending.length && !gateway?.allowed.length && (
+              <p className="settings-note">No one yet. Turn the gateway on, then send any message to your bot to get a pairing code.</p>
+            )}
+          </SettingsCard>
+
+          <SettingsCard title="Scheduled tasks"
+            status={<StatusPill tone={gateway?.jobs.length ? "ok" : "off"}>{gateway?.jobs.length ?? 0}</StatusPill>}
+            description="Tasks that run on their own and send the result to your Telegram chat. They need the gateway on and one approved person.">
+            {(gateway?.jobs ?? []).map((job) => (
+              <div className="memory" key={job.id}>
+                <strong>{job.name}</strong>
+                <p>{job.prompt}</p>
+                <small>{job.schedule}{job.last_run ? ` · last ran ${new Date(job.last_run).toLocaleString()}` : " · has not run yet"}</small>
+                <div className="memory-actions">
+                  <Switch label={`Run ${job.name}`} checked={job.enabled} disabled={gatewayBusy}
+                    onChange={(checked) => void gatewayCall("gateway_set_job_enabled", { id: job.id, enabled: checked })} />
+                  <button type="button" disabled={gatewayBusy} onClick={() => void gatewayCall("gateway_remove_job", { id: job.id })}>Delete</button>
+                </div>
+              </div>
+            ))}
+            <SettingRow label="Schedule" help={'For example "daily 09:00" or "every 30m" (at least every 5 minutes).'}>
+              <input aria-label="Schedule" value={jobSchedule} onChange={(event) => setJobSchedule(event.target.value)} />
+            </SettingRow>
+            <SettingRow label="Task">
+              <input aria-label="Scheduled task" value={jobPrompt} onChange={(event) => setJobPrompt(event.target.value)} placeholder="What should the agent do?" />
+            </SettingRow>
+            <SettingRow label="Name (optional)">
+              <input aria-label="Task name" value={jobName} onChange={(event) => setJobName(event.target.value)} />
+            </SettingRow>
+            <div className="inline-field">
+              <button type="button" className="primary" disabled={gatewayBusy || !jobPrompt.trim() || !jobSchedule.trim()} onClick={() => void addGatewayJob()}>Add task</button>
+            </div>
+          </SettingsCard>
+
+          <SettingsCard title="Chat commands" description="Send these to the bot.">
+            <p className="settings-note">/status · /stop · /new · /approve · /deny · /jobs · /schedule daily 09:00 &lt;task&gt; · /unschedule &lt;id&gt; · /sethome · /whoami · /help</p>
+          </SettingsCard>
+        </>}
+
         {settingsSection === "memory" && <>
           <SettingsCard title="Memory library" description="Facts the agent remembers and skills it learned from verified runs."
             actions={<>
@@ -4048,7 +4211,7 @@ export function App() {
             <button className="stop" aria-label="Emergency stop · Ctrl+Alt+Esc" title="Emergency stop (Ctrl+Alt+Esc)" onClick={() => invoke("emergency_stop")}>
               <span className="stop-icon" aria-hidden="true" /><span className="stop-label">Stop</span>
             </button>
-            <button className="primary" disabled={(!prompt.trim() && (busy || (attachments.items.length === 0 && attachments.files.length === 0))) || !model || pauseState !== "running" || (!busy && modelTransitioning)} onClick={run}>
+            <button className="primary" disabled={(!prompt.trim() && (busy || (attachments.items.length === 0 && attachments.files.length === 0))) || !model || pauseState !== "running" || (!busy && modelTransitioning)} onClick={() => void run()}>
               {busy ? "Send Guidance" : "Run task"}
             </button>
           </div>

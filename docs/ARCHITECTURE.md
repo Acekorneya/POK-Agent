@@ -67,8 +67,13 @@ touches one focused file. Child modules share their parent's imports
 | `tests.rs` | Tool tests |
 
 Other core modules keep one file each: `brain.rs` (provider adapters),
-`decision.rs` (router contract and backends), `router_training.rs` (training
-log), `policy.rs`, `coding.rs`, `memory.rs`, `grounding.rs`, `platform.rs`,
+`decision.rs` (router contract and backends), `choice_model.rs` (System 1 as
+any provider's chat model, called in-process with two order-rotated votes),
+`gateway/` (the always-on Telegram gateway: `telegram.rs` Bot API client,
+`access.rs` default-deny allowlist with one-time pairing codes, `schedule.rs`
+scheduled jobs, `mod.rs` the dispatcher and the `GatewayHost` trait; the
+desktop app's `src-tauri/src/gateway.rs` is the host that runs messages through
+the dashboard), `router_training.rs` (training log), `policy.rs`, `coding.rs`, `memory.rs`, `grounding.rs`, `platform.rs`,
 `agent_window.rs`, `browser.rs` (the managed browser and the DevTools plumbing
 it shares), `user_browser.rs` (the user's own signed-in browser, attached over
 its DevTools port, with System 2's confirmation gate and System 1's click

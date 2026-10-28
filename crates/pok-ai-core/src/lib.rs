@@ -15,6 +15,7 @@ pub mod custom_providers;
 pub mod decision;
 pub mod error;
 pub mod exam;
+pub mod gateway;
 pub mod generated_tools;
 pub mod grounding;
 pub mod mcp;

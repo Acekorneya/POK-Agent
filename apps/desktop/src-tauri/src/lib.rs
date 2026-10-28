@@ -62,6 +62,7 @@ use uuid::Uuid;
 #[cfg(windows)]
 use windows::Win32::System::Threading::PROCESS_CREATION_FLAGS;
 
+mod gateway;
 mod voice;
 
 #[derive(Clone)]
@@ -354,16 +355,16 @@ impl ApprovalHandler for ApprovalBroker {
             .app
             .get()
             .ok_or_else(|| pok_ai_core::PokError::Tool("approval UI is not ready".into()))?;
-        app.emit(
-            "approval_requested",
-            ApprovalRequest {
-                id,
-                tool: tool.into(),
-                reason: reason.into(),
-                arguments: arguments.clone(),
-            },
-        )
-        .map_err(|error| pok_ai_core::PokError::Other(error.into()))?;
+        let request = ApprovalRequest {
+            id,
+            tool: tool.into(),
+            reason: reason.into(),
+            arguments: arguments.clone(),
+        };
+        app.emit("approval_requested", request.clone())
+            .map_err(|error| pok_ai_core::PokError::Other(error.into()))?;
+        // A task sent from the phone is answered there too.
+        gateway::announce_approval(app, &request);
         match tokio::time::timeout(Duration::from_secs(300), receiver).await {
             Ok(Ok(allowed)) => Ok(allowed),
             _ => {
@@ -4211,6 +4212,7 @@ pub fn run() {
         )
         .plugin(tauri_plugin_opener::init())
         .manage(voice::VoiceState::default())
+        .manage(gateway::GatewayState::default())
         .manage(runtime)
         .manage(broker)
         .manage(question_broker)
@@ -4219,8 +4221,11 @@ pub fn run() {
             let _ = question_broker_setup.app.set(app.handle().clone());
             app.global_shortcut().register(emergency_shortcut)?;
             voice::register_saved_hotkey(app.handle());
+            gateway::install_tray(app)?;
+            gateway::autostart(app.handle());
             Ok(())
         })
+        .on_window_event(|window, event| gateway::keep_running_on_close(window, event))
         .invoke_handler(tauri::generate_handler![
             get_status,
             read_observation_frame,
@@ -4232,6 +4237,16 @@ pub fn run() {
             voice::stop_voice,
             voice::set_voice_hotkey,
             voice::set_voice_hotkey_mode,
+            gateway::gateway_status,
+            gateway::gateway_save_token,
+            gateway::gateway_set_enabled,
+            gateway::gateway_approve_pairing,
+            gateway::gateway_deny_pairing,
+            gateway::gateway_remove_user,
+            gateway::gateway_add_job,
+            gateway::gateway_remove_job,
+            gateway::gateway_set_job_enabled,
+            gateway::gateway_task_done,
             update_provider_endpoint,
             get_local_model_status,
             load_model,

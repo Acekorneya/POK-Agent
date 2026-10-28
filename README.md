@@ -130,6 +130,34 @@ in-process client reproduces Nano within a case or two (22 / 27, 9 / 11, 17 / 19
 1.0 s, because the questions run concurrently). See
 [docs/NEBIUS-HACKATHON.md](docs/NEBIUS-HACKATHON.md) for how the pieces fit and what was added.
 
+## Message it from your phone: the Telegram gateway
+
+POK-Agent can stay on in the system tray and take tasks from Telegram, and run scheduled tasks on
+its own. The work happens on your computer, in the same dashboard you use (approvals, activity
+cards and the agent view all work); the answer comes back to the chat.
+
+1. In Telegram, create a bot with `@BotFather` and copy its token.
+2. In POK-Agent open *Settings → Gateway*, paste the token, and turn the gateway on.
+3. Message your bot. It replies with a one-time pairing code; approve it under *People*.
+4. Send a task, for example "open the calendar and tell me what is on today".
+
+Safe by default: nobody is allowed until you approve their code on the computer, only private chats
+count, messages sent while the gateway was off are dropped instead of acted on late, and a task
+that needs permission waits for `/approve` or `/deny` (or a click on the PC). Whatever the
+dashboard's permission mode is, tasks that arrive from Telegram or a schedule always ask first. The bot token is kept
+in Windows Credential Manager.
+
+| Command | Does |
+| --- | --- |
+| `/status`, `/stop`, `/new` | what it is doing, cancel the task, start a fresh conversation |
+| `/approve`, `/deny` | answer a permission request |
+| `/schedule daily 09:00 <task>`, `/schedule every 30m <task>` | run a task on its own |
+| `/jobs`, `/unschedule <id>`, `/sethome` | list, remove, choose where results go |
+
+The gateway lives in `crates/pok-ai-core/src/gateway/` (tested without a network against a fake
+Telegram API) and the host in `apps/desktop/src-tauri/src/gateway.rs`. Discord and WhatsApp can
+be added as further adapters behind the same dispatcher.
+
 ## Research: System 1 and System 2 for computer use
 
 Most computer-use agents send every click through a large language model. POK-Agent splits the

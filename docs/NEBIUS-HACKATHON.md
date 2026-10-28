@@ -57,6 +57,11 @@ The repository's first commit is 2026-09-24 and v0.1.0 shipped 2026-09-30; v0.1.
   the token budget; see feedback below). Settings, System 1, *Any model* picks the provider and
   model; the same works for LM Studio or Ollama. `scripts/llm_choice_sidecar.py --chat` remains
   for servers that only speak raw completions.
+- **Always on.** A Telegram gateway (`crates/pok-ai-core/src/gateway/`) lets the owner message the
+  agent from a phone and schedule recurring tasks. Default-deny allowlist with one-time pairing
+  codes approved on the computer, private chats only, stale messages dropped, permission prompts
+  answerable from the chat, and a system tray so it keeps running with the window closed. See the
+  README section "Message it from your phone".
 - `scripts/live_bench.py` arms `nemotron` (planner) and `nemotron_nano` (System 1) to compare
   planner calls with and without System 1 on live Windows tasks.
 - Measured router-bench results above and the setup steps in the README.
