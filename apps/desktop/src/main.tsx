@@ -1041,6 +1041,8 @@ export function App() {
   const [fastModelsLoading, setFastModelsLoading] = useState(false);
   const [savingFastModel, setSavingFastModel] = useState(false);
   const [jevMetrics, setJevMetrics] = useState<JevMetrics>(emptyJevMetrics);
+  // What the agent is shown before its first step: the window capture and the desktop overview go to the model provider.
+  const [initialLook, setInitialLook] = useState<"auto" | "foreground_only" | "off">("auto");
   const [gateway, setGateway] = useState<GatewayStatus | null>(null);
   const [gatewayToken, setGatewayToken] = useState("");
   const [gatewayBusy, setGatewayBusy] = useState(false);
@@ -2984,6 +2986,14 @@ export function App() {
     const unlistenGatewayNew = listen("gateway_new_conversation", () => { void newConversationRef.current(); });
     const unlistenGatewayChanged = listen("gateway_changed", () => refreshGatewayRef.current());
     refreshGatewayRef.current();
+    invoke<"auto" | "foreground_only" | "off">("get_initial_look").then(async (current) => {
+      let saved: string | null = null;
+      try { saved = localStorage.getItem("pok_initial_look"); } catch { /* storage unavailable */ }
+      if ((saved === "auto" || saved === "foreground_only" || saved === "off") && saved !== current) {
+        current = await invoke<"auto" | "foreground_only" | "off">("set_initial_look", { mode: saved }).catch(() => current);
+      }
+      setInitialLook(current);
+    }).catch(() => undefined);
 
     return () => {
       void unlistenGatewayTask.then((fn) => fn());
@@ -3080,6 +3090,8 @@ export function App() {
         fullContext,
         decisionRouterEnabled: jevEnabled,
         decisionRouterBackend,
+        // A task from Telegram or a schedule never gets an automatic look at whatever window is in front.
+        initialLook: remote ? "off" : null,
         images: images.length > 0 ? images : null,
         files: files.length > 0 ? files : null,
       });
@@ -3505,6 +3517,21 @@ export function App() {
               </button>)}
             </div>
             {sessionApprovals.length > 0 && <SettingRow label="Allowed this session"><span className="settings-value">{sessionApprovals.join(", ")}</span></SettingRow>}
+          </SettingsCard>
+          <SettingsCard title="Privacy" description="At the start of a task the agent can be shown your screen so its first step is better informed. Whatever it is shown is sent to the model provider.">
+            <SettingRow label="First look" help={initialLook === "auto" ? "With this app in front, the agent sees the desktop overview: the title of every open window and a screenshot." : initialLook === "foreground_only" ? "An application window in front is captured; the desktop overview with every window title is never sent." : "The agent asks for what it needs. Tasks from Telegram or a schedule always use this."}>
+              <select aria-label="First look at the start of a task" disabled={busy} value={initialLook} onChange={(event) => {
+                const mode = event.target.value as "auto" | "foreground_only" | "off";
+                void invoke<"auto" | "foreground_only" | "off">("set_initial_look", { mode }).then((applied) => {
+                  setInitialLook(applied);
+                  try { localStorage.setItem("pok_initial_look", applied); } catch { /* storage unavailable */ }
+                }).catch(() => undefined);
+              }}>
+                <option value="auto">Window or desktop overview</option>
+                <option value="foreground_only">Application window only</option>
+                <option value="off">Nothing</option>
+              </select>
+            </SettingRow>
           </SettingsCard>
           <SettingsCard title="About">
             <SettingRow label="Platform"><span className="settings-value">{status?.platform ?? "…"}</span></SettingRow>

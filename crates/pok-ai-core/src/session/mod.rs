@@ -245,6 +245,8 @@ pub struct Session {
     /// Maximum planner turns that act on the computer (a `fast_actions` plan
     /// is one step, however many actions System 1 runs); `None` is unlimited.
     action_step_budget: Option<u32>,
+    /// What the planner is handed before its first call (see `InitialLook`).
+    initial_look: crate::config::InitialLook,
     /// Background learning and curation started after verified runs.
     curation_tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     manual_compaction_requested: bool,
@@ -486,6 +488,7 @@ impl Session {
             temporal_anchor,
             curation_cancellation: CancellationToken::new(),
             action_step_budget: None,
+            initial_look: crate::config::InitialLook::default(),
             curation_tasks: Mutex::default(),
             manual_compaction_requested: false,
             last_prompt_tokens: None,
@@ -699,6 +702,17 @@ impl Session {
             }));
         self.observer = Some(observer);
         self
+    }
+
+    /// What the planner sees before its first call.
+    pub fn with_initial_look(mut self, mode: crate::config::InitialLook) -> Self {
+        self.initial_look = mode;
+        self
+    }
+
+    /// Change it between runs of a live conversation.
+    pub fn set_initial_look(&mut self, mode: crate::config::InitialLook) {
+        self.initial_look = mode;
     }
 
     /// Limit the planner turns that act on the computer. Benchmarks such as

@@ -591,6 +591,10 @@ impl Session {
     /// overview (monitors and windows), which orients but never authorizes
     /// input.
     pub(super) async fn initial_look(&mut self, send_images: bool) -> Result<()> {
+        use crate::config::InitialLook;
+        if self.initial_look == InitialLook::Off {
+            return Ok(());
+        }
         let names = self.tools.names();
         let can_capture = names.iter().any(|name| name == "capture_screen");
         let can_overview = names.iter().any(|name| name == "observe_desktop");
@@ -616,7 +620,9 @@ impl Session {
                 },
                 Some(window),
             ),
-            _ if can_overview => (
+            // The overview lists every window title and goes to the provider,
+            // so it is skipped when only an application window may be shown.
+            _ if can_overview && self.initial_look == InitialLook::Auto => (
                 CompletedToolCall {
                     id: format!("initial-look-{}", Uuid::new_v4()),
                     name: "observe_desktop".into(),

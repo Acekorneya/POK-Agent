@@ -34,6 +34,22 @@ pub struct ProviderConfig {
     pub max_retries: u32,
 }
 
+/// What the planner is handed before its first call. Both a window capture
+/// and the desktop overview (every window title, plus a screenshot) go to the
+/// model provider.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InitialLook {
+    /// The application window in front, or the desktop overview when the
+    /// agent's own window or a terminal is in front.
+    #[default]
+    Auto,
+    /// Only an application window in front; never the desktop overview.
+    ForegroundOnly,
+    /// Nothing: the planner asks for what it needs.
+    Off,
+}
+
 /// How the fast decision model is used.
 ///
 /// `RouterFirst` runs the router before every primary-model turn and lets it
@@ -793,6 +809,10 @@ pub struct Config {
     /// such as Windows Agent Arena use 30.
     #[serde(default)]
     pub action_step_budget: Option<u32>,
+    /// What the planner sees before its first call: `auto`, `foreground_only`
+    /// (never the desktop overview with every window title) or `off`.
+    #[serde(default)]
+    pub initial_look: InitialLook,
     /// Extra standing instructions appended to the agent's system prompt.
     #[serde(default)]
     pub standing_instructions: Option<String>,
@@ -1089,6 +1109,7 @@ impl Default for Config {
             web: WebConfig::default(),
             swarm: SwarmConfig::default(),
             action_step_budget: None,
+            initial_look: InitialLook::default(),
             standing_instructions: None,
         }
     }

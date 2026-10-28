@@ -2171,6 +2171,7 @@ async fn run_prompt(
     full_context: Option<bool>,
     decision_router_enabled: Option<bool>,
     decision_router_backend: Option<DecisionRouterBackend>,
+    initial_look: Option<pok_ai_core::config::InitialLook>,
     images: Option<Vec<String>>,
     files: Option<Vec<String>>,
     app: tauri::AppHandle,
@@ -2679,6 +2680,10 @@ async fn run_prompt(
     let session = conversation.as_mut().expect("conversation was created");
     let training_log = runtime.config.lock().decision_router.training_log;
     session.set_training_log(training_log);
+    // A task from outside the app passes `off`: whichever window happens to
+    // be in front is not something to hand a provider unasked.
+    let configured_look = runtime.config.lock().initial_look;
+    session.set_initial_look(initial_look.unwrap_or(configured_look));
     session.configure_model_request(
         temperature.or_else(|| agent_temperature.value()),
         max_output_tokens,
@@ -3771,6 +3776,23 @@ async fn set_fast_model(
     Ok(decision_router_status(runtime.inner()).await)
 }
 
+/// What the agent is shown before its first step of a task. Both the window
+/// capture and the desktop overview (every window title, plus a screenshot)
+/// are sent to the model provider.
+#[tauri::command]
+fn get_initial_look(runtime: State<'_, AppRuntime>) -> pok_ai_core::config::InitialLook {
+    runtime.config.lock().initial_look
+}
+
+#[tauri::command]
+fn set_initial_look(
+    mode: pok_ai_core::config::InitialLook,
+    runtime: State<'_, AppRuntime>,
+) -> pok_ai_core::config::InitialLook {
+    runtime.config.lock().initial_look = mode;
+    mode
+}
+
 /// Turn the router training log on or off; the live conversation picks the
 /// change up with its next message.
 #[tauri::command]
@@ -4270,6 +4292,8 @@ pub fn run() {
             set_decision_router_enabled,
             set_decision_router_backend,
             set_fast_model,
+            get_initial_look,
+            set_initial_look,
             install_laya,
             prepare_laya,
             install_judge,

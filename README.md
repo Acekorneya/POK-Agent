@@ -144,7 +144,8 @@ cards and the agent view all work); the answer comes back to the chat.
 Safe by default: nobody is allowed until you approve their code on the computer, only private chats
 count, messages sent while the gateway was off are dropped instead of acted on late, and a task
 that needs permission waits for `/approve` or `/deny` (or a click on the PC). Whatever the
-dashboard's permission mode is, tasks that arrive from Telegram or a schedule always ask first. The bot token is kept
+dashboard's permission mode is, tasks that arrive from Telegram or a schedule always ask first, and
+they never get an automatic first look at whatever window is in front. The bot token is kept
 in Windows Credential Manager.
 
 | Command | Does |

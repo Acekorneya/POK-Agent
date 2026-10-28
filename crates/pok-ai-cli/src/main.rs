@@ -748,6 +748,7 @@ async fn run_cli() -> anyhow::Result<()> {
             let mut session = session
                 .with_temperature(config.agent_temperature.value())
                 .with_action_step_budget(config.action_step_budget)
+                .with_initial_look(config.initial_look)
                 .with_standing_instructions(config.standing_instructions.as_deref())
                 .with_observer(console_observer);
             let result = session.run(prompt).await?;

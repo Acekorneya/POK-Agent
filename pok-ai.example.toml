@@ -7,6 +7,12 @@ command_timeout_seconds = 120
 # Maximum planner turns that act on the computer in one run (a fast_actions
 # plan counts as one step). Unset = unlimited; Windows Agent Arena uses 30.
 # action_step_budget = 30
+# What the agent is shown before its first step; it goes to the model provider.
+# auto: the application window in front, or the desktop overview (the title of
+# every open window plus a screenshot) when this app or a terminal is in front.
+# foreground_only: never the desktop overview. off: nothing, the agent asks.
+# Also in Settings > General > Privacy. Tasks from Telegram always use off.
+# initial_look = "auto"
 # Extra standing instructions appended to the agent's system prompt.
 # standing_instructions = ""
 # Delay between oversized native text-input batches; ordinary text is sent in one batch.

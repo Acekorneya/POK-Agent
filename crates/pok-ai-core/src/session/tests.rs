@@ -7930,6 +7930,60 @@ async fn the_first_turn_starts_with_the_application_on_screen() {
     assert_eq!(added[1].role, "tool");
 }
 
+#[tokio::test]
+async fn the_first_look_can_be_limited_or_switched_off() {
+    use crate::config::InitialLook;
+    // A terminal in front is where the desktop overview normally takes over:
+    // every window title plus a screenshot, which go to the model provider.
+    let terminal_in_front = || {
+        let mut harness = replay_harness();
+        if let Some(observation) = harness.session.context.latest_observation.lock().as_mut() {
+            observation.foreground_window.as_mut().unwrap().process_name =
+                "WindowsTerminal.exe".into();
+        }
+        let observation = harness
+            .session
+            .context
+            .latest_observation
+            .lock()
+            .clone()
+            .unwrap();
+        harness.session.context.platform = crate::platform::MockDesktop::new(observation);
+        harness
+    };
+
+    let mut harness = terminal_in_front();
+    harness
+        .session
+        .set_initial_look(InitialLook::ForegroundOnly);
+    let before = harness.session.messages.len();
+    harness.session.initial_look(true).await.unwrap();
+    assert_eq!(
+        harness.session.messages.len(),
+        before,
+        "the desktop overview is never sent when only an application window may be shown"
+    );
+
+    // An application window in front is still captured in that mode...
+    let mut harness = replay_harness()
+        .session
+        .with_initial_look(InitialLook::ForegroundOnly);
+    let before = harness.messages.len();
+    harness.initial_look(true).await.unwrap();
+    assert_eq!(
+        harness.messages[before].tool_calls[0].name,
+        "capture_screen"
+    );
+
+    // ...but not when the first look is off.
+    for mode in [InitialLook::Off] {
+        let mut harness = replay_harness().session.with_initial_look(mode);
+        let before = harness.messages.len();
+        harness.initial_look(true).await.unwrap();
+        assert_eq!(harness.messages.len(), before, "{mode:?} adds nothing");
+    }
+}
+
 #[test]
 fn a_program_replays_for_the_same_or_a_reworded_request_only() {
     let original = task_signature("Please turn off system notifications in Windows Settings");
