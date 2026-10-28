@@ -89,16 +89,16 @@ impl ContextBudget {
 /// allowed to scale with the model window, but is deliberately capped so a
 /// large local context does not make every turn expensive to prefill.
 pub fn automatic_working_set_target(budget: &ContextBudget, fixed_tokens: u64) -> u64 {
-    // Scale the working set with the model's window but keep it
-    // latency-bounded: a model with a very large window gets room to keep the
-    // files and tool results a multi-step analysis is working from instead of
-    // evicting them and re-reading the same inputs every turn.
-    let recent_tokens = (budget.context_window_tokens.saturating_mul(8) / 100).clamp(4_000, 32_000);
-    let percentage_cap = budget.context_window_tokens.saturating_mul(35) / 100;
+    // Scale the working set with the model's window so a model with a large
+    // window keeps the files and tool results a multi-step analysis is working
+    // from instead of evicting them and re-reading the same inputs every turn.
+    let recent_tokens =
+        (budget.context_window_tokens.saturating_mul(35) / 100).clamp(8_000, 128_000);
+    let percentage_cap = budget.context_window_tokens.saturating_mul(65) / 100;
     let safety_cap = budget
         .compact_at_tokens
         .saturating_sub(budget.output_reserve_tokens);
-    let base_cap = (budget.context_window_tokens / 16).clamp(32_000, 96_000);
+    let base_cap = (budget.context_window_tokens / 2).clamp(48_000, 180_000);
     let cap = base_cap.min(percentage_cap).min(safety_cap).max(4_000);
     fixed_tokens
         .saturating_add(recent_tokens)
@@ -107,7 +107,7 @@ pub fn automatic_working_set_target(budget: &ContextBudget, fixed_tokens: u64) -
 }
 
 pub fn automatic_recent_tail_target(working_set_target: u64) -> u64 {
-    (working_set_target / 2).clamp(4_000, 8_000)
+    (working_set_target / 2).clamp(4_000, 32_000)
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -449,14 +449,15 @@ mod tests {
                 fixed,
             )
         };
-        assert_eq!(target(32_000, 8_000), 11_200);
-        assert_eq!(target(70_000, 8_000), 13_600);
-        assert_eq!(target(100_000, 8_000), 16_000);
-        assert_eq!(target(200_000, 8_000), 24_000);
+        assert_eq!(target(32_000, 8_000), 19_200);
+        assert_eq!(target(70_000, 8_000), 32_500);
+        assert_eq!(target(100_000, 8_000), 43_000);
+        assert_eq!(target(200_000, 8_000), 78_000);
         // A very large window keeps a proportionally larger recent working set
         // so multi-file work is not re-read every turn.
-        assert_eq!(target(1_000_000, 15_000), 47_000);
+        assert_eq!(target(1_000_000, 15_000), 143_000);
         assert_eq!(automatic_recent_tail_target(16_000), 8_000);
+        assert_eq!(automatic_recent_tail_target(80_000), 32_000);
     }
     #[tokio::test]
     async fn sparse_model_capabilities_are_filled_from_the_catalog() {

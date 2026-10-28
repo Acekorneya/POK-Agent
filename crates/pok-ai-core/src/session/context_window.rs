@@ -1068,9 +1068,11 @@ const REFERENCE_TOOLS: &[&str] = &[
     "inspect_artifact",
     "memory_search",
     "skill_load",
+    "web_fetch",
+    "context_search",
 ];
 /// At most this much reference text survives the collapse of old tool cycles.
-const REFERENCE_RESULT_CHARS: usize = 6_000;
+const REFERENCE_RESULT_CHARS: usize = 24_000;
 
 /// Small reference results (a file read, a search) among collapsed tool
 /// cycles, newest first and one per call, so a long task does not lose the
@@ -1226,6 +1228,15 @@ pub(super) fn continuity_tool_evidence(message: &BrainMessage) -> String {
         return "completed".into();
     };
     if text.contains("\"error\":") {
+        if let Ok(value) = serde_json::from_str::<Value>(text)
+            && let Some(err) = value.get("error").and_then(Value::as_str)
+            && !err.trim().is_empty()
+        {
+            return format!(
+                "failed: {}",
+                truncate_chars(&err.split_whitespace().collect::<Vec<_>>().join(" "), 160)
+            );
+        }
         return "failed".into();
     }
     let Ok(value) = serde_json::from_str::<Value>(text) else {
@@ -1271,8 +1282,25 @@ pub(super) fn continuity_tool_evidence(message: &BrainMessage) -> String {
             )
         );
     }
-    if value.get("matches").is_some() {
-        return format!(
+    if let Some(matches) = value.get("matches").and_then(Value::as_array) {
+        let preview = matches
+            .iter()
+            .take(4)
+            .filter_map(|item| {
+                let path = item.get("path").and_then(Value::as_str).unwrap_or("file");
+                let line = item.get("line").and_then(Value::as_u64).unwrap_or(0);
+                let text = item
+                    .get("text")
+                    .or_else(|| item.get("context"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("");
+                let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+                (!compact.is_empty())
+                    .then(|| format!("{path}:{line}: {}", truncate_chars(&compact, 90)))
+            })
+            .collect::<Vec<_>>()
+            .join(" | ");
+        let base = format!(
             "search returned {} matches{}",
             value.get("returned").and_then(Value::as_u64).unwrap_or(0),
             if value
@@ -1284,6 +1312,39 @@ pub(super) fn continuity_tool_evidence(message: &BrainMessage) -> String {
             } else {
                 ""
             }
+        );
+        return if preview.is_empty() {
+            base
+        } else {
+            format!("{base} :: {}", truncate_chars(&preview, 320))
+        };
+    }
+    if let Some(code) = value.get("exit_code").and_then(Value::as_i64) {
+        let out = value
+            .get("stdout")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .or_else(|| value.get("stderr").and_then(Value::as_str))
+            .unwrap_or("");
+        let snippet = out.split_whitespace().collect::<Vec<_>>().join(" ");
+        return if snippet.is_empty() {
+            format!("exit {code} (no output)")
+        } else {
+            format!("exit {code}: {}", truncate_chars(&snippet, 240))
+        };
+    }
+    if let (Some(url), Some(page_text)) = (
+        value.get("url").and_then(Value::as_str),
+        value.get("text").and_then(Value::as_str),
+    ) {
+        let snippet = page_text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let total = value
+            .get("total_chars")
+            .and_then(Value::as_u64)
+            .unwrap_or(page_text.len() as u64);
+        return format!(
+            "read {url} ({total} chars): {}",
+            truncate_chars(&snippet, 220)
         );
     }
     "completed".into()

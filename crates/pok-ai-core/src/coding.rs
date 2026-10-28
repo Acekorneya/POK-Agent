@@ -138,7 +138,7 @@ const fn default_read_lines() -> usize {
     400
 }
 const MAX_READ_LINES: usize = 2_000;
-const MAX_READ_CHARS: usize = 32_000;
+const MAX_READ_CHARS: usize = 64_000;
 
 struct ReadFileTool;
 #[async_trait]
@@ -406,7 +406,7 @@ const fn default_context_lines() -> usize {
     2
 }
 const MAX_SEARCH_MATCHES: usize = 500;
-const MAX_SEARCH_CONTEXT_LINES: usize = 10;
+const MAX_SEARCH_CONTEXT_LINES: usize = 30;
 
 #[derive(Debug, Serialize)]
 struct SearchMatch {
@@ -439,23 +439,23 @@ impl Tool for GrepSearchTool {
                 "max_matches must be between 1 and {MAX_SEARCH_MATCHES}"
             )));
         }
-        if args.context_lines > MAX_SEARCH_CONTEXT_LINES {
-            return Err(PokError::Tool(format!(
-                "context_lines must not exceed {MAX_SEARCH_CONTEXT_LINES}"
-            )));
-        }
+        let context_lines = args.context_lines.min(MAX_SEARCH_CONTEXT_LINES);
         let regex = Regex::new(&args.pattern).map_err(|error| PokError::Tool(error.to_string()))?;
         let root = context.resolve_workspace_path(args.path)?;
         let mut override_builder = OverrideBuilder::new(&root);
         for pattern in &args.include_globs {
-            override_builder
-                .add(pattern)
-                .map_err(|error| PokError::Tool(error.to_string()))?;
+            for part in pattern.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                override_builder
+                    .add(part)
+                    .map_err(|error| PokError::Tool(error.to_string()))?;
+            }
         }
         for pattern in &args.exclude_globs {
-            override_builder
-                .add(&format!("!{pattern}"))
-                .map_err(|error| PokError::Tool(error.to_string()))?;
+            for part in pattern.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+                override_builder
+                    .add(&format!("!{part}"))
+                    .map_err(|error| PokError::Tool(error.to_string()))?;
+            }
         }
         let overrides = override_builder
             .build()
@@ -492,9 +492,9 @@ impl Tool for GrepSearchTool {
                         has_more = true;
                         break 'files;
                     }
-                    let context_start = index.saturating_sub(args.context_lines);
+                    let context_start = index.saturating_sub(context_lines);
                     let context_end = index
-                        .saturating_add(args.context_lines)
+                        .saturating_add(context_lines)
                         .saturating_add(1)
                         .min(lines.len());
                     matches.push(SearchMatch {
