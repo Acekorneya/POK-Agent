@@ -55,6 +55,8 @@
 .app-shell .settings-card :is(select, input):focus { border-color: var(--accent); outline: none; }
 .app-shell .settings-card input[type="range"] { width: 200px; accent-color: var(--accent); padding: 0; }
 .app-shell .settings-card .settings-input { min-width: 0; }
+/* Free-text settings (a model id, a task) need room to read what was typed. */
+.app-shell .settings-card input.wide-input { min-width: 300px; }
 .inline-field { display: flex; gap: 8px; width: 100%; min-width: 0; }
 .inline-field input { flex: 1; min-width: 0; }
 .setting-row-control .inline-field { width: min(420px, 100%); }

@@ -32,6 +32,7 @@ const STATE_CHARS: usize = 3_500;
 const INSTRUCTION_CHARS: usize = 1_200;
 const OPTION_CHARS: usize = 300;
 const LETTERS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+const RETRY_DELAY: Duration = Duration::from_millis(400);
 
 pub struct ChoiceModel {
     client: reqwest::Client,
@@ -241,7 +242,14 @@ impl ChoiceModel {
 
     async fn complete(&self, user: &str, letters: &[String]) -> Result<String> {
         let structured = self.structured.load(Ordering::Relaxed);
-        match self.complete_once(user, letters, structured).await {
+        let mut attempt = self.complete_once(user, letters, structured).await;
+        // A busy hosted model answers 429 or 5xx now and then; one quick retry
+        // usually lands, and the router falls back to the planner if not.
+        if matches!(attempt, Err(CompleteError::Transient(_))) {
+            tokio::time::sleep(RETRY_DELAY).await;
+            attempt = self.complete_once(user, letters, structured).await;
+        }
+        match attempt {
             // Some servers reject JSON-schema output; read a bare letter instead.
             Err(CompleteError::Rejected) if structured => {
                 self.structured.store(false, Ordering::Relaxed);
@@ -298,6 +306,14 @@ impl ChoiceModel {
         if matches!(status.as_u16(), 400 | 422) {
             return Err(CompleteError::Rejected);
         }
+        if matches!(
+            status.as_u16(),
+            408 | 425 | 429 | 500 | 502 | 503 | 504 | 529
+        ) {
+            return Err(CompleteError::Transient(format!(
+                "System 1 model returned HTTP {status}"
+            )));
+        }
         if !status.is_success() {
             return Err(CompleteError::Failed(format!(
                 "System 1 model returned HTTP {status}"
@@ -322,6 +338,8 @@ impl ChoiceModel {
 enum CompleteError {
     /// HTTP 400/422: the request shape was refused.
     Rejected,
+    /// The host is busy (429, 5xx); worth one more try.
+    Transient(String),
     Failed(String),
 }
 
@@ -329,7 +347,7 @@ impl CompleteError {
     fn into_error(self) -> PokError {
         match self {
             Self::Rejected => PokError::Provider("System 1 model rejected the request".into()),
-            Self::Failed(message) => PokError::Provider(message),
+            Self::Failed(message) | Self::Transient(message) => PokError::Provider(message),
         }
     }
 }
@@ -589,6 +607,62 @@ mod tests {
             attempts.lock().unwrap().contains(&false),
             "retried without response_format"
         );
+    }
+
+    #[tokio::test]
+    async fn a_busy_host_is_retried_once_before_giving_up() {
+        let calls = Arc::new(Mutex::new(0_u32));
+        let counter = calls.clone();
+        let app = Router::new().route(
+            "/v1/chat/completions",
+            post(move || {
+                let counter = counter.clone();
+                async move {
+                    let mut calls = counter.lock().unwrap();
+                    *calls += 1;
+                    if *calls == 1 {
+                        // The first request meets an overloaded worker.
+                        return (
+                            axum::http::StatusCode::from_u16(529).unwrap(),
+                            Json(json!({"error": "worker overloaded"})),
+                        );
+                    }
+                    (
+                        axum::http::StatusCode::OK,
+                        Json(json!({"choices": [{"message": {"content": "{\"answer\": \"B\"}"}}]})),
+                    )
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let model = ChoiceModel::from_config(
+            &config(format!("http://{address}/v1")),
+            Duration::from_secs(5),
+        )
+        .unwrap()
+        .unwrap();
+        let letters = letters(2);
+        let raw = model.complete("pick", &letters).await.unwrap();
+        assert!(raw.contains('B'));
+        assert_eq!(*calls.lock().unwrap(), 2, "one failure, one retry");
+
+        // A host that stays busy fails after the single retry.
+        let always_busy = Router::new().route(
+            "/v1/chat/completions",
+            post(|| async { (axum::http::StatusCode::SERVICE_UNAVAILABLE, Json(json!({}))) }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, always_busy).await.unwrap() });
+        let busy = ChoiceModel::from_config(
+            &config(format!("http://{address}/v1")),
+            Duration::from_secs(5),
+        )
+        .unwrap()
+        .unwrap();
+        assert!(busy.complete("pick", &letters).await.is_err());
     }
 
     #[test]

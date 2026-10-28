@@ -99,8 +99,12 @@ usable at all.
 - **Model ids.** Casing and punctuation vary (`nvidia/nemotron-3-super-120b-a12b`,
   `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`, `nvidia/Nemotron-3_5-Lightning`,
   `nvidia/Nemotron-3.5-Super-VL`). Consistent ids would prevent typos.
-- **Availability.** During a short probe, a `nemotron-3-super-120b-a12b` call returned HTTP 529
-  "worker overloaded" while other calls to it succeeded, so clients should retry.
+- **Availability under load.** The same small calls took about 1 s in the morning of 2026-10-28.
+  Around midday, ten concurrent requests to Nano from one machine took 10 to 20 s each and one
+  returned HTTP 529 "worker overloaded"; a probe of Super had returned 529 too. A burst of
+  parallel small requests is exactly what a hosted System 1 sends, so a documented rate or a
+  `Retry-After` hint would help. POK-Agent retries once on 429/5xx and then hands the decision
+  back to the planner, which is what happened in a live run.
 - **What worked well.** JSON-schema constrained output on all three models, low latency, and
   Super's accuracy on completion checks (27 of 27 here). Nano misjudged
   "is it done?" more often than Super (23 of 27), which is exactly why the confidence gates stay

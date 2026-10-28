@@ -50,6 +50,16 @@ struct Shared {
     running: AtomicBool,
 }
 
+impl Shared {
+    /// A short description of the task in flight, if any.
+    fn current_task(&self) -> Option<String> {
+        self.in_flight
+            .lock()
+            .as_ref()
+            .map(|flight| preview(&flight.prompt, 120))
+    }
+}
+
 #[derive(Default)]
 pub struct GatewayState {
     shared: Arc<Shared>,
@@ -276,6 +286,9 @@ pub struct GatewayStatus {
 fn status(runtime: &AppRuntime, state: &GatewayState) -> GatewayStatus {
     let (access, jobs) = state.stores(runtime);
     let shared = &state.shared;
+    // One lock, read once: the mutex is not reentrant, and this runs on the UI
+    // thread, so locking it twice in one expression would freeze the window.
+    let task = shared.current_task();
     GatewayStatus {
         running: state.is_running(),
         enabled: load_settings(runtime).enabled,
@@ -283,12 +296,8 @@ fn status(runtime: &AppRuntime, state: &GatewayState) -> GatewayStatus {
             .is_some_and(|token| !token.trim().is_empty()),
         bot: shared.bot.lock().clone(),
         error: shared.error.lock().clone(),
-        busy: shared.in_flight.lock().is_some(),
-        task: shared
-            .in_flight
-            .lock()
-            .as_ref()
-            .map(|flight| preview(&flight.prompt, 120)),
+        busy: task.is_some(),
+        task,
         allowed: access.allowed(),
         pending: access.pending(),
         home_chat: access.home_chat(),
@@ -604,4 +613,37 @@ pub fn install_tray(app: &tauri::App) -> tauri::Result<()> {
     }
     builder.build(app)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_task_in_flight_is_read_with_a_single_lock() {
+        let shared = Shared::default();
+        assert_eq!(shared.current_task(), None);
+        *shared.in_flight.lock() = Some(InFlight {
+            id: "a".into(),
+            chat_id: 1,
+            prompt: "open   the\ncalendar".into(),
+            scheduled: None,
+            started: std::time::Instant::now(),
+        });
+        // Locking twice in one expression deadlocked the UI thread once.
+        let task = shared.current_task();
+        assert_eq!(task.as_deref(), Some("open the calendar"));
+        assert!(
+            shared.in_flight.try_lock().is_some(),
+            "the guard is released"
+        );
+    }
+
+    #[test]
+    fn long_prompts_are_shortened_for_status_lines() {
+        let long = "word ".repeat(100);
+        let short = preview(&long, 20);
+        assert!(short.chars().count() <= 21);
+        assert!(short.ends_with('…'));
+    }
 }

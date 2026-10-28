@@ -3683,7 +3683,7 @@ export function App() {
               </select>
             </SettingRow>
             <SettingRow label="Model" help={fastProvider && !fastModelsLoading && fastModelOptions.length === 0 ? "No model list from this provider; type a model id." : undefined}>
-              <input aria-label="System 1 model" list="fast-model-options" disabled={busy || savingFastModel || !fastProvider} value={fastModel}
+              <input aria-label="System 1 model" className="wide-input" list="fast-model-options" disabled={busy || savingFastModel || !fastProvider} value={fastModel}
                 onChange={(event) => setFastModel(event.target.value)} placeholder={fastModelsLoading ? "Loading models…" : "Model id"} />
               <datalist id="fast-model-options">{fastModelOptions.map((name) => <option key={name} value={name} />)}</datalist>
             </SettingRow>
@@ -3826,13 +3826,13 @@ export function App() {
               </div>
             ))}
             <SettingRow label="Schedule" help={'For example "daily 09:00" or "every 30m" (at least every 5 minutes).'}>
-              <input aria-label="Schedule" value={jobSchedule} onChange={(event) => setJobSchedule(event.target.value)} />
+              <input aria-label="Schedule" className="wide-input" value={jobSchedule} onChange={(event) => setJobSchedule(event.target.value)} />
             </SettingRow>
             <SettingRow label="Task">
-              <input aria-label="Scheduled task" value={jobPrompt} onChange={(event) => setJobPrompt(event.target.value)} placeholder="What should the agent do?" />
+              <input aria-label="Scheduled task" className="wide-input" value={jobPrompt} onChange={(event) => setJobPrompt(event.target.value)} placeholder="What should the agent do?" />
             </SettingRow>
             <SettingRow label="Name (optional)">
-              <input aria-label="Task name" value={jobName} onChange={(event) => setJobName(event.target.value)} />
+              <input aria-label="Task name" className="wide-input" value={jobName} onChange={(event) => setJobName(event.target.value)} />
             </SettingRow>
             <div className="inline-field">
               <button type="button" className="primary" disabled={gatewayBusy || !jobPrompt.trim() || !jobSchedule.trim()} onClick={() => void addGatewayJob()}>Add task</button>
