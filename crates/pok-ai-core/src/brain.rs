@@ -1815,6 +1815,7 @@ fn openai_stream_error(value: &Value) -> Option<PokError> {
     let error_type = error
         .pointer("/metadata/error_type")
         .and_then(Value::as_str)
+        .or_else(|| error.get("type").and_then(Value::as_str))
         .unwrap_or_default();
     let status_code = error
         .get("code")
@@ -1825,9 +1826,11 @@ fn openai_stream_error(value: &Value) -> Option<PokError> {
             error_type,
             "rate_limit_exceeded" | "provider_overloaded" | "provider_unavailable"
         );
+    let engine_restarting = message.starts_with("the engine ");
     let retryable = status_code.is_some_and(transient_status_code)
         || capacity_error
-        || matches!(error_type, "server" | "timeout");
+        || engine_restarting
+        || matches!(error_type, "server" | "server_error" | "timeout");
     Some(if retryable {
         PokError::ProviderTransient {
             message: detail,

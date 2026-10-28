@@ -2909,21 +2909,38 @@ impl Session {
                         value.pointer("/goal_action/status").and_then(Value::as_str)
                             == Some("verified")
                     });
+                    let productive_output = result.as_ref().ok().and_then(|value| {
+                        let code = value.get("exit_code").and_then(Value::as_i64).unwrap_or(-1);
+                        let stdout = value
+                            .get("stdout")
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .trim();
+                        (code == 0 && !stdout.is_empty()).then_some(stdout)
+                    });
                     if deliverables_changed_this_call || terminal_progress {
                         diagnostic_command_streak = 0;
                         diagnostic_pivot_cycles = 0;
                     } else {
-                        diagnostic_command_streak = diagnostic_command_streak.saturating_add(1);
-                        if diagnostic_command_streak == 4 {
+                        // A failing or empty command counts double so broken loops still trip quickly (3 warn, 5 pivot),
+                        // while productive read-only commands with new stdout get a wider investigative budget (6 warn, 10 pivot).
+                        let step = if productive_output.is_some() {
+                            1_u32
+                        } else {
+                            2_u32
+                        };
+                        let prev = diagnostic_command_streak;
+                        diagnostic_command_streak = diagnostic_command_streak.saturating_add(step);
+                        if prev < 6 && (6..10).contains(&diagnostic_command_streak) {
                             strategy_recovery = Some(
-                                "<system-reminder>Four command attempts have run without registered task-state, artifact, or terminal-goal progress. Summarize the evidence already obtained, reuse the tool results still retained in context above, and change strategy; do not repeat another minor command, read, or search variation.</system-reminder>"
+                                "<system-reminder>Several command attempts have run without registered task-state, artifact, or terminal-goal progress. Summarize the evidence already obtained, reuse the tool results and continuity ledger retained in context above (or call context_search for earlier outputs), and change strategy; do not repeat another minor command, read, or search variation. On Windows PowerShell, prefer Invoke-RestMethod / Invoke-WebRequest over curl.exe with inline JSON quotes.</system-reminder>"
                                     .to_owned(),
                             );
                             self.log(
                                 "diagnostic_no_progress_warning",
                                 json!({"turn": turn_index + 1, "command_streak": diagnostic_command_streak}),
                             )?;
-                        } else if diagnostic_command_streak >= 6 {
+                        } else if diagnostic_command_streak >= 10 {
                             diagnostic_pivot_cycles = diagnostic_pivot_cycles.saturating_add(1);
                             diagnostic_command_streak = 0;
                             let answer_only = diagnostic_pivot_cycles >= 2;
@@ -2935,7 +2952,7 @@ impl Session {
                             strategy_recovery = Some(if answer_only {
                                 "<system-reminder>Repeated diagnostic command cycles produced no registered progress even after a strategy pivot. The next turn is answer-only. Report the verified findings and the concrete unresolved blocker; do not claim success.</system-reminder>".to_owned()
                             } else {
-                                "<system-reminder>The command diagnostic budget for this strategy is exhausted. Command tools are unavailable on the next turn. Use a different evidence source or report the verified result and blocker.</system-reminder>".to_owned()
+                                "<system-reminder>The command diagnostic budget for this strategy is exhausted. Command tools are unavailable on the next turn. Use a different evidence source (such as web_fetch, context_search, or managed_browser_open) or report the verified result and blocker.</system-reminder>".to_owned()
                             });
                             self.log(
                                 "diagnostic_strategy_pivot",

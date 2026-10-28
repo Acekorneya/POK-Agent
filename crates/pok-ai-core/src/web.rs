@@ -496,7 +496,13 @@ async fn read_page(context: &ToolContext, url: &str, offset: usize, max: usize) 
             let textual = html
                 || fetched.content_type.starts_with("text/")
                 || fetched.content_type.contains("json")
-                || fetched.content_type.contains("xml");
+                || fetched.content_type.contains("xml")
+                || fetched.content_type.contains("javascript")
+                || fetched.content_type.contains("ecmascript")
+                || fetched.content_type.contains("yaml")
+                || fetched.content_type.contains("toml")
+                || fetched.content_type.contains("csv")
+                || fetched.content_type.contains("urlencoded");
             if !textual {
                 return Err(PokError::Tool(format!(
                     "{} is not a text page ({})",
