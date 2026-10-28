@@ -28,6 +28,11 @@ approval, SQLite FTS5 memory, restricted coding subagents, and a deterministic
 model exam. Code, crates, and files use the short name `pok-ai` (for example
 `pok-ai.toml`), and app data lives under `%LOCALAPPDATA%\POK-Ai`.
 
+<p align="center">
+  <a href="docs/media/pok-agent-demo.mp4"><img src="docs/media/pok-agent-demo-poster.jpg" alt="POK-Agent demo: a Nemotron planner and a small Nemotron acting on screen" width="720"></a><br>
+  <sub>▶ 2-minute demo: a Nemotron planner and a Nemotron System 1 on Nebius Token Factory, a live Windows run, and the Telegram gateway (click to play)</sub>
+</p>
+
 ## Download
 
 Get the latest Windows build from
