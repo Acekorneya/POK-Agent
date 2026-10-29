@@ -1,6 +1,6 @@
 import React from "react";
 
-export type SettingsSection = "general" | "model" | "voice" | "system1" | "gateway" | "memory" | "tools" | "mcp";
+export type SettingsSection = "general" | "model" | "voice" | "system1" | "gateway" | "web" | "memory" | "tools" | "mcp";
 
 export const SETTINGS_SECTIONS: { id: SettingsSection; label: string; hint: string }[] = [
   { id: "general", label: "General", hint: "Appearance, workspace, permissions" },
@@ -8,6 +8,7 @@ export const SETTINGS_SECTIONS: { id: SettingsSection; label: string; hint: stri
   { id: "voice", label: "Voice", hint: "Microphone and speech to text" },
   { id: "system1", label: "System 1", hint: "Fast decision router" },
   { id: "gateway", label: "Gateway", hint: "Message the agent from your phone" },
+  { id: "web", label: "Web search", hint: "Tavily and other search providers" },
   { id: "mcp", label: "MCP servers", hint: "Connect external tool servers" },
   { id: "memory", label: "Memory & skills", hint: "What the agent has learned" },
   { id: "tools", label: "Generated tools", hint: "Helpers the agent built" },

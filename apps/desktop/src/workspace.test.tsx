@@ -290,6 +290,31 @@ describe("workspace presentation", () => {
     expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull();
     expect(mock.invoke.mock.calls.some(c => c[0] === "resolve_approval")).toBe(false);
   });
+  it("shows Tavily as the search when a key is saved, checks a new key, and runs a real search", async () => {
+    const previous = mock.invoke.getMockImplementation()!;
+    let status = { configured: "auto", effective: "duckduckgo", has_tavily_key: false };
+    mock.invoke.mockImplementation((name, args) => {
+      if (name === "get_web_search_status") return Promise.resolve(status);
+      if (name === "save_tavily_key") { status = { configured: "auto", effective: "tavily", has_tavily_key: true }; return Promise.resolve(status); }
+      if (name === "try_web_search") return Promise.resolve({ provider: "tavily", answer: "Nemotron 3 Super is a 120B open model.", results: [{ rank: 1, title: "Nemotron 3", url: "https://example.org/a", snippet: "Open MoE model" }] });
+      return previous(name, args);
+    });
+    await renderApp();
+    await userEvent.click(screen.getByRole("button", { name: "Settings", expanded: false }));
+    await userEvent.click(within(screen.getByRole("navigation", { name: "Settings sections" })).getByRole("button", { name: /^Web search/ }));
+    expect(await screen.findByText("No key")).toBeTruthy();
+    // Without a key, Tavily cannot be forced and Automatic explains it uses DuckDuckGo.
+    expect((screen.getByRole("radio", { name: /^Tavily/ }) as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.type(screen.getByLabelText("Tavily API key"), "tvly-test");
+    await userEvent.click(screen.getByRole("button", { name: "Save key" }));
+    expect(mock.invoke).toHaveBeenCalledWith("save_tavily_key", { apiKey: "tvly-test" });
+    expect(await screen.findByText("Key saved")).toBeTruthy();
+    expect((screen.getByRole("radio", { name: /^Tavily/ }) as HTMLButtonElement).disabled).toBe(false);
+    await userEvent.click(screen.getByRole("button", { name: "Search" }));
+    expect(mock.invoke).toHaveBeenCalledWith("try_web_search", { query: "What is NVIDIA Nemotron 3 Super?" });
+    expect(await screen.findByText("Nemotron 3 Super is a 120B open model.")).toBeTruthy();
+    expect(screen.getByText(/Answered by Tavily/)).toBeTruthy();
+  });
   it("does not submit while composing text", async () => {
     await renderApp(); const input = screen.getByRole("textbox", { name: "Message the agent" });
     fireEvent.change(input, { target: { value: "hello" } });

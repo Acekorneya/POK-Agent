@@ -87,8 +87,10 @@ bounded on-screen decisions (System 1) so the planner is called as rarely as pos
 | Planner (System 2) | `nvidia/Nemotron-3.5-Super-VL` (reads screenshots, tool calling); `nvidia/Nemotron-3-Ultra-550b-a55b` (text only, 1M context) for harder reasoning |
 | Fast decisions (System 1) | `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`, `nvidia/nemotron-3-super-120b-a12b`, or `nvidia/Nemotron-3_5-Lightning`, answering typed choice questions through `scripts/llm_choice_sidecar.py` |
 
-Web research can use [Tavily](https://tavily.com) (`[web] search_provider = "tavily"` and
-`TAVILY_API_KEY`).
+Web research uses [Tavily](https://tavily.com) as soon as you save a key (*Settings → Web search*,
+or `TAVILY_API_KEY`): ranked results with a short synthesized answer, news and time-range search, a
+deep mode, and Tavily Extract for pages that block or need JavaScript. With no key it falls back to
+DuckDuckGo, and if Tavily is unreachable it falls back mid-search. See [docs/WEB.md](docs/WEB.md).
 
 **Planner.** Create a key in the Token Factory console. In the desktop app choose *Nebius Token
 Factory* in Settings and paste it (it goes to Windows Credential Manager), or from a terminal:
@@ -323,9 +325,10 @@ splits are saved to memory as playbooks. A model on this computer gets four requ
 hosted one as many as the agents, narrowed when the provider rate-limits; `[swarm] worker_model`
 can give the workers a smaller model. See [`docs/SWARM.md`](docs/SWARM.md).
 
-**Web research.** `web_search` finds pages without a key (DuckDuckGo; Brave, Tavily, or a SearXNG
-instance are configurable) and `web_fetch` reads them as clean text in parts, with private and
-local addresses refused. See [`docs/WEB.md`](docs/WEB.md).
+**Web research.** `web_search` uses Tavily once a key is saved (answers, news and time-range search,
+deep mode) and DuckDuckGo otherwise; Brave or a SearXNG instance are configurable. `web_fetch`
+reads pages as clean text in parts, asking Tavily Extract for pages it cannot read, with private and
+local addresses always refused. See [`docs/WEB.md`](docs/WEB.md).
 
 **Without a router (the default)**, POK-Agent is a complete computer-use and coding agent on its
 own, exactly as before System 1 was added. The router is optional (`[decision_router]

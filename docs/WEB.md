@@ -14,17 +14,35 @@ and at most 20. The provider is configurable:
 
 | `search_provider` | Key | Notes |
 | --- | --- | --- |
-| `duckduckgo` (default) | none | DuckDuckGo's HTML results. When a direct request is refused, the same results page is read in the managed browser. |
+| `auto` (default) | `TAVILY_API_KEY` (optional) | Tavily as soon as a Tavily key is saved (Settings, Web search, or the variable), with DuckDuckGo as the fallback if Tavily cannot be reached; DuckDuckGo when there is no key |
+| `tavily` | `TAVILY_API_KEY` | Always Tavily (an error if Tavily fails) |
+| `duckduckgo` | none | DuckDuckGo's HTML results. When a direct request is refused, the same results page is read in the managed browser. |
 | `brave` | `BRAVE_SEARCH_API_KEY` | Brave Search API |
-| `tavily` | `TAVILY_API_KEY` | Tavily search API |
 | `searxng` | none | Your own SearXNG instance at `searxng_url`, with its JSON output format enabled |
 
 ```toml
 [web]
-search_provider = "duckduckgo"   # or "brave", "tavily", "searxng"
+search_provider = "auto"   # or "tavily", "duckduckgo", "brave", "searxng"
 # api_key_env = "BRAVE_SEARCH_API_KEY"   # another variable or saved key name
 # searxng_url = "http://localhost:8888"
 ```
+
+### Tavily
+
+[Tavily](https://tavily.com) is a search API built for AI agents, and the default as soon as a key is
+saved: paste it under *Settings → Web search* (it is checked with a test search before it is stored in
+Windows Credential Manager) or set `TAVILY_API_KEY`. The agent then gets, beyond ranked results:
+
+- **A short answer** composed by Tavily from the results (`answer`), which the agent is told to check
+  against the sources.
+- **News and time limits:** `topic = "news"` and `time_range` of `day`, `week`, `month` or `year`.
+- **Deep search:** `deep = true` uses Tavily's advanced depth for harder questions.
+- **Pages it cannot read:** `web_fetch` asks Tavily Extract for the text of a page that is blocked,
+  fails, or comes back empty because it needs JavaScript (the result says `via: tavily_extract`).
+  Addresses on this computer's network are never sent, and a PDF is not.
+
+Only the query, and the addresses of pages the agent could not read itself, go to Tavily. If Tavily is
+down or the key was revoked, `auto` quietly falls back to DuckDuckGo and the result says so (`fallback`).
 
 ## `web_fetch`
 

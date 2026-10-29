@@ -67,6 +67,13 @@ type GatewayStatus = {
   pending: { code: string; user_id: number; chat_id: number; name: string; expires_in: number }[];
   jobs: { id: string; name: string; prompt: string; schedule: string; enabled: boolean; last_run?: string | null }[];
 };
+type WebSearchProvider = "auto" | "duckduckgo" | "brave" | "tavily" | "searxng";
+type WebSearchStatus = { configured: WebSearchProvider; effective: WebSearchProvider; has_tavily_key: boolean };
+type WebTryResult = {
+  provider: string; answer?: string; fallback?: string;
+  results: { rank: number; title: string; url: string; snippet: string }[];
+};
+const WEB_PROVIDER_NAMES: Record<string, string> = { auto: "Automatic", tavily: "Tavily", duckduckgo: "DuckDuckGo", brave: "Brave", searxng: "SearXNG" };
 /** A task that arrived through the Telegram gateway or a scheduled job. */
 type RemoteTask = { id: string; prompt: string; source: "telegram" | "schedule"; who: string };
 type MemoryRecord = {
@@ -1047,6 +1054,12 @@ export function App() {
   const [gatewayToken, setGatewayToken] = useState("");
   const [gatewayBusy, setGatewayBusy] = useState(false);
   const [autostart, setAutostart] = useState(false);
+  const [webSearch, setWebSearch] = useState<WebSearchStatus | null>(null);
+  const [tavilyKey, setTavilyKey] = useState("");
+  const [webBusy, setWebBusy] = useState(false);
+  const [webError, setWebError] = useState("");
+  const [tryQuery, setTryQuery] = useState("What is NVIDIA Nemotron 3 Super?");
+  const [tryResult, setTryResult] = useState<WebTryResult | null>(null);
   const [gatewayError, setGatewayError] = useState("");
   const [jobName, setJobName] = useState("");
   const [jobSchedule, setJobSchedule] = useState("daily 09:00");
@@ -1629,6 +1642,12 @@ export function App() {
     }
   };
 
+  // Opening Web search refreshes what the agent would use now.
+  useEffect(() => {
+    if (!settingsOpen || settingsSection !== "web") return;
+    void invoke<WebSearchStatus>("get_web_search_status").then(setWebSearch).catch(() => undefined);
+  }, [settingsOpen, settingsSection]);
+
   // While the Gateway page is open, keep pairing requests and task status fresh.
   useEffect(() => {
     if (!settingsOpen || settingsSection !== "gateway") return;
@@ -1637,6 +1656,40 @@ export function App() {
     const timer = window.setInterval(() => refreshGatewayRef.current(), 4000);
     return () => window.clearInterval(timer);
   }, [settingsOpen, settingsSection]);
+
+  const webCall = async (command: string, args: Record<string, unknown> = {}) => {
+    setWebBusy(true);
+    setWebError("");
+    try {
+      setWebSearch(await invoke<WebSearchStatus>(command, args));
+      return true;
+    } catch (error) {
+      setWebError(compactValue(String(error), 300) ?? "That did not work");
+      return false;
+    } finally {
+      setWebBusy(false);
+    }
+  };
+  const chooseWebProvider = async (provider: WebSearchProvider) => {
+    if (await webCall("set_web_search_provider", { provider })) {
+      try { localStorage.setItem("pok_web_search_provider", provider); } catch { /* storage unavailable */ }
+    }
+  };
+  const saveTavilyKey = async () => {
+    if (await webCall("save_tavily_key", { apiKey: tavilyKey })) setTavilyKey("");
+  };
+  const runTrySearch = async () => {
+    setWebBusy(true);
+    setWebError("");
+    setTryResult(null);
+    try {
+      setTryResult(await invoke<WebTryResult>("try_web_search", { query: tryQuery }));
+    } catch (error) {
+      setWebError(compactValue(String(error), 300) ?? "The search did not work");
+    } finally {
+      setWebBusy(false);
+    }
+  };
 
   const loadFastModels = async (provider: string) => {
     setFastModelsLoading(true);
@@ -2997,6 +3050,15 @@ export function App() {
     const unlistenGatewayNew = listen("gateway_new_conversation", () => { void newConversationRef.current(); });
     const unlistenGatewayChanged = listen("gateway_changed", () => refreshGatewayRef.current());
     refreshGatewayRef.current();
+    invoke<WebSearchStatus>("get_web_search_status").then(async (current) => {
+      // The provider chosen in Settings is a remembered choice.
+      let saved: string | null = null;
+      try { saved = localStorage.getItem("pok_web_search_provider"); } catch { /* storage unavailable */ }
+      if (saved && saved !== current.configured && ["auto", "tavily", "duckduckgo"].includes(saved)) {
+        current = await invoke<WebSearchStatus>("set_web_search_provider", { provider: saved }).catch(() => current);
+      }
+      setWebSearch(current);
+    }).catch(() => undefined);
     invoke<"auto" | "foreground_only" | "off">("get_initial_look").then(async (current) => {
       let saved: string | null = null;
       try { saved = localStorage.getItem("pok_initial_look"); } catch { /* storage unavailable */ }
@@ -3794,6 +3856,62 @@ export function App() {
             {decisionRouter?.training_log && decisionRouter.training_dir && (
               <p className="settings-note" role="status">Saving to {decisionRouter.training_dir} (one file per conversation). Combine them with scripts/build_router_dataset.py.</p>
             )}
+          </SettingsCard>
+        </>}
+
+        {settingsSection === "web" && <>
+          <SettingsCard title="Web search"
+            status={<StatusPill tone={webSearch?.effective === "tavily" ? "ok" : "off"}>{WEB_PROVIDER_NAMES[webSearch?.effective ?? "duckduckgo"] ?? webSearch?.effective}</StatusPill>}
+            description="How the agent searches the web. Automatic uses Tavily as soon as a Tavily key is saved, and falls back to DuckDuckGo if Tavily cannot be reached.">
+            <div className="choice-cards" role="radiogroup" aria-label="Search provider">
+              {([
+                ["auto", "Automatic", webSearch?.has_tavily_key ? "Tavily, with your saved key" : "DuckDuckGo until a Tavily key is saved", true],
+                ["tavily", "Tavily", webSearch?.has_tavily_key ? "Always Tavily" : "Save a Tavily key first", webSearch?.has_tavily_key],
+                ["duckduckgo", "DuckDuckGo", "No key; less dependable", true],
+              ] as const).map(([value, title, text, available]) => <button key={value} type="button" role="radio" aria-checked={webSearch?.configured === value}
+                className={webSearch?.configured === value ? "selected" : ""} disabled={webBusy || !available}
+                onClick={() => void chooseWebProvider(value)}>
+                <strong>{title}</strong><small>{text}</small>
+              </button>)}
+            </div>
+            {webSearch && !["auto", "tavily", "duckduckgo"].includes(webSearch.configured) && (
+              <p className="settings-note" role="status">pok-ai.toml selects {WEB_PROVIDER_NAMES[webSearch.configured] ?? webSearch.configured}; choose a provider above to override it.</p>
+            )}
+          </SettingsCard>
+
+          <SettingsCard title="Tavily"
+            status={webSearch?.has_tavily_key ? <StatusPill tone="ok">Key saved</StatusPill> : <StatusPill tone="off">No key</StatusPill>}
+            description="Tavily is a search API built for AI agents. It returns ranked results with a short synthesized answer, can search recent news or the last day, week, month or year, and reads pages that block ordinary requests or need JavaScript. Free keys at app.tavily.com. Only the search text, and the addresses of pages the agent cannot read itself, are sent to Tavily.">
+            <SettingRow label="API key" help="Checked with a test search before it is saved; stored in Windows Credential Manager.">
+              <div className="inline-field">
+                <input type="password" aria-label="Tavily API key" value={tavilyKey} onChange={(event) => setTavilyKey(event.target.value)}
+                  placeholder={webSearch?.has_tavily_key ? "Paste a new key to replace it" : "tvly-…"} />
+                <button type="button" className="primary" disabled={!tavilyKey.trim() || webBusy} onClick={() => void saveTavilyKey()}>{webBusy && tavilyKey ? "Checking…" : "Save key"}</button>
+                {webSearch?.has_tavily_key && <button type="button" disabled={webBusy} onClick={() => void webCall("clear_tavily_key")}>Remove</button>}
+              </div>
+            </SettingRow>
+            {webError && <p className="error-text">{webError}</p>}
+          </SettingsCard>
+
+          <SettingsCard title="Try it" description="Runs one real search with whatever the agent would use now.">
+            <SettingRow label="Search for">
+              <div className="inline-field">
+                <input aria-label="Search for" className="wide-input" value={tryQuery} onChange={(event) => setTryQuery(event.target.value)}
+                  onKeyDown={(event) => { if (event.key === "Enter" && tryQuery.trim() && !webBusy) void runTrySearch(); }} />
+                <button type="button" className="primary" disabled={!tryQuery.trim() || webBusy} onClick={() => void runTrySearch()}>{webBusy && !tavilyKey ? "Searching…" : "Search"}</button>
+              </div>
+            </SettingRow>
+            {tryResult && <>
+              <p className="settings-note" role="status">Answered by {WEB_PROVIDER_NAMES[tryResult.provider] ?? tryResult.provider}.{tryResult.fallback ? ` ${tryResult.fallback}.` : ""}</p>
+              {tryResult.answer && <div className="memory"><strong>Answer</strong><p>{tryResult.answer}</p><small>A short answer composed by Tavily from these results; check the sources.</small></div>}
+              {tryResult.results.slice(0, 4).map((hit) => (
+                <div className="memory" key={hit.url}>
+                  <strong>{hit.title}</strong>
+                  <p>{hit.snippet}</p>
+                  <small><a href={hit.url} onClick={(event) => { event.preventDefault(); void invoke("open_external", { url: hit.url }).catch(() => undefined); }}>{hit.url}</a></small>
+                </div>
+              ))}
+            </>}
           </SettingsCard>
         </>}
 

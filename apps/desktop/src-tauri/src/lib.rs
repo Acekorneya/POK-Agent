@@ -64,6 +64,7 @@ use windows::Win32::System::Threading::PROCESS_CREATION_FLAGS;
 
 mod gateway;
 mod voice;
+mod web_search;
 
 #[derive(Clone)]
 struct AppRuntime {
@@ -4168,6 +4169,10 @@ pub fn run() {
     if let Some(api_key) = load_provider_key(&config.decision_router.api_key_env) {
         pok_ai_core::brain::set_api_key(&config.decision_router.api_key_env, api_key);
     }
+    // A saved Tavily key makes Tavily the default web search.
+    if let Some(api_key) = load_provider_key("TAVILY_API_KEY") {
+        pok_ai_core::brain::set_api_key("TAVILY_API_KEY", api_key);
+    }
     // Private values the user agreed to let System 1 remember for a skill.
     #[cfg(windows)]
     pok_ai_core::secrets::install(std::sync::Arc::new(CredentialSecretStore));
@@ -4281,6 +4286,11 @@ pub fn run() {
             gateway::gateway_task_done,
             gateway::get_autostart,
             gateway::set_autostart,
+            web_search::get_web_search_status,
+            web_search::set_web_search_provider,
+            web_search::save_tavily_key,
+            web_search::clear_tavily_key,
+            web_search::try_web_search,
             update_provider_endpoint,
             get_local_model_status,
             load_model,

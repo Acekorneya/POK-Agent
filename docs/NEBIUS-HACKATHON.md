@@ -15,7 +15,7 @@ Ultra for serious reasoning, Nano or Super for the fast, everyday calls", is thi
 | Nebius Token Factory, `nvidia/Nemotron-3.5-Super-VL` | The planner. Reads window screenshots plus the numbered UI Automation/OCR targets and calls typed tools. |
 | Nebius Token Factory, `nvidia/Nemotron-3-Ultra-550b-a55b` | Alternative planner for harder reasoning (text only, so it relies on the numbered targets rather than the screenshot). |
 | Nebius Token Factory, `nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B`, `nvidia/nemotron-3-super-120b-a12b`, `nvidia/Nemotron-3_5-Lightning` | System 1. Typed choice questions (pick a target, is the condition true, is the task done) answered one letter at a time with a JSON-schema constrained reply, asked twice with the options rotated so position bias shows up as disagreement. |
-| Tavily | `web_search` for research tasks (bonus track). |
+| Tavily | `web_search` for research tasks (bonus award): the default as soon as a key is saved, with Tavily's short answer, news and time-range search, deep mode, and Tavily Extract behind `web_fetch` for pages that block or need JavaScript. Settings, Web search, saves and checks the key and runs a real search. If Tavily is down it falls back to DuckDuckGo. |
 
 Rust keeps everything that must stay deterministic: candidate construction, redaction of sensitive
 fields, confidence gates, policy and approvals, input execution and post-action verification. A

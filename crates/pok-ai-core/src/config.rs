@@ -697,9 +697,12 @@ const fn default_user_browser_port() -> u16 {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SearchProvider {
+    /// Tavily when a Tavily key is saved (and DuckDuckGo if Tavily fails),
+    /// DuckDuckGo otherwise. The default: saving a key is all it takes.
+    #[default]
+    Auto,
     /// DuckDuckGo's HTML results, fetched directly and, when that is
     /// refused, through the managed browser. No key.
-    #[default]
     Duckduckgo,
     /// Brave Search API (`BRAVE_SEARCH_API_KEY` unless `api_key_env` says otherwise).
     Brave,
@@ -1587,7 +1590,7 @@ base_url = "http://127.0.0.1:1234/v1"
         let example: Config = toml::from_str(include_str!("../../../pok-ai.example.toml")).unwrap();
         assert!(example.user_browser.enabled);
         assert_eq!(example.user_browser.port, 9222);
-        assert_eq!(example.web.search_provider, SearchProvider::Duckduckgo);
+        assert_eq!(example.web.search_provider, SearchProvider::Auto);
         assert!(example.swarm.worker_model.is_none());
         assert_eq!(
             example.providers["opencode"].base_url,

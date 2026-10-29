@@ -201,7 +201,7 @@ port = 9222
 
 # Web search and page reading (docs/WEB.md). The default needs no key.
 [web]
-search_provider = "duckduckgo"   # or "brave", "tavily", "searxng"
+search_provider = "auto"   # tavily when a Tavily key is saved, else duckduckgo; or "tavily", "duckduckgo", "brave", "searxng"
 # api_key_env = "BRAVE_SEARCH_API_KEY"   # Brave and Tavily; this is Brave's default
 # searxng_url = "http://localhost:8888"  # for "searxng" (JSON format enabled)
 
