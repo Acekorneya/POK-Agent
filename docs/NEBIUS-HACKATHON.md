@@ -43,10 +43,12 @@ Earlier results that carry over, with a different planner and System 1: on
 VM) a recorded program replayed by System 1 cut planner calls 28% on average at the same success
 (see the README). A full Arena run on Nemotron has not been done.
 
-## What was built during the submission period
+## What was built for this entry
 
-The repository's first commit is 2026-09-24 and v0.1.0 shipped 2026-09-30; v0.1.10 shipped
-2026-10-17. For this entry specifically:
+POK-Agent was developed privately before it was published. The public history starts with a single
+squashed commit on 2026-09-24 ("Initial public release"), so it does not show that earlier work.
+Releases since: v0.1.0 on 2026-09-30 and v0.1.10 on 2026-10-17. Everything below was added for this
+entry, in the commits dated 2026-10-28 (releases v0.1.11 and v0.1.12):
 
 - `nebius` provider in the catalog (`crates/pok-ai-core/src/config.rs`) and in the desktop
   Settings; `pok-ai models --provider nebius --details` lists its models with vision, tools and
