@@ -801,10 +801,10 @@ Thank you for your support!
 
 ## License and attribution
 
-POK-Agent is developed by **KNY Industries**. It is free and open-source software
+POK-Agent is developed by **Crescencio Bueno** (KNY Industries). It is free and open-source software
 licensed under the [Apache License 2.0](LICENSE). You may use, modify, and redistribute it,
 including for commercial purposes, subject to that license.
 
 Redistributions and derivative works must include the Apache 2.0 license and
-retain the KNY Industries attribution in [NOTICE](NOTICE). Contributions back to POK-Agent
+retain the copyright notice in [NOTICE](NOTICE). Contributions back to POK-Agent
 are welcomed and appreciated, but they are not required by the license.

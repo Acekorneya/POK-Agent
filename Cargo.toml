@@ -11,7 +11,7 @@ members = [
 [workspace.package]
 version = "0.1.12"
 edition = "2024"
-authors = ["KNY Industries"]
+authors = ["Crescencio Bueno (KNY Industries)"]
 license = "Apache-2.0"
 rust-version = "1.88"
 

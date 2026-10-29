@@ -9,7 +9,9 @@ abstract: >-
   repository includes a Windows Agent Arena evaluation suite.
 type: software
 authors:
-  - name: "KNY Industries"
+  - family-names: "Bueno"
+    given-names: "Crescencio"
+    affiliation: "KNY Industries"
 repository-code: "https://github.com/Acekorneya/POK-Agent"
 license: Apache-2.0
 keywords:
