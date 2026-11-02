@@ -433,10 +433,17 @@ impl DecisionRouterConfig {
         }
     }
 
+    /// The environment variable holding the key the active backend needs, if
+    /// it needs one. A model System 1 reached directly (a provider's chat
+    /// endpoint) uses that provider's key, and none at all for a local server
+    /// without one; only the sidecar takes the loopback token.
     pub fn active_key_env(&self) -> Option<&str> {
         match self.backend {
             DecisionRouterBackend::Jev => Some(&self.api_key_env),
             DecisionRouterBackend::Laya => Some(&self.laya.token_env),
+            DecisionRouterBackend::LlmChoice if self.llm_choice.is_direct() => {
+                self.llm_choice.api_key_env.as_deref()
+            }
             DecisionRouterBackend::LlmChoice => Some(&self.llm_choice.token_env),
             DecisionRouterBackend::Kev => Some(&self.kev.token_env),
             DecisionRouterBackend::Off => None,
@@ -1566,6 +1573,34 @@ base_url = "http://127.0.0.1:1234/v1"
         assert_eq!(
             chatgpt.resolved_data_boundary("chatgpt"),
             ProviderDataBoundary::ExternalService
+        );
+    }
+
+    #[test]
+    fn a_model_router_needs_its_providers_key_not_the_sidecar_token() {
+        let mut config: Config = toml::from_str("").unwrap();
+        config.decision_router.backend = DecisionRouterBackend::LlmChoice;
+        // Through the sidecar, the loopback token is the key.
+        assert_eq!(
+            config.decision_router.active_key_env(),
+            Some("POK_LLM_CHOICE_TOKEN")
+        );
+        // Pointed at a hosted provider's chat model, that provider's key is.
+        config
+            .use_fast_model("nebius", "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B")
+            .unwrap();
+        assert_eq!(
+            config.decision_router.active_key_env(),
+            Some("NEBIUS_API_KEY")
+        );
+        // A local server that takes no key needs none.
+        config.decision_router.llm_choice.api_key_env = None;
+        assert_eq!(config.decision_router.active_key_env(), None);
+        // The other backends are unchanged.
+        config.decision_router.backend = DecisionRouterBackend::Jev;
+        assert_eq!(
+            config.decision_router.active_key_env(),
+            Some("TYPESAFE_API_KEY")
         );
     }
 
