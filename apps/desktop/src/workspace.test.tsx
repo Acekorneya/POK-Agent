@@ -654,9 +654,31 @@ describe("workspace presentation", () => {
     expect(await screen.findByText("JEV is evaluating options")).not.toBeNull();
     emit({ type: "decision_router_evaluated", turn: 1, purpose: "next_action", eligible: false, tool: "fallback", selected_probability: 0.5, confidence: 0.6, probability_threshold: 0.8, confidence_threshold: 0.75, elapsed_ms: 42, rejection_reason: "low_confidence", alternatives: [] });
     expect(await screen.findByText("JEV deferred to the main model")).not.toBeNull();
-    expect(screen.getByText(/Deferred this step/)).not.toBeNull();
+    expect(screen.getByText(/Main model took this step/)).not.toBeNull();
     emit({ type: "decision_router_cache_hit", turn: 2, purpose: "next_action", candidate_count: 7 });
-    expect(screen.queryByText(/Deferred this step/)).toBeNull();
+    expect(screen.queryByText(/Main model took this step/)).toBeNull();
+  });
+  it("does not report a hand-back when routing plumbing keeps the local ranking", async () => {
+    await renderApp();
+    const router = screen.getByRole("combobox", { name: "Decision router" }) as HTMLSelectElement;
+    await userEvent.selectOptions(router, "jev");
+    await waitFor(() => expect(router.value).toBe("jev"));
+    // The router picks a step...
+    emit({ type: "decision_router_evaluated", turn: 1, purpose: "fast_actions", eligible: true, tool: "click_target", candidate_id: "t4", description: "\"Documents\" (List Item, enabled)", selected_probability: 0.95, target_probability: 0.95, probability_threshold: 0.3, elapsed_ms: 30, alternatives: [] });
+    expect(await screen.findByText(/picked “Documents”/)).not.toBeNull();
+    // ...and intent, context and recovery routing around it declines nothing.
+    for (const purpose of ["retrieval_intent", "context_selection", "environment_recovery"]) {
+      emit({ type: "decision_router_evaluated", turn: 1, purpose, eligible: false, selected_probability: 0, probability_threshold: 0.3, elapsed_ms: 20, rejection_reason: "local_intent_fallback", alternatives: [] });
+    }
+    expect(screen.queryByText(/Main model took this step/)).toBeNull();
+    // The decision counter counts only the one action decision.
+    expect(screen.getByText("1 decisions")).not.toBeNull();
+    expect(screen.getByText("1 eligible")).not.toBeNull();
+    // A real hand-back still shows, and plumbing does not clear or hide it.
+    emit({ type: "decision_router_evaluated", turn: 2, purpose: "fast_actions", eligible: false, tool: "click_target", candidate_id: "t2", rejection_reason: "contradicted_by_local_evidence", selected_probability: 0.8, probability_threshold: 0.3, elapsed_ms: 41, alternatives: [] });
+    expect(await screen.findByText(/Main model took this step/)).not.toBeNull();
+    emit({ type: "decision_router_evaluated", turn: 2, purpose: "retrieval_intent", eligible: false, selected_probability: 0, probability_threshold: 0.3, elapsed_ms: 12, rejection_reason: "local_intent_fallback", alternatives: [] });
+    expect(screen.getByText(/Main model took this step/)).not.toBeNull();
   });
   it("labels decision activity with real trace payloads (done, context routing, judge)", async () => {
     await renderApp();

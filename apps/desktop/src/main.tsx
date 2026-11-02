@@ -2237,18 +2237,28 @@ export function App() {
           setJevRuntimeState("ready");
           setJevWarning(null);
           break;
-        case "decision_router_evaluated":
+        case "decision_router_evaluated": {
           setJevRuntimeState("ready");
-          setJevWarning(payload.eligible ? null : "Deferred this step");
-          jevSelectedTool.current = payload.eligible ? payload.tool ?? null : null;
+          // Only choosing an action can be handed back to the main model.
+          // Intent, context and recovery routing keep the local ranking when
+          // the router adds nothing, which declines nothing: those events
+          // must not raise the warning, replace the picked tool, or count as
+          // a refused decision.
+          const choosesAction = isActionRouting(payload.purpose);
+          if (choosesAction) {
+            setJevWarning(payload.eligible ? null : "Main model took this step");
+            jevSelectedTool.current = payload.eligible ? payload.tool ?? null : null;
+          }
           setJevMetrics((current) => ({
             ...current,
-            evaluations: current.evaluations + 1,
-            eligible: current.eligible + (payload.eligible ? 1 : 0),
+            evaluations: current.evaluations + (choosesAction ? 1 : 0),
+            eligible: current.eligible + (choosesAction && payload.eligible ? 1 : 0),
             latencyMs: current.latencyMs + (payload.elapsed_ms ?? 0),
-            last: payload.eligible
-              ? `${payload.tool ?? payload.candidate_id ?? "action"} accepted`
-              : `Fallback: ${(payload.rejection_reason ?? "not eligible").replaceAll("_", " ")}`,
+            last: !choosesAction
+              ? current.last
+              : payload.eligible
+                ? `${payload.tool ?? payload.candidate_id ?? "action"} accepted`
+                : `Handed back: ${(payload.rejection_reason ?? "not eligible").replaceAll("_", " ")}`,
           }));
           setMessages((previous) => {
             // Optional-context/intent routing has no user-facing "deferral":
@@ -2312,6 +2322,7 @@ export function App() {
             } : message);
           });
           break;
+        }
         case "decision_router_judge_attempted": {
           const toolName = payload.tool ?? "candidate";
           const candidateId = payload.candidate_id ?? "pick";
@@ -4356,7 +4367,7 @@ export function App() {
             <option value="llm_choice" disabled={!decisionRouter?.fast?.ready}>Any model{decisionRouter?.fast?.ready ? ` · ${decisionRouter.fast.model}` : ""}</option>
           </select>
           {jevEnabled && jevWarning && (
-            <span className="jev-warning" role="status" title={`No suitable bounded candidate was selected. The main model continued normally and ${activeRouterName()} remains enabled.`}>
+            <span className="jev-warning" role="status" title={`${activeRouterName()} did not pick a bounded option for this step, so the main model handled it. ${activeRouterName()} stays on for the next step.`}>
               ⚠ {jevWarning}
             </span>
           )}
