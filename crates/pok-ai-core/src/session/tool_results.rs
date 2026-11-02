@@ -771,11 +771,32 @@ pub(super) fn is_pure_lookup_tool(name: &str) -> bool {
 }
 
 pub(super) fn qualifies_as_fresh_evidence(name: &str, value: &Value, ok: bool) -> bool {
+    if name == "run_agents" {
+        return ok && swarm_reports_are_grounded(value);
+    }
     is_grounding_evidence_tool(name)
         && ok
         && navigation_result_is_ready(value)
         && value.get("status").and_then(Value::as_str) != Some("running")
         && value.get("executed").and_then(Value::as_bool) != Some(false)
+}
+
+/// Whether a `run_agents` result carries evidence the orchestrator can pass on:
+/// at least one agent finished and observed fresh evidence in its own run
+/// (looked something up, read a page, captured the screen). The swarm did the
+/// looking, so the orchestrator relays the reports instead of repeating the
+/// lookups. A swarm whose agents all failed, or finished without observing
+/// anything, still leaves the orchestrator to make its own attempt.
+pub(super) fn swarm_reports_are_grounded(value: &Value) -> bool {
+    value
+        .get("agents")
+        .and_then(Value::as_array)
+        .is_some_and(|agents| {
+            agents.iter().any(|agent| {
+                agent.get("status").and_then(Value::as_str) == Some("completed")
+                    && agent.get("grounded_evidence").and_then(Value::as_bool) == Some(true)
+            })
+        })
 }
 
 pub(super) fn tool_changed_artifact(

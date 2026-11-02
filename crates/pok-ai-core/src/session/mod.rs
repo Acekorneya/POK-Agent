@@ -216,6 +216,11 @@ const MAX_UNCHANGED_PLAN_UPDATES: u32 = 3;
 /// thinking, which stream progress events.
 pub(super) const PROVIDER_STREAM_IDLE_LIMIT: Duration = Duration::from_secs(300);
 
+/// A check run when the model offers its final answer: it returns a reminder
+/// to send the model back to work once (for example, a swarm worker that has
+/// not yet heard its teammates), or `None` to let the answer stand.
+pub type CompletionReview = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
 pub struct Session {
     pub id: Uuid,
     brain: Arc<dyn Brain>,
@@ -268,6 +273,7 @@ pub struct Session {
     /// Groups fixed at construction (a swarm worker's role), kept for every
     /// run instead of the groups inferred from its prompt.
     fixed_tool_groups: Option<BTreeSet<String>>,
+    completion_review: Option<CompletionReview>,
     decision_router: Option<Arc<dyn DecisionRouter>>,
     decision_router_config: Option<crate::config::DecisionRouterConfig>,
     /// Opt-in log of router questions and proven answers for training.
@@ -504,6 +510,7 @@ impl Session {
             terminal_logged: false,
             response_max_tokens,
             fixed_tool_groups: None,
+            completion_review: None,
             active_tool_groups: BTreeSet::from([
                 "control".into(),
                 "desktop".into(),
@@ -750,6 +757,13 @@ impl Session {
     {
         self.active_tool_groups = groups.into_iter().map(Into::into).collect();
         self.fixed_tool_groups = Some(self.active_tool_groups.clone());
+        self
+    }
+
+    /// Run `review` whenever the model offers a final answer; a reminder it
+    /// returns sends the model back to work (at most twice per run).
+    pub fn with_completion_review(mut self, review: CompletionReview) -> Self {
+        self.completion_review = Some(review);
         self
     }
 

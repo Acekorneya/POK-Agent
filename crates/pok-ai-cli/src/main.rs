@@ -663,6 +663,7 @@ async fn run_cli() -> anyhow::Result<()> {
                     brain: brain.clone(),
                     model: model.clone(),
                     worker_model: config.swarm.worker_model.clone(),
+                    closing_ranks: config.swarm.closing_ranks,
                     decision_router: decision_router_config.clone(),
                     user_browser: config.user_browser.clone(),
                     web: config.web.clone(),

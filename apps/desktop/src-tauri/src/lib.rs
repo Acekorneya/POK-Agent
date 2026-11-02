@@ -2536,6 +2536,7 @@ async fn run_prompt(
                 brain: brain.clone(),
                 model: model.clone(),
                 worker_model: swarm_config.worker_model,
+                closing_ranks: swarm_config.closing_ranks,
                 decision_router: decision_router_config.clone(),
                 user_browser: user_browser_config.clone(),
                 web: web_config,

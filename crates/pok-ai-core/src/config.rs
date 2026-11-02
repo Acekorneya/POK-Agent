@@ -721,12 +721,25 @@ pub enum SearchProvider {
 
 /// The agent swarm (`run_agents`). How many agents run is decided per task
 /// by the orchestrator, not configured.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SwarmConfig {
     /// A smaller, cheaper model for the workers (System 2 for each worker),
     /// on the same provider. Unset uses the main model.
     #[serde(default)]
     pub worker_model: Option<String>,
+    /// Before a worker reports, it hears what its teammates posted and
+    /// revises once (see docs/SWARM.md, "Closing ranks"). On by default.
+    #[serde(default = "default_true")]
+    pub closing_ranks: bool,
+}
+
+impl Default for SwarmConfig {
+    fn default() -> Self {
+        Self {
+            worker_model: None,
+            closing_ranks: true,
+        }
+    }
 }
 
 /// Web search and page reading (`web_search`, `web_fetch`).
@@ -1627,6 +1640,7 @@ base_url = "http://127.0.0.1:1234/v1"
         assert_eq!(example.user_browser.port, 9222);
         assert_eq!(example.web.search_provider, SearchProvider::Auto);
         assert!(example.swarm.worker_model.is_none());
+        assert!(example.swarm.closing_ranks);
         assert_eq!(
             example.providers["opencode"].base_url,
             "https://opencode.ai/zen/v1"

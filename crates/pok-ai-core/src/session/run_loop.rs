@@ -521,6 +521,7 @@ impl Session {
         let mut workflow: Vec<Value> = Vec::new();
         let mut verified_goal_actions = BTreeMap::<String, Value>::new();
         let mut live_evidence_guard_fires = 0_u32;
+        let mut completion_review_fires = 0_u32;
         let mut unfinished_form_checks = Vec::<String>::new();
         let mut empty_response_streak = 0_u32;
         let mut malformed_response_streak = 0_u32;
@@ -2115,6 +2116,31 @@ impl Session {
                     self.emit(AgentEvent::CompletionCandidateRejected {
                         attempt: live_evidence_guard_fires,
                         maximum: 1,
+                        reason: reason.into(),
+                    });
+                    continue;
+                }
+                // The host may hold the answer back once or twice (a swarm
+                // worker that has not yet heard its teammates).
+                if completion_review_fires < 2
+                    && !is_safety_refusal(&text)
+                    && let Some(review) = self.completion_review.as_ref()
+                    && let Some(reminder) = review()
+                {
+                    completion_review_fires += 1;
+                    let reason = "The host asked for a review before the answer is final.";
+                    self.messages.push(BrainMessage::text_with_origin(
+                        "user",
+                        format!("<system-reminder>{reminder}</system-reminder>"),
+                        MessageOrigin::SystemReminder,
+                    ));
+                    self.log(
+                        "completion_review",
+                        json!({"attempt": completion_review_fires, "maximum": 2, "reason": reason}),
+                    )?;
+                    self.emit(AgentEvent::CompletionCandidateRejected {
+                        attempt: completion_review_fires,
+                        maximum: 2,
                         reason: reason.into(),
                     });
                     continue;

@@ -492,6 +492,36 @@ fn loading_navigation_is_not_fresh_grounding_evidence() {
 }
 
 #[test]
+fn a_swarm_counts_as_fresh_evidence_only_when_an_agent_grounded_its_report() {
+    let grounded = json!({"agents": [
+        {"status": "failed", "grounded_evidence": false, "report": "could not run"},
+        {"status": "completed", "grounded_evidence": true, "report": "Example headlines"},
+    ]});
+    assert!(qualifies_as_fresh_evidence("run_agents", &grounded, true));
+    // The same swarm does not count when the call itself did not finish ok.
+    assert!(!qualifies_as_fresh_evidence("run_agents", &grounded, false));
+    // Finished reports that looked nothing up are not evidence.
+    assert!(!qualifies_as_fresh_evidence(
+        "run_agents",
+        &json!({"agents": [{"status": "completed", "grounded_evidence": false}]}),
+        true,
+    ));
+    // A grounded flag on an agent that did not finish does not count.
+    assert!(!qualifies_as_fresh_evidence(
+        "run_agents",
+        &json!({"agents": [{"status": "timed_out", "grounded_evidence": true}]}),
+        true,
+    ));
+    // Results from before the flag existed, or malformed ones, are not trusted.
+    assert!(!qualifies_as_fresh_evidence(
+        "run_agents",
+        &json!({"agents": [{"status": "completed"}]}),
+        true,
+    ));
+    assert!(!qualifies_as_fresh_evidence("run_agents", &json!({}), true));
+}
+
+#[test]
 fn navigation_to_current_observed_url_is_suppressed_as_satisfied() {
     let continuity = ExecutionContinuity {
         current: Some(channel_state()),
@@ -5795,6 +5825,245 @@ async fn the_run_stops_acting_when_the_step_budget_is_used() {
     assert!(result.answer.contains("step budget"), "{}", result.answer);
     assert_eq!(brain.tool_requests.load(Ordering::SeqCst), 2);
     assert_eq!(harness.clicks.lock().len(), 2);
+}
+
+/// Stands in for `run_agents`: returns a fixed swarm result.
+struct StubSwarmTool {
+    result: Value,
+}
+
+#[async_trait]
+impl crate::tool::Tool for StubSwarmTool {
+    fn name(&self) -> &'static str {
+        "run_agents"
+    }
+    fn description(&self) -> &'static str {
+        "test swarm"
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn risk(&self) -> crate::policy::RiskClass {
+        crate::policy::RiskClass::ReadOnly
+    }
+    async fn execute(&self, _arguments: Value, _context: &ToolContext) -> Result<Value> {
+        Ok(self.result.clone())
+    }
+}
+
+/// Stands in for an evidence tool so the live-information guard is armed.
+struct StubTimeTool;
+
+#[async_trait]
+impl crate::tool::Tool for StubTimeTool {
+    fn name(&self) -> &'static str {
+        "get_current_time"
+    }
+    fn description(&self) -> &'static str {
+        "test clock"
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object"})
+    }
+    fn risk(&self) -> crate::policy::RiskClass {
+        crate::policy::RiskClass::ReadOnly
+    }
+    async fn execute(&self, _arguments: Value, _context: &ToolContext) -> Result<Value> {
+        Ok(json!({"local_iso8601": "2026-11-02T09:30:00-08:00"}))
+    }
+}
+
+/// Delegates to a swarm on its first request, then answers from its reports.
+struct SwarmThenAnswerBrain {
+    requests: AtomicU64,
+    lookups: AtomicU64,
+}
+
+#[async_trait]
+impl Brain for SwarmThenAnswerBrain {
+    async fn list_models(&self) -> Result<Vec<String>> {
+        Ok(vec!["mock".into()])
+    }
+    fn stream(&self, request: BrainRequest) -> crate::brain::BrainStream {
+        let index = self.requests.fetch_add(1, Ordering::SeqCst);
+        if request
+            .tools
+            .iter()
+            .any(|tool| tool.name == "get_current_time")
+        {
+            self.lookups.fetch_add(1, Ordering::SeqCst);
+        }
+        let events = if index == 0 {
+            vec![
+                Ok(BrainEvent::ToolCall {
+                    call: CompletedToolCall {
+                        id: "call-swarm".into(),
+                        name: "run_agents".into(),
+                        arguments: json!({"goal": "news today", "agents": []}),
+                    },
+                }),
+                Ok(BrainEvent::Finished {
+                    reason: Some("tool_calls".into()),
+                }),
+            ]
+        } else {
+            vec![
+                Ok(BrainEvent::TextDelta {
+                    text: "Briefing built from the agents' reports.".into(),
+                }),
+                Ok(BrainEvent::Finished {
+                    reason: Some("stop".into()),
+                }),
+            ]
+        };
+        Box::pin(futures::stream::iter(events))
+    }
+}
+
+async fn run_swarm_then_answer(swarm_result: Value) -> (String, u64) {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        Vec::new(),
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    harness.session.decision_router = None;
+    harness.session.decision_router_config = None;
+    let brain = Arc::new(SwarmThenAnswerBrain {
+        requests: AtomicU64::new(0),
+        lookups: AtomicU64::new(0),
+    });
+    harness.session.brain = brain.clone();
+    let mut tools = ToolRegistry::default();
+    tools.register(StubSwarmTool {
+        result: swarm_result,
+    });
+    tools.register(StubTimeTool);
+    harness.session.tools = Arc::new(tools);
+    let result = harness
+        .session
+        .run("Any news today I should know about")
+        .await
+        .unwrap();
+    assert!(
+        brain.lookups.load(Ordering::SeqCst) > 0,
+        "the evidence tool must be offered so the live-information guard is armed"
+    );
+    (result.answer, brain.requests.load(Ordering::SeqCst))
+}
+
+#[tokio::test]
+async fn a_grounded_swarm_is_relayed_without_repeating_its_lookups() {
+    let (answer, requests) = run_swarm_then_answer(json!({
+        "goal": "news today",
+        "agents": [
+            {"status": "completed", "grounded_evidence": true, "report": "Example headline one."},
+            {"status": "completed", "grounded_evidence": true, "report": "Example headline two."},
+        ],
+        "completed": 2,
+        "grounded_agents": 2,
+    }))
+    .await;
+    assert_eq!(answer, "Briefing built from the agents' reports.");
+    // One request to start the swarm, one to relay its reports: the live
+    // evidence guard must not send the orchestrator out to look again.
+    assert_eq!(requests, 2);
+}
+
+#[tokio::test]
+async fn an_ungrounded_swarm_still_leaves_the_orchestrator_to_check() {
+    let (answer, requests) = run_swarm_then_answer(json!({
+        "goal": "news today",
+        "agents": [
+            {"status": "failed", "grounded_evidence": false, "report": "the agent could not run"},
+        ],
+        "completed": 0,
+        "grounded_agents": 0,
+    }))
+    .await;
+    assert_eq!(answer, "Briefing built from the agents' reports.");
+    // The guard rejected the first answer once, then accepted the second.
+    assert_eq!(requests, 3);
+}
+
+/// Always answers with text; counts how many requests carried the review
+/// reminder the host asked to be sent.
+struct AnswersWithTextBrain {
+    requests: AtomicU64,
+    reminders_seen: AtomicU64,
+}
+
+#[async_trait]
+impl Brain for AnswersWithTextBrain {
+    async fn list_models(&self) -> Result<Vec<String>> {
+        Ok(vec!["mock".into()])
+    }
+    fn stream(&self, request: BrainRequest) -> crate::brain::BrainStream {
+        self.requests.fetch_add(1, Ordering::SeqCst);
+        let reminded = request
+            .messages
+            .iter()
+            .flat_map(|message| &message.content)
+            .any(|part| {
+                matches!(part, crate::brain::MessageContent::Text { text } if text.contains("TEAM-REVIEW"))
+            });
+        if reminded {
+            self.reminders_seen.fetch_add(1, Ordering::SeqCst);
+        }
+        Box::pin(futures::stream::iter(vec![
+            Ok(BrainEvent::TextDelta {
+                text: "Final answer.".into(),
+            }),
+            Ok(BrainEvent::Finished {
+                reason: Some("stop".into()),
+            }),
+        ]))
+    }
+}
+
+async fn run_with_review(review: crate::session::CompletionReview) -> (String, u64, u64) {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        Vec::new(),
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    harness.session.decision_router = None;
+    harness.session.decision_router_config = None;
+    let brain = Arc::new(AnswersWithTextBrain {
+        requests: AtomicU64::new(0),
+        reminders_seen: AtomicU64::new(0),
+    });
+    harness.session.brain = brain.clone();
+    harness.session = harness.session.with_completion_review(review);
+    let result = harness.session.run("say hello").await.unwrap();
+    (
+        result.answer,
+        brain.requests.load(Ordering::SeqCst),
+        brain.reminders_seen.load(Ordering::SeqCst),
+    )
+}
+
+#[tokio::test]
+async fn a_completion_review_sends_the_model_back_to_work_once() {
+    let fired = Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let counter = fired.clone();
+    let (answer, requests, reminders) = run_with_review(Arc::new(move || {
+        (counter.fetch_add(1, Ordering::SeqCst) == 0)
+            .then(|| "TEAM-REVIEW: hear your teammates".into())
+    }))
+    .await;
+    assert_eq!(answer, "Final answer.");
+    // The first answer was held back, the second stood.
+    assert_eq!(requests, 2);
+    assert_eq!(reminders, 1);
+}
+
+#[tokio::test]
+async fn a_completion_review_cannot_hold_an_answer_back_forever() {
+    let (answer, requests, _) =
+        run_with_review(Arc::new(|| Some("TEAM-REVIEW: again".into()))).await;
+    assert_eq!(answer, "Final answer.");
+    // Two reviews at most, then the answer is accepted.
+    assert_eq!(requests, 3);
 }
 
 /// Calls read_file on a missing path whenever the tool is offered, and

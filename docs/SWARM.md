@@ -56,6 +56,45 @@ Workers talk to each other through a team board:
   to follow it up. A swarm recruits at most half its starting size, and never
   beyond 16 agents.
 
+- **Closing ranks.** Before a worker's report is accepted, it hears what
+  its teammates posted that bears on its part (the latest eight findings and
+  leads, each cut to a few hundred characters, with the author and source)
+  and any question addressed to it that it has not answered. It revises once:
+  it keeps what its own sources support, says which teammate's finding adds
+  to, confirms, or contradicts its part, and, when two sources disagree,
+  reports both and which it trusts instead of deferring. A worker that has
+  nothing waiting for it finishes without an extra model call. Turn it off
+  with `[swarm] closing_ranks = false`.
+- **The shield.** A worker that fails, is cancelled, or runs out of time hands
+  back the findings it had already posted (its last six) with its report, so
+  its work is not lost with it. The planner is told how many reports were
+  rebuilt this way.
+
+`run_agents` returns a `hive` summary (posts, findings, how many agents
+posted, closing reviews sent, salvaged reports) and `grounded_agents`, the
+number of finished workers that looked something up or read a page
+themselves. The planner relays grounded reports instead of repeating the
+lookups, and still checks for itself when no worker was grounded.
+
+Why the board works this way:
+
+- Agents that only write to a shared board and act on its contents work with
+  fewer tokens than agents that message each other
+  ([LbMAS](https://arxiv.org/abs/2507.01701)), so the board stays the only
+  channel and it is bounded.
+- Agents that read each other's answers and revise are more accurate
+  ([multiagent debate](https://arxiv.org/abs/2305.14325)), but not everyone
+  needs to hear everyone ([sparse topologies](https://arxiv.org/abs/2406.11776)):
+  the revise round happens once, on bounded intel.
+- An orchestrator that checks the workers' output contains errors far better
+  than independent agents do (4.4x against 17.2x amplification), and parallel
+  work gains while sequential work loses
+  ([scaling study](https://research.google/blog/towards-a-science-of-scaling-agent-systems-when-and-why-agent-systems-work/)):
+  workers stay on parallel parts, and the planner stays the validator.
+- Duplicated work, vague tasks, and noisy updates are the common failures
+  ([Anthropic's research system](https://www.anthropic.com/engineering/multi-agent-research-system)):
+  claims, bounded notes, and findings kept on the board address them.
+
 Board posts and reports come from the agents and from the pages and
 applications they read, so the planner treats them as evidence to weigh, not
 as instructions.

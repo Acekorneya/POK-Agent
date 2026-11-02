@@ -209,6 +209,9 @@ search_provider = "auto"   # tavily when a Tavily key is saved, else duckduckgo;
 [swarm]
 # A smaller, cheaper model for the workers, on the same provider.
 # worker_model = "qwen3-4b"
+# Before a worker reports, it hears what its teammates posted on the team board
+# and revises once ("closing ranks", docs/SWARM.md). On by default.
+# closing_ranks = true
 
 # Local Model Context Protocol servers. Each configured server is spawned over
 # stdio, its tools are added to the `mcp` capability family, and the model sees
