@@ -274,6 +274,9 @@ pub struct Session {
     /// run instead of the groups inferred from its prompt.
     fixed_tool_groups: Option<BTreeSet<String>>,
     completion_review: Option<CompletionReview>,
+    /// When set, reaching `max_turns` ends the work (tools are withdrawn and
+    /// the model reports) instead of starting another execution epoch.
+    final_turn_limit: bool,
     decision_router: Option<Arc<dyn DecisionRouter>>,
     decision_router_config: Option<crate::config::DecisionRouterConfig>,
     /// Opt-in log of router questions and proven answers for training.
@@ -511,6 +514,7 @@ impl Session {
             response_max_tokens,
             fixed_tool_groups: None,
             completion_review: None,
+            final_turn_limit: false,
             active_tool_groups: BTreeSet::from([
                 "control".into(),
                 "desktop".into(),
@@ -757,6 +761,15 @@ impl Session {
     {
         self.active_tool_groups = groups.into_iter().map(Into::into).collect();
         self.fixed_tool_groups = Some(self.active_tool_groups.clone());
+        self
+    }
+
+    /// Make `max_turns` a limit. By default reaching it starts a new
+    /// execution epoch and the task continues (right for the main agent, whose
+    /// work can run long); with this set the tools are withdrawn at the limit
+    /// and the model reports what it has (right for a swarm worker).
+    pub fn with_final_turn_limit(mut self) -> Self {
+        self.final_turn_limit = true;
         self
     }
 

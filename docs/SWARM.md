@@ -117,12 +117,73 @@ as instructions.
 - **Browsers.** Every worker gets its own tab, in the managed browser and in
   your browser, and a finished worker's tabs are closed.
 - **Limits.** A worker stops after its turn limit (by role, 25 to 50 turns
-  unless the planner sets one) or after 20 minutes.
+  unless the planner sets one) or after 20 minutes. At the turn limit its
+  tools are withdrawn and it reports what it found, so a model that loops
+  cannot run on; a worker that reads the team board over and over with
+  nothing done in between is stopped the same way, and `run_agents` returns
+  how many turns each worker used.
 
 ```toml
 [swarm]
 # worker_model = "qwen3-4b"   # unset: the workers use the main model
 ```
+
+## Testing a swarm live
+
+Unit tests cover the board, the guards and the limits with scripted models.
+What they cannot show is how a real model behaves in a swarm, so a change to
+the swarm is also tried live and read back from the traces.
+
+**Run it.**
+
+- Use the desktop app or the CLI with a hosted model that is cheap to repeat
+  (for example Nebius Token Factory), and a task whose parts can run side by
+  side. Two that work well: a broad request such as "any news today I should
+  know about" (the planner splits it into lanes such as world, local and
+  financial news), and a request whose lanes depend on each other, such as
+  "find the current stable Rust release, the minimum supported Rust version of
+  the latest tokio, and of the latest axum, and say whether the first
+  satisfies both".
+- To compare two settings (for example `[swarm] closing_ranks` on and off),
+  run each from its own copy of `pok-ai.toml` whose `data_dir` and
+  `diagnostics_dir` point at scratch folders, so memory, playbooks and traces
+  never carry over from one arm to the other. Change one setting per arm, use
+  the same task and models, and repeat: one run per arm is a signal, not a
+  result.
+- Keep API keys in the environment or the credential manager and out of
+  configuration files and logs. Use tasks that carry no private information.
+- To stop a swarm that misbehaves, press the stop button or `Ctrl+Alt+Esc`.
+
+**Read it back.** Every run writes `trace.jsonl` in its session folder under
+the diagnostics directory, and every worker writes its own beside the
+planner's at `swarm/<run>/<agent>/trace.jsonl`.
+
+- In the planner's trace, the `run_agents` `tool_result` holds one entry per
+  worker (`status`, `grounded_evidence`, `turns`, `report`), the `hive`
+  summary (posts, findings, agents posting, closing reviews, salvaged
+  reports), `grounded_agents`, and the team board.
+- In a worker's trace, count `model_response` events per tool: a worker that
+  is working searches, reads and posts; one that is stuck repeats a single
+  tool. Also look for `completion_review` (a closing review was sent),
+  `turn_limit_reached`, `repeated_lookup`, `plan_loop_recovery`, and
+  `fresh_evidence_observed`. `execution_epoch_extended` should never appear in
+  a worker.
+- In the planner's trace, check that a swarm with grounded workers is
+  followed by an answer and not by `completion_execution_incomplete`, which
+  would mean the planner went back to repeat the lookups.
+
+**What a live run found (November 2026).** A broad news request, with one
+small model as both planner and workers, showed three problems that no
+scripted test had: workers polled the team board 130 times and rewrote their
+plan 79 times instead of finishing; the turn limit did not stop them,
+because reaching it only started a new execution epoch; and one worker's
+"final answer" was a run of garbage tokens. The fixes are in this document
+under Limits (a hard turn limit for workers, and a board-polling loop that
+withdraws the worker's tools). The garbage answer was sent back to work only
+because a closing review happened to fire on it; nothing yet checks that a
+worker's report is readable. A swarm's weak spot is a weak model looping,
+so judge a change by what the slowest, least reliable worker does, not by
+the best one.
 
 ## Learning
 

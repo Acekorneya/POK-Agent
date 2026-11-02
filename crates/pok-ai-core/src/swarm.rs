@@ -500,6 +500,8 @@ struct BoardState {
     /// Per member, how many posts existed when it last got its closing
     /// review (see `TeamBoard::closing_ranks`).
     closing: HashMap<String, usize>,
+    /// How many posts the board held at each member's last `team_read`.
+    full_reads: HashMap<String, usize>,
     /// Closing reviews that carried teammates' intel, and reports rebuilt
     /// from the board after a worker stopped early.
     reviews_sent: usize,
@@ -683,6 +685,14 @@ impl TeamBoard {
         let mut state = self.state.lock();
         let total = state.posts.len();
         state.cursors.insert(member.to_owned(), total);
+        // Reading an unchanged board again shows the member nothing new; say
+        // so briefly instead of sending the whole board back each time.
+        if state.full_reads.insert(member.to_owned(), total) == Some(total) {
+            return json!({
+                "new_posts": 0,
+                "about": "Nothing new on the team board since you last read it. Teammates' notes reach you with your other tool results, so do not poll the board: continue your own task, or hand in your report if it is done.",
+            });
+        }
         json!({
             "posts": state.posts.iter().rev().take(60).rev().map(Self::post_json).collect::<Vec<_>>(),
             "leads": Self::leads_json(&state, now),
@@ -1485,7 +1495,8 @@ impl SwarmTool {
             .with_decision_router(router, template.decision_router.clone())
             .with_temperature(template.temperature)
             .with_standing_instructions(Some(&instructions))
-            .with_active_tool_groups(spec.role().groups().iter().copied());
+            .with_active_tool_groups(spec.role().groups().iter().copied())
+            .with_final_turn_limit();
         if template.closing_ranks {
             let board = board.clone();
             let member = spec.title.clone();
@@ -1505,6 +1516,7 @@ impl SwarmTool {
         // orchestrator relies on this to treat a swarm's reports as grounded
         // instead of repeating the lookups.
         let mut grounded_evidence = false;
+        let mut turns = 0_u32;
         let (status, report, warnings) = match run {
             Ok(Ok(summary)) => {
                 grounded_evidence = summary
@@ -1513,6 +1525,7 @@ impl SwarmTool {
                     .get("fresh_evidence_observations")
                     .and_then(Value::as_u64)
                     .is_some_and(|count| count > 0);
+                turns = summary.metrics.turns;
                 ("completed", summary.answer, json!(summary.warnings))
             }
             Ok(Err(PokError::Cancelled)) => (
@@ -1559,6 +1572,7 @@ impl SwarmTool {
             "status": status,
             "report": crate::decision::bounded_text(&report, REPORT_CHARS),
             "grounded_evidence": grounded_evidence,
+            "turns": turns,
             "warnings": warnings,
             "artifacts": artifact_dir,
         });
@@ -2068,6 +2082,34 @@ mod tests {
         assert_eq!(stats["salvaged_reports"], 1);
         assert_eq!(stats["agents_posting"], 2);
         assert_eq!(stats["findings"], 10);
+    }
+
+    #[test]
+    fn reading_an_unchanged_board_again_returns_a_short_note() {
+        let board = TeamBoard::new();
+        post(&board, "world", PostKind::Finding, "Oil fell", None);
+        // The first read shows the board; a second with nothing posted since
+        // says so briefly instead of repeating it.
+        let first = board.read_all("finance");
+        assert_eq!(first["posts"].as_array().unwrap().len(), 1);
+        let second = board.read_all("finance");
+        assert_eq!(second["new_posts"], 0);
+        assert!(second.get("posts").is_none(), "{second}");
+        assert!(
+            second["about"].as_str().unwrap().contains("do not poll"),
+            "{second}"
+        );
+        // Another member still gets the full board.
+        assert_eq!(
+            board.read_all("local")["posts"].as_array().unwrap().len(),
+            1
+        );
+        // A new post makes the next read a full one again.
+        post(&board, "world", PostKind::Finding, "Gold rose", None);
+        assert_eq!(
+            board.read_all("finance")["posts"].as_array().unwrap().len(),
+            2
+        );
     }
 
     #[test]

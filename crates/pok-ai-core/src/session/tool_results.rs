@@ -763,10 +763,13 @@ pub(super) fn is_grounding_evidence_tool(name: &str) -> bool {
 
 /// Tools that only report a fact with no effect on the screen or system, where
 /// an identical second call adds nothing the first did not already give.
+/// A swarm worker polling the team board is the same: teammates' posts reach
+/// it with its other tool results, so reading the board again and again, with
+/// nothing done in between, is a loop and not a wait.
 pub(super) fn is_pure_lookup_tool(name: &str) -> bool {
     matches!(
         name,
-        "get_current_time" | "read_clipboard" | "list_windows" | "observe_desktop"
+        "get_current_time" | "read_clipboard" | "list_windows" | "observe_desktop" | "team_read"
     )
 }
 

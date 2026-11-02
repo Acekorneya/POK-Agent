@@ -5985,6 +5985,124 @@ async fn an_ungrounded_swarm_still_leaves_the_orchestrator_to_check() {
     assert_eq!(requests, 3);
 }
 
+#[tokio::test]
+async fn a_final_turn_limit_ends_a_looping_run_with_a_report() {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        vec![fast_link("1", "Next")],
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    harness.session.decision_router = None;
+    harness.session.decision_router_config = None;
+    let brain = Arc::new(KeepsClickingBrain {
+        requests: AtomicU64::new(0),
+        tool_requests: AtomicU64::new(0),
+    });
+    harness.session.brain = brain.clone();
+    harness.session.max_turns = 3;
+    harness.session = harness.session.with_final_turn_limit();
+    // The model would keep acting for ever; at the limit its tools are
+    // withdrawn and it has to report, instead of a new epoch starting.
+    let result = harness
+        .session
+        .run("keep going to the next page")
+        .await
+        .unwrap();
+    assert!(result.answer.contains("Stopped"), "{}", result.answer);
+    assert_eq!(brain.tool_requests.load(Ordering::SeqCst), 3);
+    assert_eq!(brain.requests.load(Ordering::SeqCst), 4);
+}
+
+/// Stands in for a swarm worker's `team_read`.
+struct StubTeamReadTool;
+
+#[async_trait]
+impl crate::tool::Tool for StubTeamReadTool {
+    fn name(&self) -> &'static str {
+        "team_read"
+    }
+    fn description(&self) -> &'static str {
+        "test board"
+    }
+    fn input_schema(&self) -> Value {
+        json!({"type": "object", "properties": {}})
+    }
+    fn risk(&self) -> crate::policy::RiskClass {
+        crate::policy::RiskClass::ReadOnly
+    }
+    async fn execute(&self, _arguments: Value, _context: &ToolContext) -> Result<Value> {
+        Ok(json!({"posts": [], "leads": []}))
+    }
+}
+
+/// Reads the team board whenever the tool is offered, and reports when it is
+/// not: a model stuck polling the board.
+struct PollsTheBoardBrain {
+    requests: AtomicU64,
+    board_reads: AtomicU64,
+}
+
+#[async_trait]
+impl Brain for PollsTheBoardBrain {
+    async fn list_models(&self) -> Result<Vec<String>> {
+        Ok(vec!["mock".into()])
+    }
+    fn stream(&self, request: BrainRequest) -> crate::brain::BrainStream {
+        let index = self.requests.fetch_add(1, Ordering::SeqCst);
+        let events = if request.tools.iter().any(|tool| tool.name == "team_read") {
+            self.board_reads.fetch_add(1, Ordering::SeqCst);
+            vec![
+                Ok(BrainEvent::ToolCall {
+                    call: CompletedToolCall {
+                        id: format!("call-{index}"),
+                        name: "team_read".into(),
+                        arguments: json!({}),
+                    },
+                }),
+                Ok(BrainEvent::Finished {
+                    reason: Some("tool_calls".into()),
+                }),
+            ]
+        } else {
+            vec![
+                Ok(BrainEvent::TextDelta {
+                    text: "Report from what I found.".into(),
+                }),
+                Ok(BrainEvent::Finished {
+                    reason: Some("stop".into()),
+                }),
+            ]
+        };
+        Box::pin(futures::stream::iter(events))
+    }
+}
+
+#[tokio::test]
+async fn a_worker_that_keeps_reading_the_board_is_made_to_report() {
+    let mut harness = fast_harness(
+        fast_router(usize::MAX, 0.99),
+        Vec::new(),
+        crate::config::DecisionRouterMode::Delegated,
+    );
+    harness.session.decision_router = None;
+    harness.session.decision_router_config = None;
+    let brain = Arc::new(PollsTheBoardBrain {
+        requests: AtomicU64::new(0),
+        board_reads: AtomicU64::new(0),
+    });
+    harness.session.brain = brain.clone();
+    let mut tools = ToolRegistry::default();
+    tools.register(StubTeamReadTool);
+    harness.session.tools = Arc::new(tools);
+    harness.session.max_turns = 50;
+    let result = harness.session.run("find the news").await.unwrap();
+    assert_eq!(result.answer, "Report from what I found.");
+    // Three identical reads in a row withdraw the tools; it does not run to
+    // the turn limit.
+    assert_eq!(brain.board_reads.load(Ordering::SeqCst), 3);
+    assert!(is_pure_lookup_tool("team_read"));
+}
+
 /// Always answers with text; counts how many requests carried the review
 /// reminder the host asked to be sent.
 struct AnswersWithTextBrain {

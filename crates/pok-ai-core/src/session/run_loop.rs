@@ -590,7 +590,20 @@ impl Session {
                     json!({"budget": budget, "turn": turn}),
                 )?;
             }
-            if turn > 0 && turn % self.max_turns.max(1) == 0 {
+            if self.final_turn_limit && turn > 0 && turn % self.max_turns.max(1) == 0 {
+                if !final_answer_only_active {
+                    final_answer_only_active = true;
+                    let limit = self.max_turns;
+                    self.messages.push(BrainMessage::text_with_origin(
+                        "system",
+                        format!(
+                            "<system-reminder>You have used your {limit} turns. Tool definitions are withheld. Report now what you found, with its sources, and what is uncertain or left undone. Do not start new work.</system-reminder>"
+                        ),
+                        MessageOrigin::SystemReminder,
+                    ));
+                    self.log("turn_limit_reached", json!({"limit": limit, "turn": turn}))?;
+                }
+            } else if turn > 0 && turn % self.max_turns.max(1) == 0 {
                 let epoch = turn / self.max_turns.max(1) + 1;
                 self.messages.push(BrainMessage::text_with_origin(
                     "user",
