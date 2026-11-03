@@ -56,11 +56,14 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(120);
 pub const SELF_CHAT_PREFIX: &str = "POK-Agent: ";
 /// How many of our own message ids are remembered for the echo check.
 const REMEMBERED_SENDS: usize = 256;
-/// The word a friend starts a request with in friends mode.
+/// The call name until the owner picks another in Settings. A friend starts a
+/// request with it in friends mode, and the owner can require it too.
 pub const WAKE_WORD: &str = "pok";
-/// After a friend's request, their next messages in that chat join it without
-/// the wake word for this long: the rest of a photo album, or a message the
-/// app split in two.
+/// The longest call name kept.
+const MAX_CALL_NAME_CHARS: usize = 32;
+/// After a request that needed the call name, the same chat's next messages
+/// join it without the name for this long: the rest of a photo album, or a
+/// message the app split in two.
 const FOLLOW_UP_WINDOW: Duration = Duration::from_secs(20);
 
 /// Whose messages the agent answers.
@@ -212,6 +215,25 @@ struct Link {
     pending: Mutex<HashMap<String, oneshot::Sender<Reply>>>,
 }
 
+/// How the agent is called by name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Calling {
+    /// Already tidied by [`normalize_call_name`].
+    name: String,
+    /// In "Message yourself" the owner must use the name too, so the chat
+    /// stays usable for notes the agent does not answer.
+    owner_needs_call: bool,
+}
+
+impl Default for Calling {
+    fn default() -> Self {
+        Self {
+            name: WAKE_WORD.to_owned(),
+            owner_needs_call: false,
+        }
+    }
+}
+
 // ---- the channel -----------------------------------------------------------
 
 pub struct WhatsAppChannel {
@@ -219,8 +241,11 @@ pub struct WhatsAppChannel {
     status: Mutex<WhatsAppStatus>,
     link: Mutex<Option<Arc<Link>>>,
     sent_ids: Mutex<VecDeque<String>>,
-    /// Friends mode: when each chat last made a request.
+    /// Chats that made a request with the call name a moment ago.
     engaged: Mutex<HashMap<String, Instant>>,
+    /// The call name, and whether the owner has to use it too. Changed live
+    /// from Settings without restarting the link.
+    calling: Mutex<Calling>,
     /// The owner's own chat, learned from the first message they write there.
     owner_chat: Mutex<Option<String>>,
     /// The saved session is deleted once the sidecar has exited: set when the
@@ -236,6 +261,7 @@ impl WhatsAppChannel {
             link: Mutex::new(None),
             sent_ids: Mutex::new(VecDeque::new()),
             engaged: Mutex::new(HashMap::new()),
+            calling: Mutex::new(Calling::default()),
             owner_chat: Mutex::new(None),
             wipe_session: AtomicBool::new(false),
         })
@@ -247,6 +273,20 @@ impl WhatsAppChannel {
 
     pub fn mode(&self) -> WhatsAppMode {
         self.config.mode
+    }
+
+    /// Set the name that calls the agent and whether the owner needs it too.
+    /// Takes effect with the next message.
+    pub fn set_calling(&self, call_name: &str, owner_needs_call: bool) {
+        *self.calling.lock() = Calling {
+            name: normalize_call_name(call_name),
+            owner_needs_call,
+        };
+    }
+
+    /// The name that calls the agent.
+    pub fn call_name(&self) -> String {
+        self.calling.lock().name.clone()
     }
 
     fn update(&self, change: impl FnOnce(&mut WhatsAppStatus)) {
@@ -473,17 +513,27 @@ impl WhatsAppChannel {
         }
     }
 
-    /// The message for the dispatcher, or `None` when it is not a request:
-    /// in friends mode a friend's message counts only when it starts with the
-    /// wake word (or follows one closely).
+    /// The message for the dispatcher, or `None` when it is not a request.
+    /// A friend's message counts only when it calls the agent by name (or
+    /// follows such a message closely); the owner's does too when they chose
+    /// to require the name, so their own chat can hold notes. Commands the
+    /// owner types (`/approve`, `/stop`) never need it.
     fn to_inbound(self: &Arc<Self>, message: WaMessage, sender: Sender) -> Option<Inbound> {
         let owner = sender == Sender::Owner;
         if owner {
             *self.owner_chat.lock() = Some(message.chat.clone());
         }
+        let calling = self.calling.lock().clone();
+        let must_call = if owner {
+            calling.owner_needs_call && self.config.mode != WhatsAppMode::Bot
+        } else {
+            self.config.mode == WhatsAppMode::Friends
+        };
+        let is_command =
+            owner && message.media.is_empty() && message.text.trim_start().starts_with('/');
         let mut text = message.text.clone();
-        if self.config.mode == WhatsAppMode::Friends && !owner {
-            match strip_wake_word(&text) {
+        if must_call && !is_command {
+            match strip_call_name(&text, &calling.name) {
                 Some(request) => text = request,
                 None if self.is_engaged(&message.chat) => {}
                 None => return None,
@@ -807,15 +857,57 @@ pub fn reply_prefix(mode: WhatsAppMode) -> &'static str {
     }
 }
 
-/// The request after the wake word ("pok", "@pok", "pok agent", "pok-agent",
-/// any case), or `None` when the text does not start with it. "pokemon" does
-/// not count. `Some("")` means the wake word alone.
+/// A call name as it is stored: one word without the `@`, lowercase, letters,
+/// digits, `-` and `_` only. An empty result falls back to [`WAKE_WORD`].
+pub fn normalize_call_name(raw: &str) -> String {
+    let word = raw
+        .trim()
+        .trim_start_matches('@')
+        .split_whitespace()
+        .next()
+        .unwrap_or("");
+    let name: String = word
+        .chars()
+        .filter(|c| c.is_alphanumeric() || matches!(c, '-' | '_'))
+        .take(MAX_CALL_NAME_CHARS)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if name.is_empty() {
+        WAKE_WORD.to_owned()
+    } else {
+        name
+    }
+}
+
+/// The request after the default call name ("pok", "@pok", "pok agent",
+/// "pok-agent", any case), or `None` when the text does not call it.
 pub fn strip_wake_word(text: &str) -> Option<String> {
+    strip_call_name(text, WAKE_WORD)
+}
+
+/// The request with the call name taken out, or `None` when the text does not
+/// call the agent. The name counts at the start (with or without `@`: "pok
+/// what time is it", "@pok, what time is it") or as an `@name` mention
+/// anywhere ("what time is it @pok"); "pokemon" and "bob@pok.example" do not
+/// count. `Some("")` means the name alone. `name` is a normalized call name.
+pub fn strip_call_name(text: &str, name: &str) -> Option<String> {
+    if name.is_empty() {
+        return None;
+    }
+    leading_call(text, name).or_else(|| mentioned_call(text, name))
+}
+
+/// Whether `c` may follow the call name directly.
+fn ends_call_name(c: char) -> bool {
+    c.is_whitespace() || matches!(c, ',' | ':' | ';' | '!' | '.' | '?')
+}
+
+fn leading_call(text: &str, name: &str) -> Option<String> {
     let trimmed = text.trim_start();
     let rest = trimmed.strip_prefix('@').unwrap_or(trimmed);
     // ASCII lowercasing keeps every byte offset, so slicing `rest` is safe.
     let lower = rest.to_ascii_lowercase();
-    let after_word = lower.strip_prefix(WAKE_WORD)?;
+    let after_word = lower.strip_prefix(name)?;
     let mut consumed = rest.len() - after_word.len();
     for suffix in ["-agent", " agent"] {
         if lower[consumed..].starts_with(suffix) {
@@ -825,11 +917,7 @@ pub fn strip_wake_word(text: &str) -> Option<String> {
     }
     let remainder = &rest[consumed..];
     // The word must end here.
-    if remainder
-        .chars()
-        .next()
-        .is_some_and(|c| !(c.is_whitespace() || matches!(c, ',' | ':' | ';' | '!' | '.' | '?')))
-    {
+    if remainder.chars().next().is_some_and(|c| !ends_call_name(c)) {
         return None;
     }
     Some(
@@ -838,6 +926,27 @@ pub fn strip_wake_word(text: &str) -> Option<String> {
             .trim()
             .to_owned(),
     )
+}
+
+/// An `@name` somewhere in the message, taken out of it.
+fn mentioned_call(text: &str, name: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    let mention = format!("@{name}");
+    for (start, _) in lower.match_indices(&mention) {
+        let end = start + mention.len();
+        let before_ok = text[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !(c.is_alphanumeric() || c == '_'));
+        let after_ok = text[end..].chars().next().is_none_or(ends_call_name);
+        if before_ok && after_ok {
+            let head = text[..start].trim_end();
+            let tail = text[end..].trim_start_matches([',', ':', ';', '!']);
+            let joined = format!("{head} {}", tail.trim_start());
+            return Some(joined.trim().to_owned());
+        }
+    }
+    None
 }
 
 /// The QR code to scan, as an SVG image, or `None` if it cannot be drawn.
@@ -1148,6 +1257,168 @@ mod tests {
         assert_eq!(request(""), None);
         // Non-ASCII text in front is simply not the wake word.
         assert_eq!(request("é pok x"), None);
+    }
+
+    #[test]
+    fn a_chosen_call_name_works_at_the_start_or_as_an_at_mention() {
+        let request = |text: &str| strip_call_name(text, "pokbot");
+        assert_eq!(
+            request("@pokbot what is on today").as_deref(),
+            Some("what is on today")
+        );
+        assert_eq!(request("PokBot, research X").as_deref(), Some("research X"));
+        assert_eq!(request("@pokbot").as_deref(), Some(""), "the name alone");
+        // An @mention can come anywhere, and is taken out of the request.
+        assert_eq!(
+            request("what time is it @pokbot please").as_deref(),
+            Some("what time is it please")
+        );
+        assert_eq!(
+            request("research this @PokBot").as_deref(),
+            Some("research this")
+        );
+        // Not the name: another word, an e-mail address, or no @ mid-sentence.
+        assert_eq!(request("@pok what time is it"), None, "only part of it");
+        assert_eq!(request("@pokbots are fun"), None);
+        assert_eq!(request("write to ann@pokbot.example"), None);
+        assert_eq!(request("what time is it pokbot"), None);
+        // The default name no longer calls it.
+        assert_eq!(request("pok what time is it"), None);
+        assert_eq!(strip_call_name("anything", ""), None);
+    }
+
+    #[test]
+    fn call_names_are_tidied_to_one_plain_word() {
+        assert_eq!(normalize_call_name("@PokBot"), "pokbot");
+        assert_eq!(normalize_call_name("  pok bot  "), "pok", "first word only");
+        assert_eq!(normalize_call_name("@@my_agent-2!"), "my_agent-2");
+        assert_eq!(normalize_call_name(""), WAKE_WORD);
+        assert_eq!(normalize_call_name("@ !?"), WAKE_WORD);
+        assert_eq!(normalize_call_name(&"a".repeat(80)).chars().count(), 32);
+    }
+
+    #[test]
+    fn the_owner_can_make_their_own_chat_answer_only_when_called() {
+        let own = |id: &str, text: &str| message(id, "direct", true, true, text);
+        for mode in [WhatsAppMode::SelfChat, WhatsAppMode::Friends] {
+            let channel = channel(mode);
+
+            // Off (the default): every note is a request, as before.
+            assert_eq!(
+                channel
+                    .to_inbound(own("1", "buy milk"), Sender::Owner)
+                    .unwrap()
+                    .text,
+                "buy milk"
+            );
+
+            // On: notes to self are left alone; calling by name is a request.
+            channel.set_calling("@PokBot", true);
+            assert_eq!(channel.call_name(), "pokbot");
+            assert!(
+                channel
+                    .to_inbound(own("2", "buy milk"), Sender::Owner)
+                    .is_none(),
+                "{mode:?}: a note is not a request"
+            );
+            let request = channel
+                .to_inbound(own("3", "@pokbot what is on my calendar?"), Sender::Owner)
+                .unwrap();
+            assert_eq!(request.text, "what is on my calendar?");
+            assert!(request.trusted, "still the owner");
+            // The rest of that request (an album, a split message) rides along.
+            assert_eq!(
+                channel
+                    .to_inbound(own("4", "and the second part"), Sender::Owner)
+                    .unwrap()
+                    .text,
+                "and the second part"
+            );
+            channel.engaged.lock().clear();
+            assert!(
+                channel
+                    .to_inbound(own("5", "later, unrelated"), Sender::Owner)
+                    .is_none()
+            );
+
+            // Commands never need the name: /approve must always get through.
+            assert_eq!(
+                channel
+                    .to_inbound(own("6", "/approve"), Sender::Owner)
+                    .unwrap()
+                    .text,
+                "/approve"
+            );
+            // Photos sent right after calling join the request; a lone photo
+            // does not start one.
+            let mut photo = own("7", "");
+            photo.media.push(WaMedia {
+                index: 0,
+                kind: "image".into(),
+                mime: Some("image/jpeg".into()),
+                name: None,
+                size: Some(10),
+            });
+            assert!(
+                channel.to_inbound(photo.clone(), Sender::Owner).is_none(),
+                "{mode:?}: an uncalled photo is only a note"
+            );
+            channel
+                .to_inbound(own("8", "@pokbot look at this"), Sender::Owner)
+                .unwrap();
+            assert_eq!(
+                channel
+                    .to_inbound(photo, Sender::Owner)
+                    .unwrap()
+                    .media
+                    .len(),
+                1
+            );
+
+            // Turned off again, live: back to answering everything.
+            channel.set_calling("pokbot", false);
+            assert_eq!(
+                channel
+                    .to_inbound(own("9", "just a note"), Sender::Owner)
+                    .unwrap()
+                    .text,
+                "just a note"
+            );
+            // The owner's chat is known even from a message that was ignored.
+            assert!(channel.owner_chat().is_some());
+        }
+
+        // A dedicated number has no "Message yourself" chat to keep notes in.
+        let bot = channel(WhatsAppMode::Bot);
+        bot.set_calling("pokbot", true);
+        assert_eq!(
+            bot.to_inbound(
+                message("1", "direct", false, false, "hello"),
+                Sender::Person
+            )
+            .unwrap()
+            .text,
+            "hello"
+        );
+    }
+
+    #[test]
+    fn friends_use_the_chosen_call_name_not_the_default() {
+        let channel = channel(WhatsAppMode::Friends);
+        channel.set_calling("pokbot", false);
+        let friend = |text: &str| message("9", "direct", false, false, text);
+        assert!(
+            channel
+                .to_inbound(friend("pok hello"), Sender::Person)
+                .is_none()
+        );
+        assert_eq!(
+            channel
+                .to_inbound(friend("@pokbot hello"), Sender::Person)
+                .unwrap()
+                .text,
+            "hello"
+        );
     }
 
     #[test]

@@ -323,7 +323,7 @@ describe("workspace presentation", () => {
   });
   describe("gateway settings", () => {
     const whatsapp = (over: Record<string, unknown> = {}) => ({
-      enabled: false, mode: "self_chat", available: true, linked: false, state: "off", qr_svg: null, account: null, error: null, ...over,
+      enabled: false, mode: "self_chat", call_name: "pok", owner_needs_call: false, available: true, linked: false, state: "off", qr_svg: null, account: null, error: null, ...over,
     });
     const status = (over: Record<string, unknown> = {}) => ({
       running: false, enabled: false, has_token: false, bot: null, error: null, busy: false, task: null, home_chat: null,
@@ -381,7 +381,7 @@ describe("workspace presentation", () => {
       expect(mock.invoke).toHaveBeenCalledWith("gateway_set_whatsapp", { enabled: true, mode: "bot" });
       expect(await screen.findByText("Connecting…")).toBeTruthy();
     });
-    it("lets you share your own number with friends who must ask with pok, and trust them separately", async () => {
+    it("lets you share your own number with friends who must call the agent by name, and trust them separately", async () => {
       await openGateway({
         running: true, enabled: true, home_chat: "whatsapp:15550199@s.whatsapp.net",
         whatsapp: whatsapp({ enabled: true, mode: "friends", state: "connected", account: "+15550199" }),
@@ -406,6 +406,42 @@ describe("workspace presentation", () => {
       await userEvent.click(trust);
       expect(mock.invoke).toHaveBeenCalledWith("gateway_set_person_trusted", { userId: "whatsapp:15550100", trusted: true });
       expect(await screen.findByText("WhatsApp · trusted")).toBeTruthy();
+    });
+    it("lets you pick the name that calls the agent and stop it answering your own notes", async () => {
+      await openGateway({
+        running: true, enabled: true,
+        whatsapp: whatsapp({ enabled: true, state: "connected", account: "+15550199" }),
+      }, {
+        gateway_set_whatsapp_call: (args: { callName: string; ownerNeedsCall: boolean }) => status({
+          running: true, enabled: true,
+          whatsapp: whatsapp({ enabled: true, state: "connected", account: "+15550199", call_name: args.callName.replace(/^@+/, "").toLowerCase(), owner_needs_call: args.ownerNeedsCall }),
+        }),
+      });
+      // Out of the box the agent answers everything in "Message yourself".
+      const name = await screen.findByRole("textbox", { name: "WhatsApp call name" }) as HTMLInputElement;
+      expect(name.value).toBe("pok");
+      const only = screen.getByRole("checkbox", { name: "Only answer when I call it by name" }) as HTMLInputElement;
+      expect(only.checked).toBe(false);
+      const save = screen.getByRole("button", { name: "Save name" }) as HTMLButtonElement;
+      expect(save.disabled, "nothing to save yet").toBe(true);
+
+      // Choose a name; it is saved with the current switch position.
+      await userEvent.clear(name);
+      await userEvent.type(name, "@PokBot");
+      await userEvent.click(save);
+      expect(mock.invoke).toHaveBeenCalledWith("gateway_set_whatsapp_call", { callName: "@PokBot", ownerNeedsCall: false });
+      await waitFor(() => expect((screen.getByRole("textbox", { name: "WhatsApp call name" }) as HTMLInputElement).value).toBe("pokbot"));
+
+      // Only answer when called: saved with the saved name, and the note explains how.
+      await userEvent.click(screen.getByRole("checkbox", { name: "Only answer when I call it by name" }));
+      expect(mock.invoke).toHaveBeenCalledWith("gateway_set_whatsapp_call", { callName: "pokbot", ownerNeedsCall: true });
+      expect(await screen.findByText(/start with @pokbot to give the agent a task/)).toBeTruthy();
+    });
+    it("offers no call name for a dedicated number", async () => {
+      await openGateway({ whatsapp: whatsapp({ enabled: true, mode: "bot", state: "connected" }) });
+      await screen.findByRole("combobox", { name: "WhatsApp mode" });
+      expect(screen.queryByRole("textbox", { name: "WhatsApp call name" })).toBeNull();
+      expect(screen.queryByRole("checkbox", { name: "Only answer when I call it by name" })).toBeNull();
     });
     it("names each person's channel and marks who gets scheduled results", async () => {
       await openGateway({

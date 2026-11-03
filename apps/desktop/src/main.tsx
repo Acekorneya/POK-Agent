@@ -62,7 +62,8 @@ type DecisionRouterStatus = {
 };
 type WhatsAppState = "off" | "connecting" | "waiting_for_scan" | "connected" | "logged_out" | "failed";
 type WhatsAppView = {
-  enabled: boolean; mode: "self_chat" | "bot" | "friends"; available: boolean; linked: boolean;
+  enabled: boolean; mode: "self_chat" | "bot" | "friends"; call_name: string; owner_needs_call: boolean;
+  available: boolean; linked: boolean;
   state: WhatsAppState; qr_svg?: string | null; account?: string | null; error?: string | null;
 };
 type GatewayStatus = {
@@ -1081,6 +1082,7 @@ export function App() {
   const [initialLook, setInitialLook] = useState<"auto" | "foreground_only" | "off">("auto");
   const [gateway, setGateway] = useState<GatewayStatus | null>(null);
   const [gatewayToken, setGatewayToken] = useState("");
+  const [whatsappCallName, setWhatsappCallName] = useState("pok");
   const [gatewayBusy, setGatewayBusy] = useState(false);
   const [autostart, setAutostart] = useState(false);
   const [webSearch, setWebSearch] = useState<WebSearchStatus | null>(null);
@@ -1661,6 +1663,12 @@ export function App() {
       setGatewayBusy(false);
     }
   };
+  const savedCallName = gateway?.whatsapp.call_name;
+  useEffect(() => {
+    if (savedCallName) setWhatsappCallName(savedCallName);
+  }, [savedCallName]);
+  const saveWhatsappCall = (callName: string, ownerNeedsCall: boolean) =>
+    gatewayCall("gateway_set_whatsapp_call", { callName, ownerNeedsCall });
   const saveGatewayToken = async () => {
     if (await gatewayCall("gateway_save_token", { token: gatewayToken })) setGatewayToken("");
   };
@@ -4018,7 +4026,7 @@ export function App() {
             {gateway && !gateway.whatsapp.available && (
               <p className="error-text" role="alert">This copy of POK-Agent was built without the WhatsApp component, so WhatsApp is not available. Use the installer or portable download from the releases page.</p>
             )}
-            <SettingRow label="Whose messages" help="“Only me” uses your own number: open WhatsApp, find “Message yourself”, and write there. Nobody else is ever answered. “Me and friends” is the same on your own number, and friends you approve can ask too by starting a message with “pok”; everything else they write to you is left alone, and someone not approved gets no reply at all. “Other people” suits a dedicated number: approved people can message it, and strangers get a pairing code you approve below.">
+            <SettingRow label="Whose messages" help="“Only me” uses your own number: open WhatsApp, find “Message yourself”, and write there. Nobody else is ever answered. “Me and friends” is the same on your own number, and friends you approve can ask too by calling the agent by its name (set below); everything else they write to you is left alone, and someone not approved gets no reply at all. “Other people” suits a dedicated number: approved people can message it, and strangers get a pairing code you approve below.">
               <select aria-label="WhatsApp mode" value={gateway?.whatsapp.mode ?? "self_chat"} disabled={gatewayBusy}
                 onChange={(event) => void gatewayCall("gateway_set_whatsapp", { enabled: gateway?.whatsapp.enabled ?? false, mode: event.target.value })}>
                 <option value="self_chat">Only me (Message yourself)</option>
@@ -4026,6 +4034,24 @@ export function App() {
                 <option value="bot">Other people (a dedicated number)</option>
               </select>
             </SettingRow>
+            {gateway?.whatsapp.mode !== "bot" && (
+              <>
+                <SettingRow label="Call name" help="The name that calls the agent, like @pokbot. Write it at the start of a message (“@pokbot what is on my calendar?”), or anywhere in it as @pokbot. Friends always need it. You need it when the switch below is on. Letters, digits, - and _ only.">
+                  <div className="inline-field">
+                    <span aria-hidden="true">@</span>
+                    <input aria-label="WhatsApp call name" value={whatsappCallName} maxLength={32} disabled={gatewayBusy}
+                      onChange={(event) => setWhatsappCallName(event.target.value)}
+                      onKeyDown={(event) => { if (event.key === "Enter") void saveWhatsappCall(whatsappCallName, gateway?.whatsapp.owner_needs_call ?? false); }} />
+                    <button type="button" disabled={gatewayBusy || !whatsappCallName.trim() || whatsappCallName.trim().replace(/^@+/, "").toLowerCase() === gateway?.whatsapp.call_name}
+                      onClick={() => void saveWhatsappCall(whatsappCallName, gateway?.whatsapp.owner_needs_call ?? false)}>Save name</button>
+                  </div>
+                </SettingRow>
+                <SettingRow label="Only answer when called" help="On: what you write in “Message yourself” is left alone unless you call the agent by name, so that chat can also hold your own notes. Commands such as /approve and /stop always work. After a call, your next messages for about 20 seconds (a photo, a second part) join the request. Off: everything you write there is a request.">
+                  <Switch label="Only answer when I call it by name" checked={gateway?.whatsapp.owner_needs_call ?? false} disabled={gatewayBusy}
+                    onChange={(checked) => void saveWhatsappCall(gateway?.whatsapp.call_name ?? "pok", checked)} />
+                </SettingRow>
+              </>
+            )}
             <SettingRow label="Listen on WhatsApp" help="Starts the gateway if it is off. The first time, a QR code appears here to scan.">
               <Switch label="Listen on WhatsApp" checked={gateway?.whatsapp.enabled ?? false}
                 disabled={!gateway?.whatsapp.available || gatewayBusy}
@@ -4041,7 +4067,9 @@ export function App() {
             {gateway?.whatsapp.state === "connected" && (
               <p className="settings-note" role="status">
                 Linked{gateway.whatsapp.account ? ` as ${gateway.whatsapp.account}` : ""}.{" "}
-                {gateway.whatsapp.mode === "self_chat" ? "Write in “Message yourself” to give the agent a task." : "Anyone you approve can message this number."}
+                {gateway.whatsapp.mode === "bot" ? "Anyone you approve can message this number."
+                  : gateway.whatsapp.owner_needs_call ? `In “Message yourself”, start with @${gateway.whatsapp.call_name} to give the agent a task. Other notes there are left alone.`
+                  : "Write in “Message yourself” to give the agent a task."}
               </p>
             )}
             {(gateway?.whatsapp.linked || gateway?.whatsapp.state === "connected") && (
@@ -4054,7 +4082,7 @@ export function App() {
 
           <SettingsCard title="People"
             status={<StatusPill tone={gateway?.allowed.length ? "ok" : "off"}>{gateway?.allowed.length ?? 0} approved</StatusPill>}
-            description="Anyone else who messages the bot or a dedicated WhatsApp number gets a one-time pairing code and nothing more. On your own number (friends mode) someone who starts a message with “pok” appears here without being answered. A friend can ask for tasks; their permission requests come to you, and they cannot use commands. Trust someone only if you would hand them your keyboard.">
+            description="Anyone else who messages the bot or a dedicated WhatsApp number gets a one-time pairing code and nothing more. On your own number (friends mode) someone who calls the agent by name appears here without being answered. A friend can ask for tasks; their permission requests come to you, and they cannot use commands. Trust someone only if you would hand them your keyboard.">
             {(gateway?.pending ?? []).map((request) => (
               <div className="memory" key={request.code}>
                 <strong>{request.name} wants access</strong>
@@ -4077,7 +4105,7 @@ export function App() {
               </div>
             ))}
             {!gateway?.pending.length && !gateway?.allowed.length && (
-              <p className="settings-note">No one yet. Turn the gateway on, then send any message to your bot to get a pairing code. In WhatsApp “Only me” mode you do not need one; in “Me and friends” a friend starts a message with “pok” and appears here.</p>
+              <p className="settings-note">No one yet. Turn the gateway on, then send any message to your bot to get a pairing code. In WhatsApp “Only me” mode you do not need one; in “Me and friends” a friend calls the agent by name and appears here.</p>
             )}
           </SettingsCard>
 

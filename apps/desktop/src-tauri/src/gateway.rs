@@ -21,7 +21,7 @@ use pok_ai_core::gateway::{
     schedule::{JobStore, parse_schedule},
     sidecar,
     telegram::{TelegramChannel, TelegramClient},
-    whatsapp::{LinkState, WhatsAppChannel, WhatsAppConfig, WhatsAppMode},
+    whatsapp::{LinkState, WhatsAppChannel, WhatsAppConfig, WhatsAppMode, normalize_call_name},
 };
 use serde::{Deserialize, Serialize};
 use tauri::{Emitter, Manager, State};
@@ -191,6 +191,14 @@ struct GatewaySettings {
     whatsapp: bool,
     #[serde(default)]
     whatsapp_mode: WhatsAppMode,
+    /// The name that calls the agent in WhatsApp (friends always use it).
+    /// Empty means the default, "pok".
+    #[serde(default)]
+    whatsapp_call_name: String,
+    /// In "Message yourself" the owner must use the call name too, so notes
+    /// to self are not answered.
+    #[serde(default)]
+    whatsapp_owner_needs_call: bool,
 }
 
 fn load_settings(runtime: &AppRuntime) -> GatewaySettings {
@@ -462,6 +470,10 @@ pub struct WhatsAppView {
     /// Listening on WhatsApp is switched on.
     enabled: bool,
     mode: WhatsAppMode,
+    /// The name that calls the agent, without the `@`.
+    call_name: String,
+    /// The owner has to use the call name in their own chat as well.
+    owner_needs_call: bool,
     /// This build includes the WhatsApp component.
     available: bool,
     /// This computer has a saved WhatsApp link.
@@ -507,6 +519,8 @@ fn status(runtime: &AppRuntime, state: &GatewayState) -> GatewayStatus {
         whatsapp: WhatsAppView {
             enabled: settings.whatsapp,
             mode: settings.whatsapp_mode,
+            call_name: normalize_call_name(&settings.whatsapp_call_name),
+            owner_needs_call: settings.whatsapp_owner_needs_call,
             available: whatsapp_available(runtime),
             linked,
             state: link.as_ref().map_or(LinkState::Off, |link| link.state),
@@ -578,6 +592,10 @@ async fn start(app: &tauri::AppHandle) -> Result<(), String> {
                     data_dir: whatsapp_dir(runtime.inner()),
                     mode: settings.whatsapp_mode,
                 });
+                channel.set_calling(
+                    &settings.whatsapp_call_name,
+                    settings.whatsapp_owner_needs_call,
+                );
                 channels.push(channel.clone());
                 whatsapp = Some(channel);
             }
@@ -755,6 +773,28 @@ pub async fn gateway_set_whatsapp(
     Ok(status(runtime.inner(), state.inner()))
 }
 
+/// Choose the name that calls the agent in WhatsApp ("@pokbot") and whether
+/// the owner's own chat answers only when it is used. Applies at once to a
+/// running link, without a restart.
+#[tauri::command]
+pub fn gateway_set_whatsapp_call(
+    call_name: String,
+    owner_needs_call: bool,
+    runtime: State<'_, AppRuntime>,
+    state: State<'_, GatewayState>,
+) -> Result<GatewayStatus, String> {
+    let mut settings = load_settings(runtime.inner());
+    settings.whatsapp_call_name = normalize_call_name(&call_name);
+    settings.whatsapp_owner_needs_call = owner_needs_call;
+    save_settings(runtime.inner(), &settings)?;
+    // One lock, read once (this runs on the UI thread).
+    let channel = state.shared.whatsapp.lock().clone();
+    if let Some(channel) = channel {
+        channel.set_calling(&settings.whatsapp_call_name, owner_needs_call);
+    }
+    Ok(status(runtime.inner(), state.inner()))
+}
+
 /// Unlink this computer from WhatsApp and forget the saved session.
 #[tauri::command]
 pub async fn gateway_whatsapp_logout(
@@ -792,10 +832,9 @@ pub fn gateway_approve_pairing(
             .or_else(|| access.home_chat())
             .unwrap_or(user.id);
         let welcome = if friend {
+            let call = normalize_call_name(&load_settings(runtime.inner()).whatsapp_call_name);
             format!(
-                "You can ask me things now. Start your message with \"{}\", for example \"{} what is on my calendar today\". Pictures and files you attach go with it. Anything that needs permission goes to the owner.",
-                pok_ai_core::gateway::whatsapp::WAKE_WORD,
-                pok_ai_core::gateway::whatsapp::WAKE_WORD
+                "You can ask me things now. Start your message with \"{call}\", for example \"{call} what is on my calendar today\". Pictures and files you attach go with it. Anything that needs permission goes to the owner."
             )
         } else {
             "You are approved. Send me a task, or /help for the commands.".to_owned()
@@ -1183,6 +1222,9 @@ mod tests {
         let settings: GatewaySettings = serde_json::from_str(r#"{"enabled": true}"#).unwrap();
         assert!(settings.enabled && !settings.whatsapp);
         assert_eq!(settings.whatsapp_mode, WhatsAppMode::SelfChat);
+        // Calling by name is optional for the owner until they ask for it.
+        assert!(!settings.whatsapp_owner_needs_call);
+        assert_eq!(normalize_call_name(&settings.whatsapp_call_name), "pok");
     }
 
     #[test]

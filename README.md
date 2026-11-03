@@ -171,14 +171,19 @@ safer choice.**
    - *Only me* uses your own number: write in WhatsApp's "Message yourself" chat and nobody else is
      ever answered.
    - *Me and friends I approve* is the same on your own number, and friends can ask too. A friend
-     starts a message with **pok** (for example "pok what is on my calendar today", with photos or
-     files if they help); everything else they write to you stays a normal chat the agent never
-     touches. Someone not approved yet gets no reply at all: the request appears under *People* and
-     you decide. Friends can ask for tasks only, since their permission requests come to you and
+     starts a message with the **call name** (**pok** unless you change it, for example "pok what is
+     on my calendar today", with photos or files if they help); everything else they write to you
+     stays a normal chat the agent never touches. Someone not approved yet gets no reply at all:
+     the request appears under *People* and you decide. Friends can ask for tasks only, since their permission requests come to you and
      they cannot use commands; trust a person under *People* if you want them to have everything.
    - *Other people* suits a dedicated number: approved people can message it and strangers get a
      pairing code, like Telegram.
-2. Turn on *Listen on WhatsApp* and scan the QR code under WhatsApp → Settings → Linked devices →
+2. Choose the **call name** under *Call name* (for example `pokbot`, then write `@pokbot what is on
+   my calendar today`, or put `@pokbot` anywhere in the message). Friends always need it. Turn on
+   *Only answer when called* and your own "Message yourself" chat answers only when you use it, so
+   that chat can also hold plain notes; commands such as `/approve` and `/stop` always work, and
+   for about 20 seconds after a call your next messages (a photo, a second part) join the request.
+3. Turn on *Listen on WhatsApp* and scan the QR code under WhatsApp → Settings → Linked devices →
    Link a device. The session is kept in `<data dir>/whatsapp/session` (it holds keys: treat it like a
    password; *Unlink this computer* deletes it).
 

@@ -4356,6 +4356,7 @@ pub fn run() {
             gateway::gateway_save_token,
             gateway::gateway_set_enabled,
             gateway::gateway_set_whatsapp,
+            gateway::gateway_set_whatsapp_call,
             gateway::gateway_whatsapp_logout,
             gateway::gateway_approve_pairing,
             gateway::gateway_deny_pairing,
