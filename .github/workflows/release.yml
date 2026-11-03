@@ -46,6 +46,12 @@ jobs:
             sidecars/whatsapp -> target
           cache-directories: target/sherpa-onnx-prebuilt
 
+      # The unofficial WhatsApp client is its own crate and toolchain (Rust 1.94). It is built
+      # first so the app embeds it (apps/desktop/src-tauri/build.rs): one file for users.
+      - name: Build the WhatsApp component
+        shell: pwsh
+        run: .\scripts\build-whatsapp-sidecar.ps1
+
       - uses: actions/setup-node@v7
         with:
           node-version: 22
@@ -66,11 +72,6 @@ jobs:
       - name: Build executable and installers
         run: npm --prefix apps/desktop run tauri -- build
 
-      # A separate crate and toolchain (Rust 1.94): the unofficial WhatsApp client.
-      - name: Build the WhatsApp component
-        shell: pwsh
-        run: .\scripts\build-whatsapp-sidecar.ps1
-
       - name: Package release files
         id: package
         shell: pwsh
@@ -88,7 +89,6 @@ jobs:
             "$dir/POK-Agent-windows-x64.exe" `
             "$dir/POK-Agent-windows-x64-setup.exe" `
             "$dir/POK-Agent-windows-x64.zip" `
-            "$dir/POK-Agent-whatsapp-windows-x64.exe" `
             "$dir/SHA256SUMS.txt" `
             --repo "${{ github.repository }}" `
             --title "POK-Agent $env:TAG" `

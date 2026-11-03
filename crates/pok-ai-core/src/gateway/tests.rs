@@ -1199,7 +1199,7 @@ async fn real_sidecar_reaches_whatsapp_and_offers_a_qr_code() {
         .unwrap();
 }
 
-/// A missing component is reported, not retried forever.
+/// A missing program is reported, not retried forever.
 #[tokio::test]
 async fn a_missing_whatsapp_component_is_reported_clearly() {
     use whatsapp::{LinkState, WhatsAppChannel, WhatsAppConfig, WhatsAppMode};
@@ -1224,7 +1224,7 @@ async fn a_missing_whatsapp_component_is_reported_clearly() {
     })
     .await;
     let error = channel.status().error.unwrap();
-    assert!(error.contains("not installed"), "{error}");
+    assert!(error.contains("file is missing"), "{error}");
     cancel.cancel();
     tokio::time::timeout(Duration::from_secs(5), running)
         .await

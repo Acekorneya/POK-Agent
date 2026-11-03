@@ -4280,7 +4280,6 @@ pub fn run() {
             gateway::gateway_set_enabled,
             gateway::gateway_set_whatsapp,
             gateway::gateway_whatsapp_logout,
-            gateway::gateway_install_whatsapp,
             gateway::gateway_approve_pairing,
             gateway::gateway_deny_pairing,
             gateway::gateway_remove_user,

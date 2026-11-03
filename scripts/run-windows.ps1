@@ -175,17 +175,14 @@ function Assert-GitHubReleaseReady {
 }
 
 function Publish-GitHubRelease($Metadata) {
-    # The optional WhatsApp component is published with every release.
-    & (Join-Path $PSScriptRoot "build-whatsapp-sidecar.ps1") | Out-Null
     $PublishDir = (& (Join-Path $PSScriptRoot "package-release.ps1") -Version $Metadata.Version | Select-Object -Last 1).Trim()
     $ExecutableAsset = Join-Path $PublishDir "POK-Agent-windows-x64.exe"
     $InstallerAsset = Join-Path $PublishDir "POK-Agent-windows-x64-setup.exe"
     $ZipAsset = Join-Path $PublishDir "POK-Agent-windows-x64.zip"
-    $WhatsAppAsset = Join-Path $PublishDir "POK-Agent-whatsapp-windows-x64.exe"
     $ChecksumAsset = Join-Path $PublishDir "SHA256SUMS.txt"
 
     Write-Host "Publishing $($Metadata.Tag) to $($Metadata.Repository)..." -ForegroundColor Cyan
-    & gh release create $Metadata.Tag $ExecutableAsset $InstallerAsset $ZipAsset $WhatsAppAsset $ChecksumAsset `
+    & gh release create $Metadata.Tag $ExecutableAsset $InstallerAsset $ZipAsset $ChecksumAsset `
         --repo $Metadata.Repository `
         --target $Metadata.HeadCommit `
         --title "POK-Agent $($Metadata.Tag)" `
@@ -327,6 +324,10 @@ if ($Mode -eq "Dev") {
 }
 
 Stop-RunningReleaseExecutable
+# The WhatsApp client is its own crate (its own Rust version); build it first so the app
+# embeds it (apps/desktop/src-tauri/build.rs) and users get a single file.
+Write-Host "Building the WhatsApp component to embed in the app..." -ForegroundColor Cyan
+& (Join-Path $PSScriptRoot "build-whatsapp-sidecar.ps1") | Out-Null
 Write-Host "Building the release configuration users would receive..." -ForegroundColor Green
 Push-Location $DesktopDir
 try {

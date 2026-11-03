@@ -62,7 +62,7 @@ type DecisionRouterStatus = {
 };
 type WhatsAppState = "off" | "connecting" | "waiting_for_scan" | "connected" | "logged_out" | "failed";
 type WhatsAppView = {
-  enabled: boolean; mode: "self_chat" | "bot"; installed: boolean; linked: boolean;
+  enabled: boolean; mode: "self_chat" | "bot"; available: boolean; linked: boolean;
   state: WhatsAppState; qr_svg?: string | null; account?: string | null; error?: string | null;
 };
 type GatewayStatus = {
@@ -3994,14 +3994,10 @@ export function App() {
 
           <SettingsCard title="WhatsApp"
             status={whatsappPill(gateway?.whatsapp)}
-            description="Message your agent from WhatsApp too: send a photo or a file with a request, such as “what is this? find where to buy it”, and the agent works on it here and answers in the chat. POK-Agent signs in as a linked device, like WhatsApp Web. That is unofficial: WhatsApp's terms do not allow it and an account can be suspended, so a spare number is the safer choice.">
-            <SettingRow label="Component" help="The WhatsApp client is a separate small program that is downloaded on request, so it exists only on computers that want it. It is checked against the release's published checksum before it is kept.">
-              {gateway?.whatsapp.installed
-                ? <StatusPill tone="ok">Installed</StatusPill>
-                : <div className="inline-field">
-                    <button type="button" className="primary" disabled={gatewayBusy} onClick={() => void gatewayCall("gateway_install_whatsapp")}>{gatewayBusy ? "Downloading…" : "Install"}</button>
-                  </div>}
-            </SettingRow>
+            description="Message your agent from WhatsApp too: send a photo or a file with a request, such as “what is this? find where to buy it”, and the agent works on it here and answers in the chat. POK-Agent signs in as a linked device, like WhatsApp Web. The client is built in and only starts when you turn this on. It is unofficial: WhatsApp's terms do not allow it and an account can be suspended, so a spare number is the safer choice.">
+            {gateway && !gateway.whatsapp.available && (
+              <p className="error-text" role="alert">This copy of POK-Agent was built without the WhatsApp component, so WhatsApp is not available. Use the installer or portable download from the releases page.</p>
+            )}
             <SettingRow label="Whose messages" help="“Only me” uses your own number: open WhatsApp, find “Message yourself”, and write there. Nobody else is ever answered. “Other people” suits a dedicated number: approved people can message it, and strangers get a pairing code you approve below.">
               <select aria-label="WhatsApp mode" value={gateway?.whatsapp.mode ?? "self_chat"} disabled={gatewayBusy}
                 onChange={(event) => void gatewayCall("gateway_set_whatsapp", { enabled: gateway?.whatsapp.enabled ?? false, mode: event.target.value })}>
@@ -4011,7 +4007,7 @@ export function App() {
             </SettingRow>
             <SettingRow label="Listen on WhatsApp" help="Starts the gateway if it is off. The first time, a QR code appears here to scan.">
               <Switch label="Listen on WhatsApp" checked={gateway?.whatsapp.enabled ?? false}
-                disabled={!gateway?.whatsapp.installed || gatewayBusy}
+                disabled={!gateway?.whatsapp.available || gatewayBusy}
                 onChange={(checked) => void gatewayCall("gateway_set_whatsapp", { enabled: checked, mode: gateway?.whatsapp.mode })} />
             </SettingRow>
             {gateway?.whatsapp.state === "waiting_for_scan" && gateway.whatsapp.qr_svg && (

@@ -73,14 +73,15 @@ any provider's chat model, called in-process with two order-rotated votes),
 dispatcher, the `Channel` trait and the `GatewayHost` trait, with per-chat
 batching so an album becomes one task; `telegram.rs` the Bot API client and
 channel; `whatsapp.rs` the channel for the linked-device sidecar and its
-JSON-lines protocol; `sidecar.rs` finding and checksum-verified installing of
-that sidecar; `media.rs` turning attachments into saved files and PNG for a
+JSON-lines protocol; `sidecar.rs` unpacking the sidecar the desktop build embeds
+(or finding a development copy); `media.rs` turning attachments into saved files and PNG for a
 vision model; `access.rs` the default-deny allowlist of `<channel>:<id>`
 addresses with one-time pairing codes; `schedule.rs` scheduled jobs; the
 desktop app's `src-tauri/src/gateway.rs` is the host that runs messages
 through the dashboard; the WhatsApp client itself is the separate crate
 `sidecars/whatsapp`, built with its own Rust 1.94 and lockfile because the
-unofficial library needs a newer compiler than the agent), `router_training.rs` (training log), `policy.rs`, `coding.rs`, `memory.rs`, `grounding.rs`, `platform.rs`,
+unofficial library needs a newer compiler than the agent, and embedded in the
+desktop executable by `src-tauri/build.rs`), `router_training.rs` (training log), `policy.rs`, `coding.rs`, `memory.rs`, `grounding.rs`, `platform.rs`,
 `agent_window.rs`, `browser.rs` (the managed browser and the DevTools plumbing
 it shares), `user_browser.rs` (the user's own signed-in browser, attached over
 its DevTools port, with System 2's confirmation gate and System 1's click

@@ -323,7 +323,7 @@ describe("workspace presentation", () => {
   });
   describe("gateway settings", () => {
     const whatsapp = (over: Record<string, unknown> = {}) => ({
-      enabled: false, mode: "self_chat", installed: true, linked: false, state: "off", qr_svg: null, account: null, error: null, ...over,
+      enabled: false, mode: "self_chat", available: true, linked: false, state: "off", qr_svg: null, account: null, error: null, ...over,
     });
     const status = (over: Record<string, unknown> = {}) => ({
       running: false, enabled: false, has_token: false, bot: null, error: null, busy: false, task: null, home_chat: null,
@@ -358,15 +358,18 @@ describe("workspace presentation", () => {
       await userEvent.click(screen.getByRole("button", { name: "Unlink this computer" }));
       expect(mock.invoke).toHaveBeenCalledWith("gateway_whatsapp_logout", {});
     });
-    it("needs the component installed before WhatsApp can be switched on", async () => {
-      await openGateway({ whatsapp: whatsapp({ installed: false }) }, {
-        gateway_install_whatsapp: () => status({ whatsapp: whatsapp({ installed: true }) }),
-      });
+    it("has no install step, and says so plainly in a build without the component", async () => {
+      await openGateway({ whatsapp: whatsapp() });
+      // The client is built in: nothing to download or install.
+      expect((await screen.findByRole("checkbox", { name: "Listen on WhatsApp" }) as HTMLInputElement).disabled).toBe(false);
+      expect(screen.queryByRole("button", { name: "Install" })).toBeNull();
+      expect(screen.queryByRole("alert")).toBeNull();
+      cleanup();
+      mock.invoke.mockClear();
+      await openGateway({ whatsapp: whatsapp({ available: false }) });
       const listen = await screen.findByRole("checkbox", { name: "Listen on WhatsApp" }) as HTMLInputElement;
       expect(listen.disabled).toBe(true);
-      await userEvent.click(screen.getByRole("button", { name: "Install" }));
-      expect(mock.invoke).toHaveBeenCalledWith("gateway_install_whatsapp", {});
-      await waitFor(() => expect((screen.getByRole("checkbox", { name: "Listen on WhatsApp" }) as HTMLInputElement).disabled).toBe(false));
+      expect((await screen.findByRole("alert")).textContent).toContain("built without the WhatsApp component");
     });
     it("switches WhatsApp on with the chosen mode", async () => {
       await openGateway({ whatsapp: whatsapp() }, {

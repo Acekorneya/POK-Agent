@@ -676,7 +676,7 @@ impl Channel for WhatsAppChannel {
                     this.update(|status| {
                         status.state = LinkState::Failed;
                         status.error = Some(if missing {
-                            "The WhatsApp component is not installed. Use Install in Settings, Gateway."
+                            "The WhatsApp component file is missing. Turn WhatsApp off and on again, or reinstall POK-Agent."
                                 .to_owned()
                         } else {
                             format!("Could not start the WhatsApp component: {error}")
@@ -684,7 +684,7 @@ impl Channel for WhatsAppChannel {
                     });
                     gateway.notify_changed();
                     if missing {
-                        // Retrying cannot help until it is installed.
+                        // Retrying cannot help until the file is back.
                         cancel.cancelled().await;
                         return;
                     }

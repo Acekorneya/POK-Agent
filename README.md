@@ -43,7 +43,6 @@ Get the latest Windows build from
 | `POK-Agent-windows-x64-setup.exe` | You want a normal install with a Start menu entry (recommended). |
 | `POK-Agent-windows-x64.exe` | You want to run the app without installing it. |
 | `POK-Agent-windows-x64.zip` | You want a portable folder with the example configuration. |
-| `POK-Agent-whatsapp-windows-x64.exe` | Optional WhatsApp component. The app downloads it for you under Settings → Gateway; you only need this to place it by hand. |
 | `SHA256SUMS.txt` | You want to verify the downloads. |
 
 The builds are not code-signed yet, so Windows SmartScreen may say "Windows
@@ -168,15 +167,18 @@ way WhatsApp Web does (the same approach as Hermes Agent and OpenClaw). **This i
 WhatsApp's terms do not allow custom clients and an account can be suspended. A spare number is the
 safer choice.**
 
-1. In *Settings → Gateway → WhatsApp*, press *Install*. The client is a separate small program
-   (`pok-ai-whatsapp`, built from `sidecars/whatsapp`) downloaded from this version's release and
-   checked against `SHA256SUMS.txt`, so it exists only on computers that want it.
-2. Choose whose messages count. *Only me* uses your own number: write in WhatsApp's "Message
+1. In *Settings → Gateway → WhatsApp*, choose whose messages count. *Only me* uses your own number: write in WhatsApp's "Message
    yourself" chat and nobody else is ever answered. *Other people* suits a dedicated number: approved
    people can message it and strangers get a pairing code, like Telegram.
-3. Turn on *Listen on WhatsApp* and scan the QR code under WhatsApp → Settings → Linked devices →
+2. Turn on *Listen on WhatsApp* and scan the QR code under WhatsApp → Settings → Linked devices →
    Link a device. The session is kept in `<data dir>/whatsapp/session` (it holds keys: treat it like a
    password; *Unlink this computer* deletes it).
+
+The WhatsApp client is built into POK-Agent, so there is nothing extra to download. It is a separate
+small program (`pok-ai-whatsapp`, built from `sidecars/whatsapp` with its own Rust version) that the
+app carries inside itself and unpacks the first time you switch WhatsApp on; until then it does not
+run. A build made without it (for example a development build, before
+`scripts/build-whatsapp-sidecar.ps1` has run) says so in Settings.
 
 Safe by default: nobody is allowed until you approve their code on the computer, only private chats
 count (never groups), messages sent while the gateway was off are dropped instead of acted on late,
@@ -458,8 +460,7 @@ git push origin main v0.2.0                 # the Release workflow does the rest
 
 The release contains `POK-Agent-windows-x64.exe` (standalone), `POK-Agent-windows-x64-setup.exe`
 (installer), `POK-Agent-windows-x64.zip` (portable: executable, example configuration, README,
-license, notice), `POK-Agent-whatsapp-windows-x64.exe` (the optional WhatsApp component), and
-`SHA256SUMS.txt`. `scripts/package-release.ps1` builds these files, both in
+license, notice), and `SHA256SUMS.txt`. `scripts/package-release.ps1` builds these files, both in
 the workflow and locally.
 
 A release can still be published from a Windows PC with GitHub CLI:

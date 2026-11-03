@@ -57,6 +57,8 @@ struct Shared {
     pending_approval: SyncMutex<Option<uuid::Uuid>>,
     bot: SyncMutex<Option<String>>,
     whatsapp: SyncMutex<Option<Arc<WhatsAppChannel>>>,
+    /// Why WhatsApp could not start, when no channel exists to say so.
+    whatsapp_error: SyncMutex<Option<String>>,
     error: SyncMutex<Option<String>>,
     running: AtomicBool,
 }
@@ -107,7 +109,7 @@ fn whatsapp_dir(runtime: &AppRuntime) -> std::path::PathBuf {
     runtime.config.lock().data_dir.join("whatsapp")
 }
 
-/// Folders besides the installed copy where the WhatsApp component may be:
+/// Folders besides the unpacked copy where the WhatsApp component may be:
 /// next to the app, and a development build in the source tree.
 fn whatsapp_folders() -> Vec<std::path::PathBuf> {
     let mut folders = Vec::new();
@@ -123,8 +125,37 @@ fn whatsapp_folders() -> Vec<std::path::PathBuf> {
     folders
 }
 
-fn whatsapp_program(runtime: &AppRuntime) -> Option<std::path::PathBuf> {
-    sidecar::find(&runtime.config.lock().data_dir, &whatsapp_folders())
+/// The WhatsApp component built into this app. A build made after
+/// `scripts/build-whatsapp-sidecar.ps1` carries it (see `build.rs`); the app
+/// unpacks it the first time WhatsApp is switched on.
+#[cfg(has_whatsapp_component)]
+static EMBEDDED_COMPONENT: &[u8] = include_bytes!(env!("POK_WHATSAPP_COMPONENT"));
+#[cfg(not(has_whatsapp_component))]
+static EMBEDDED_COMPONENT: &[u8] = &[];
+
+/// Whether this build can run WhatsApp. It only looks, never unpacks: the
+/// settings page asks every few seconds, on the UI thread.
+fn whatsapp_available(runtime: &AppRuntime) -> bool {
+    if !EMBEDDED_COMPONENT.is_empty() {
+        return true;
+    }
+    let data_dir = runtime.config.lock().data_dir.clone();
+    sidecar::find(&data_dir, &whatsapp_folders()).is_some()
+}
+
+/// The program to start: the embedded one, unpacked, or a copy next to the
+/// app or in a development build.
+fn prepare_whatsapp_program(runtime: &AppRuntime) -> Result<std::path::PathBuf, String> {
+    let data_dir = runtime.config.lock().data_dir.clone();
+    if !EMBEDDED_COMPONENT.is_empty() {
+        let destination = sidecar::installed_path(&data_dir);
+        sidecar::extract(EMBEDDED_COMPONENT, &destination)
+            .map_err(|error| format!("Could not unpack the WhatsApp component: {error}"))?;
+        return Ok(destination);
+    }
+    sidecar::find(&data_dir, &whatsapp_folders()).ok_or_else(|| {
+        "This build of POK-Agent was made without the WhatsApp component.".to_owned()
+    })
 }
 
 #[derive(Serialize, Deserialize, Default, Clone)]
@@ -328,8 +359,8 @@ pub struct WhatsAppView {
     /// Listening on WhatsApp is switched on.
     enabled: bool,
     mode: WhatsAppMode,
-    /// The component program is on this computer.
-    installed: bool,
+    /// This build includes the WhatsApp component.
+    available: bool,
     /// This computer has a saved WhatsApp link.
     linked: bool,
     state: LinkState,
@@ -365,6 +396,7 @@ fn status(runtime: &AppRuntime, state: &GatewayState) -> GatewayStatus {
     // One lock, read once, for the same reason.
     let channel = shared.whatsapp.lock().clone();
     let link = channel.as_ref().map(|channel| channel.status());
+    let whatsapp_error = shared.whatsapp_error.lock().clone();
     let linked = pok_ai_core::gateway::whatsapp::session_exists(&whatsapp_dir(runtime));
     GatewayStatus {
         running: state.is_running(),
@@ -372,12 +404,12 @@ fn status(runtime: &AppRuntime, state: &GatewayState) -> GatewayStatus {
         whatsapp: WhatsAppView {
             enabled: settings.whatsapp,
             mode: settings.whatsapp_mode,
-            installed: whatsapp_program(runtime).is_some(),
+            available: whatsapp_available(runtime),
             linked,
             state: link.as_ref().map_or(LinkState::Off, |link| link.state),
             qr_svg: link.as_ref().and_then(|link| link.qr_svg.clone()),
             account: link.as_ref().and_then(|link| link.account.clone()),
-            error: link.and_then(|link| link.error),
+            error: link.and_then(|link| link.error).or(whatsapp_error),
         },
         has_token: pok_ai_core::brain::get_api_key(TOKEN_ENV)
             .is_some_and(|token| !token.trim().is_empty()),
@@ -435,17 +467,24 @@ async fn start(app: &tauri::AppHandle) -> Result<(), String> {
         }
     }
 
-    let whatsapp = settings.whatsapp.then(|| {
-        WhatsAppChannel::new(WhatsAppConfig {
-            // A missing program is reported in the WhatsApp status.
-            sidecar: whatsapp_program(runtime.inner())
-                .unwrap_or_else(|| sidecar::installed_path(&runtime.config.lock().data_dir)),
-            data_dir: whatsapp_dir(runtime.inner()),
-            mode: settings.whatsapp_mode,
-        })
-    });
-    if let Some(whatsapp) = &whatsapp {
-        channels.push(whatsapp.clone());
+    *state.shared.whatsapp_error.lock() = None;
+    let mut whatsapp = None;
+    if settings.whatsapp {
+        match prepare_whatsapp_program(runtime.inner()) {
+            Ok(program) => {
+                let channel = WhatsAppChannel::new(WhatsAppConfig {
+                    sidecar: program,
+                    data_dir: whatsapp_dir(runtime.inner()),
+                    mode: settings.whatsapp_mode,
+                });
+                channels.push(channel.clone());
+                whatsapp = Some(channel);
+            }
+            Err(error) => {
+                *state.shared.whatsapp_error.lock() = Some(error.clone());
+                problems.push(format!("WhatsApp: {error}"));
+            }
+        }
     }
     if channels.is_empty() {
         return Err(if problems.is_empty() {
@@ -489,6 +528,7 @@ async fn stop(app: &tauri::AppHandle) {
     // Dropping the gateway also drops its host, which holds `shared`.
     *state.shared.gateway.lock() = None;
     *state.shared.whatsapp.lock() = None;
+    *state.shared.whatsapp_error.lock() = None;
     *state.shared.in_flight.lock() = None;
     *state.shared.pending_approval.lock() = None;
     state.shared.running.store(false, Ordering::SeqCst);
@@ -624,33 +664,6 @@ pub async fn gateway_whatsapp_logout(
     match channel {
         Some(channel) => channel.logout().await.map_err(|error| error.to_string())?,
         None => pok_ai_core::gateway::whatsapp::forget_session(&whatsapp_dir(runtime.inner())),
-    }
-    Ok(status(runtime.inner(), state.inner()))
-}
-
-/// Download the WhatsApp component for this version of the app, verified
-/// against the release checksums.
-#[tauri::command]
-pub async fn gateway_install_whatsapp(
-    app: tauri::AppHandle,
-    runtime: State<'_, AppRuntime>,
-    state: State<'_, GatewayState>,
-) -> Result<GatewayStatus, String> {
-    if !cfg!(windows) {
-        return Err("The WhatsApp component is available in the Windows build.".into());
-    }
-    let destination = sidecar::installed_path(&runtime.config.lock().data_dir);
-    let release = format!(
-        "https://github.com/Acekorneya/POK-Agent/releases/download/v{}",
-        env!("CARGO_PKG_VERSION")
-    );
-    sidecar::install(&release, &destination)
-        .await
-        .map_err(|error| error.to_string())?;
-    // A gateway already waiting for the missing program starts it now.
-    if state.is_running() && load_settings(runtime.inner()).whatsapp {
-        stop(&app).await;
-        start(&app).await?;
     }
     Ok(status(runtime.inner(), state.inner()))
 }
@@ -993,6 +1006,15 @@ mod tests {
             !listening_changed(&off, &off_but_bot),
             "a mode picked while WhatsApp is off leaves Telegram alone"
         );
+    }
+
+    /// Only in a build that carries the component: it must be a real program,
+    /// not an empty or misplaced file.
+    #[cfg(has_whatsapp_component)]
+    #[test]
+    fn the_embedded_component_is_a_windows_program() {
+        assert!(EMBEDDED_COMPONENT.len() > 1_000_000);
+        assert!(EMBEDDED_COMPONENT.starts_with(b"MZ"));
     }
 
     #[test]
