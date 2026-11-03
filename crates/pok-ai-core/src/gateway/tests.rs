@@ -1421,6 +1421,95 @@ async fn a_missing_whatsapp_component_is_reported_clearly() {
         .unwrap();
 }
 
+/// A channel that knows which chat is the owner's own.
+struct OwnerChannel {
+    name: &'static str,
+    owner: Option<&'static str>,
+}
+
+#[async_trait]
+impl Channel for OwnerChannel {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    async fn send_text(&self, _chat: &str, _text: &str) -> Result<()> {
+        Ok(())
+    }
+    async fn send_typing(&self, _chat: &str) {}
+    fn owner_chat(&self) -> Option<String> {
+        self.owner.map(str::to_owned)
+    }
+    async fn listen(self: Arc<Self>, _gateway: Arc<Gateway>, cancel: CancellationToken) {
+        cancel.cancelled().await;
+    }
+}
+
+fn gateway_with(channels: Vec<Arc<dyn Channel>>, dir: &tempfile::TempDir) -> Arc<Gateway> {
+    Arc::new(Gateway::new(
+        channels,
+        Arc::new(AccessControl::open(&dir.path().join("access.json"))),
+        Arc::new(JobStore::open(&dir.path().join("jobs.json"))),
+        Arc::new(MockHost::default()),
+        dir.path().join("inbox"),
+    ))
+}
+
+#[test]
+fn permission_requests_for_a_pc_task_go_to_the_chats_that_can_receive_them() {
+    let dir = tempfile::tempdir().unwrap();
+    // Only WhatsApp runs, yet the saved home chat is an old Telegram one.
+    let gateway = gateway_with(
+        vec![Arc::new(OwnerChannel {
+            name: "whatsapp",
+            owner: Some("15550199@s.whatsapp.net"),
+        })],
+        &dir,
+    );
+    gateway.access().set_home_chat("telegram:900").unwrap();
+    assert_eq!(
+        gateway.owner_chats(),
+        ["whatsapp:15550199@s.whatsapp.net"],
+        "a chat on a channel that is not running is never used"
+    );
+
+    // Home on a running channel comes first, and the same chat is listed once.
+    gateway
+        .access()
+        .set_home_chat("whatsapp:15550199@s.whatsapp.net")
+        .unwrap();
+    assert_eq!(gateway.owner_chats(), ["whatsapp:15550199@s.whatsapp.net"]);
+
+    // Two channels: the home chat, then the other channel's owner chat.
+    let gateway = gateway_with(
+        vec![
+            Arc::new(OwnerChannel {
+                name: "telegram",
+                owner: None,
+            }),
+            Arc::new(OwnerChannel {
+                name: "whatsapp",
+                owner: Some("15550199@s.whatsapp.net"),
+            }),
+        ],
+        &dir,
+    );
+    gateway.access().set_home_chat("telegram:900").unwrap();
+    assert_eq!(
+        gateway.owner_chats(),
+        ["telegram:900", "whatsapp:15550199@s.whatsapp.net"]
+    );
+
+    // A channel that does not know the owner's chat yet adds nothing.
+    let gateway = gateway_with(
+        vec![Arc::new(OwnerChannel {
+            name: "whatsapp",
+            owner: None,
+        })],
+        &dir,
+    );
+    assert!(gateway.owner_chats().is_empty());
+}
+
 #[tokio::test]
 async fn an_unknown_sender_who_asks_gets_no_reply_but_the_owner_sees_the_request() {
     let (_dir, whatsapp, host, gateway) = owner_and_friend_fixture().await;

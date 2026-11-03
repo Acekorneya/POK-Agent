@@ -221,6 +221,8 @@ pub struct WhatsAppChannel {
     sent_ids: Mutex<VecDeque<String>>,
     /// Friends mode: when each chat last made a request.
     engaged: Mutex<HashMap<String, Instant>>,
+    /// The owner's own chat, learned from the first message they write there.
+    owner_chat: Mutex<Option<String>>,
     /// The saved session is deleted once the sidecar has exited: set when the
     /// device was unlinked, so a revoked session is never tried again.
     wipe_session: AtomicBool,
@@ -234,6 +236,7 @@ impl WhatsAppChannel {
             link: Mutex::new(None),
             sent_ids: Mutex::new(VecDeque::new()),
             engaged: Mutex::new(HashMap::new()),
+            owner_chat: Mutex::new(None),
             wipe_session: AtomicBool::new(false),
         })
     }
@@ -475,6 +478,9 @@ impl WhatsAppChannel {
     /// wake word (or follows one closely).
     fn to_inbound(self: &Arc<Self>, message: WaMessage, sender: Sender) -> Option<Inbound> {
         let owner = sender == Sender::Owner;
+        if owner {
+            *self.owner_chat.lock() = Some(message.chat.clone());
+        }
         let mut text = message.text.clone();
         if self.config.mode == WhatsAppMode::Friends && !owner {
             match strip_wake_word(&text) {
@@ -710,6 +716,15 @@ impl Channel for WhatsAppChannel {
             }
         }
         Ok(())
+    }
+
+    fn owner_chat(&self) -> Option<String> {
+        // Only on the owner's own number: a dedicated number has no chat with
+        // its owner to speak of.
+        if self.config.mode == WhatsAppMode::Bot {
+            return None;
+        }
+        self.owner_chat.lock().clone()
     }
 
     async fn send_typing(&self, chat: &str) {
@@ -1184,6 +1199,31 @@ mod tests {
             .unwrap();
         assert_eq!(owner.text, "just do it");
         assert!(owner.trusted);
+    }
+
+    #[test]
+    fn the_owners_own_chat_is_learned_from_their_own_message_only() {
+        let friends = channel(WhatsAppMode::Friends);
+        assert_eq!(
+            friends.owner_chat(),
+            None,
+            "nothing known before they write"
+        );
+        // A friend writing is not the owner.
+        let friend = message("1", "direct", false, false, "pok hi");
+        let _ = friends.to_inbound(friend, Sender::Person);
+        assert_eq!(friends.owner_chat(), None);
+        let mut own = message("2", "direct", true, true, "hello");
+        own.chat = "15550199@s.whatsapp.net".into();
+        let _ = friends.to_inbound(own, Sender::Owner);
+        assert_eq!(
+            friends.owner_chat().as_deref(),
+            Some("15550199@s.whatsapp.net")
+        );
+        // A dedicated number has no chat with its owner to speak of.
+        let dedicated = channel(WhatsAppMode::Bot);
+        *dedicated.owner_chat.lock() = Some("15550199@s.whatsapp.net".into());
+        assert_eq!(dedicated.owner_chat(), None);
     }
 
     #[test]

@@ -335,35 +335,63 @@ impl GatewayHost for AppHost {
     }
 }
 
-/// The agent is waiting for permission: tell the chat that sent the task.
+/// How long a permission request for a task started on the PC waits for an
+/// answer on the PC before the owner's phone is asked too. Someone at the
+/// keyboard answers the dialog at once and is not pinged; someone who walked
+/// away is, and can reply `/approve`.
+const PHONE_ASK_DELAY: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The agent is waiting for permission: tell the chat that sent the task, or,
+/// for a task started on the PC, the owner's chat if the dialog goes unanswered.
 pub fn announce_approval(app: &tauri::AppHandle, request: &ApprovalRequest) {
     let state = app.state::<GatewayState>();
+    // Gateway off: there is no phone to ask, and `/approve` cannot arrive.
+    let Some(gateway) = state.shared.gateway.lock().clone() else {
+        return;
+    };
+    // Whatever started the task, the owner can answer from the phone.
+    *state.shared.pending_approval.lock() = Some(request.id);
     // One lock, read once.
-    let Some((chat, requester)) = state
+    let flight = state
         .shared
         .in_flight
         .lock()
         .as_ref()
-        .map(|flight| (flight.approval_chat.clone(), flight.requester.clone()))
-    else {
-        return;
-    };
-    let Some(gateway) = state.shared.gateway.lock().clone() else {
-        return;
-    };
-    *state.shared.pending_approval.lock() = Some(request.id);
-    // Nowhere to ask but the PC (a friend's task, no owner chat): the
-    // dashboard shows the request there.
-    let Some(chat) = chat else {
-        return;
-    };
-    let whose = requester.map_or_else(String::new, |name| format!(" for {name}'s request"));
-    let message = format!(
-        "Permission needed{whose}: {} - {}\nReply /approve or /deny, or answer on the PC.",
+        .map(|flight| (flight.approval_chat.clone(), flight.requester.clone()));
+    let text = format!(
+        "{} - {}\nReply /approve or /deny, or answer on the PC.",
         request.tool,
         preview(&request.reason, 240)
     );
-    tauri::async_runtime::spawn(async move { gateway.send(&chat, &message).await });
+    match flight {
+        // A task that came from a chat: ask there (or the owner, for a friend).
+        Some((chat, requester)) => {
+            // Nowhere to ask but the PC (a friend's task, no owner chat): the
+            // dashboard shows the request there.
+            let Some(chat) = chat else {
+                return;
+            };
+            let whose = requester.map_or_else(String::new, |name| format!(" for {name}'s request"));
+            let message = format!("Permission needed{whose}: {text}");
+            tauri::async_runtime::spawn(async move { gateway.send(&chat, &message).await });
+        }
+        // A task started on the PC.
+        None => {
+            let app = app.clone();
+            let id = request.id;
+            let message = format!("Permission needed: {text}");
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(PHONE_ASK_DELAY).await;
+                let broker = app.state::<Arc<ApprovalBroker>>();
+                let still_waiting = broker.pending.lock().await.contains_key(&id);
+                if still_waiting {
+                    for chat in gateway.owner_chats() {
+                        gateway.send(&chat, &message).await;
+                    }
+                }
+            });
+        }
+    }
 }
 
 /// A permission request needs a person: make sure the window can show it.

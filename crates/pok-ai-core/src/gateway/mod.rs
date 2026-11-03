@@ -94,6 +94,12 @@ pub trait Channel: Send + Sync {
     /// Send plain text to a chat (its channel-local id).
     async fn send_text(&self, chat: &str, text: &str) -> Result<()>;
     async fn send_typing(&self, chat: &str);
+    /// The owner's own chat on this channel (its channel-local id), when the
+    /// channel knows it. Permission requests for a task started on the PC are
+    /// sent there.
+    fn owner_chat(&self) -> Option<String> {
+        None
+    }
     /// Receive messages and pass each to [`Gateway::handle_inbound`] until
     /// `cancel` fires.
     async fn listen(self: Arc<Self>, gateway: Arc<Gateway>, cancel: CancellationToken);
@@ -237,6 +243,29 @@ impl Gateway {
     /// Tell the host that something the settings page shows has changed.
     pub fn notify_changed(&self) {
         self.host.changed();
+    }
+
+    /// The chats that belong to the owner, as `<channel>:<id>`: the home chat
+    /// when its channel is running, and each running channel's own owner chat.
+    /// A home chat left over from a channel that is no longer set up (an old
+    /// Telegram chat when only WhatsApp runs) is skipped, so a message is
+    /// never sent into a chat that cannot receive it.
+    pub fn owner_chats(&self) -> Vec<String> {
+        let mut chats = Vec::new();
+        if let Some(home) = self.access.home_chat()
+            && self.channel_of(&home).is_some()
+        {
+            chats.push(home);
+        }
+        for channel in &self.channels {
+            if let Some(chat) = channel.owner_chat() {
+                let chat = address(channel.name(), &chat);
+                if !chats.contains(&chat) {
+                    chats.push(chat);
+                }
+            }
+        }
+        chats
     }
 
     fn channel_of(&self, chat: &str) -> Option<&Arc<dyn Channel>> {
