@@ -32,6 +32,25 @@ use super::{AppRuntime, ApprovalBroker, ApprovalRequest};
 /// The saved bot token lives under this name (environment variable or
 /// Windows Credential Manager entry), like a provider key.
 const TOKEN_ENV: &str = "POK_TELEGRAM_BOT_TOKEN";
+
+/// The Telegram bot token, if there is one. Saving a token writes it to
+/// Credential Manager and to memory, but a new launch starts with an empty
+/// memory, so it is read back from Credential Manager the first time it is
+/// needed. (It was never reloaded at launch before, so after a restart the
+/// app behaved as if no token had been saved.)
+fn bot_token() -> Option<String> {
+    bot_token_from(super::load_provider_key)
+}
+
+fn bot_token_from(load: impl Fn(&str) -> Option<String>) -> Option<String> {
+    let usable = |token: &String| !token.trim().is_empty();
+    if let Some(token) = pok_ai_core::brain::get_api_key(TOKEN_ENV).filter(usable) {
+        return Some(token);
+    }
+    let token = load(TOKEN_ENV).filter(usable)?;
+    pok_ai_core::brain::set_api_key(TOKEN_ENV, token.clone());
+    Some(token)
+}
 const POLL_SECONDS: u64 = 25;
 const TRAY_ID: &str = "main";
 /// The value under `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`.
@@ -495,8 +514,7 @@ fn status(runtime: &AppRuntime, state: &GatewayState) -> GatewayStatus {
             account: link.as_ref().and_then(|link| link.account.clone()),
             error: link.and_then(|link| link.error).or(whatsapp_error),
         },
-        has_token: pok_ai_core::brain::get_api_key(TOKEN_ENV)
-            .is_some_and(|token| !token.trim().is_empty()),
+        has_token: bot_token().is_some(),
         bot: shared.bot.lock().clone(),
         error: shared.error.lock().clone(),
         busy: task.is_some(),
@@ -531,8 +549,7 @@ async fn start(app: &tauri::AppHandle) -> Result<(), String> {
     let mut problems = Vec::new();
     let mut bot = None;
 
-    let token = pok_ai_core::brain::get_api_key(TOKEN_ENV).filter(|token| !token.trim().is_empty());
-    if let Some(token) = token {
+    if let Some(token) = bot_token() {
         let telegram = async {
             let client = TelegramClient::new(&token).map_err(|error| error.to_string())?;
             let username = client
@@ -1017,10 +1034,7 @@ fn refresh_tray(app: &tauri::AppHandle) {
 pub fn place_window_at_launch(app: &tauri::App, background: bool) {
     let runtime = app.state::<AppRuntime>();
     let settings = load_settings(runtime.inner());
-    let will_listen = settings.enabled
-        && (settings.whatsapp
-            || pok_ai_core::brain::get_api_key(TOKEN_ENV)
-                .is_some_and(|token| !token.trim().is_empty()));
+    let will_listen = settings.enabled && (settings.whatsapp || bot_token().is_some());
     if !(background && will_listen) {
         show_main_window(app.handle());
     }
@@ -1127,6 +1141,40 @@ mod tests {
     fn the_embedded_component_is_a_windows_program() {
         assert!(EMBEDDED_COMPONENT.len() > 1_000_000);
         assert!(EMBEDDED_COMPONENT.starts_with(b"MZ"));
+    }
+
+    /// A new launch has an empty memory; the token saved earlier lives only in
+    /// Credential Manager. It must be found there, not asked for again.
+    #[test]
+    fn a_saved_bot_token_is_found_again_after_a_restart() {
+        use std::cell::Cell;
+        // The only test that touches the token, so it can use the real slot.
+        pok_ai_core::brain::set_api_key(TOKEN_ENV, "");
+        let reads = Cell::new(0);
+        let store = |name: &str| {
+            assert_eq!(name, TOKEN_ENV);
+            reads.set(reads.get() + 1);
+            Some("123456:fake-token-for-tests".to_owned())
+        };
+
+        // Nothing in memory yet (the app was just started): read from the store.
+        assert_eq!(
+            bot_token_from(store).as_deref(),
+            Some("123456:fake-token-for-tests")
+        );
+        assert_eq!(reads.get(), 1);
+        // Remembered now, so the store is not asked again.
+        assert_eq!(
+            bot_token_from(store).as_deref(),
+            Some("123456:fake-token-for-tests")
+        );
+        assert_eq!(reads.get(), 1);
+
+        // A blank or missing entry means "no token", not an empty one.
+        pok_ai_core::brain::set_api_key(TOKEN_ENV, "");
+        assert_eq!(bot_token_from(|_| Some("  ".to_owned())), None);
+        assert_eq!(bot_token_from(|_| None), None);
+        pok_ai_core::brain::set_api_key(TOKEN_ENV, "");
     }
 
     #[test]
