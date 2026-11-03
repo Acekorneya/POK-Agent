@@ -364,15 +364,57 @@ impl ApprovalHandler for ApprovalBroker {
         };
         app.emit("approval_requested", request.clone())
             .map_err(|error| pok_ai_core::PokError::Other(error.into()))?;
+        // The dialog cannot be seen in a window hidden in the tray.
+        gateway::surface_for_approval(app);
         // A task sent from the phone is answered there too.
         gateway::announce_approval(app, &request);
-        match tokio::time::timeout(Duration::from_secs(300), receiver).await {
-            Ok(Ok(allowed)) => Ok(allowed),
-            _ => {
+        match await_answer(receiver, APPROVAL_WAIT).await {
+            Answer::Decided(decision) => {
                 self.pending.lock().await.remove(&id);
-                Ok(ApprovalDecision::Deny)
+                Ok(decision)
+            }
+            Answer::Expired => {
+                self.pending.lock().await.remove(&id);
+                // Close the dialog that no longer does anything, and tell the phone.
+                let _ = app.emit(
+                    "approval_expired",
+                    serde_json::json!({"id": id.to_string(), "tool": tool}),
+                );
+                gateway::announce_expired(app, tool);
+                Err(expired_error(tool, APPROVAL_WAIT))
             }
         }
+    }
+}
+
+/// How long a permission request waits for an answer.
+const APPROVAL_WAIT: Duration = Duration::from_secs(300);
+
+enum Answer {
+    Decided(ApprovalDecision),
+    /// Nobody answered in time.
+    Expired,
+}
+
+async fn await_answer(receiver: oneshot::Receiver<ApprovalDecision>, wait: Duration) -> Answer {
+    match tokio::time::timeout(wait, receiver).await {
+        Ok(Ok(decision)) => Answer::Decided(decision),
+        // The asking side went away (the run was stopped): nothing is allowed.
+        Ok(Err(_)) => Answer::Decided(ApprovalDecision::Deny),
+        Err(_) => Answer::Expired,
+    }
+}
+
+/// What the agent is told when nobody answered. It must not read as a "no":
+/// the agent would ask again and again, and the person sees prompts they
+/// never got the chance to answer.
+fn expired_error(tool: &str, wait: Duration) -> pok_ai_core::PokError {
+    pok_ai_core::PokError::PolicyDenied {
+        tool: tool.into(),
+        reason: format!(
+            "approval timed out: nobody answered within {} minutes, so nothing was done. Do not repeat the same request; tell the user it is still waiting for their permission, or carry on without it.",
+            wait.as_secs() / 60
+        ),
     }
 }
 
@@ -2714,6 +2756,41 @@ async fn run_prompt(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn an_unanswered_permission_request_expires_and_is_not_a_decline() {
+        let (_sender, receiver) = oneshot::channel::<ApprovalDecision>();
+        assert!(matches!(
+            await_answer(receiver, Duration::from_millis(30)).await,
+            Answer::Expired
+        ));
+        // What the agent reads must say nobody answered, and must not read as a "no".
+        let error = expired_error("write_file", Duration::from_secs(300)).to_string();
+        assert!(error.contains("timed out"), "{error}");
+        assert!(
+            error.contains("nobody answered within 5 minutes"),
+            "{error}"
+        );
+        assert!(!error.contains("declined"), "{error}");
+        assert!(error.contains("Do not repeat"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn an_answer_in_time_is_used_and_a_stopped_run_allows_nothing() {
+        let (sender, receiver) = oneshot::channel();
+        sender.send(ApprovalDecision::AllowSession).unwrap();
+        assert!(matches!(
+            await_answer(receiver, Duration::from_secs(5)).await,
+            Answer::Decided(ApprovalDecision::AllowSession)
+        ));
+        // The run was stopped: the asking side is gone.
+        let (sender, receiver) = oneshot::channel::<ApprovalDecision>();
+        drop(sender);
+        assert!(matches!(
+            await_answer(receiver, Duration::from_secs(5)).await,
+            Answer::Decided(ApprovalDecision::Deny)
+        ));
+    }
 
     #[test]
     fn provider_endpoint_override_survives_config_reload() {

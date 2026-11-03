@@ -421,6 +421,19 @@ describe("workspace presentation", () => {
       expect(mock.invoke).toHaveBeenCalledWith("gateway_remove_user", { userId: "whatsapp:15550100" });
     });
   });
+  it("closes a permission dialog nobody answered in time and says so, rather than leaving a dead prompt", async () => {
+    await renderApp();
+    emit({ id: "approval-3", tool: "write_file", reason: "Write the file?", arguments: { filepath: "notes.md" } }, "approval_requested");
+    expect(screen.getByRole("button", { name: "Allow once" })).toBeTruthy();
+    // Another request expiring must not dismiss this one.
+    emit({ id: "approval-other", tool: "run_command" }, "approval_expired");
+    expect(screen.getByRole("button", { name: "Allow once" })).toBeTruthy();
+    emit({ id: "approval-3", tool: "write_file" }, "approval_expired");
+    expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull();
+    expect(screen.getAllByText(/permission request for write_file expired/).length).toBeGreaterThan(0);
+    // Nothing was sent as a decision: the agent was already told nobody answered.
+    expect(mock.invoke.mock.calls.some((call) => call[0] === "resolve_approval")).toBe(false);
+  });
   it("shows Tavily as the search when a key is saved, checks a new key, and runs a real search", async () => {
     const previous = mock.invoke.getMockImplementation()!;
     let status = { configured: "auto", effective: "duckduckgo", has_tavily_key: false };

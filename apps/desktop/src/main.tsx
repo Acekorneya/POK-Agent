@@ -3087,6 +3087,23 @@ export function App() {
         setApprovalError("");
       }
     });
+    // A request nobody answered in five minutes: close its dialog and say so, instead of leaving
+    // a prompt that no longer does anything (answering it would only report "expired").
+    const unlistenApprovalExpired = listen<{ id: string; tool: string }>("approval_expired", ({ payload }) => {
+      if (activeApproval.current?.id === payload.id) {
+        activeApproval.current = null;
+        setApproval((pending) => pending?.id === payload.id ? null : pending);
+        setApprovalChoice(null);
+        setApprovalError("");
+      }
+      setMessages((items) => [...items, {
+        id: `approval-expired-${Date.now()}`,
+        sender: "system",
+        type: "activity",
+        text: `The permission request for ${payload.tool} expired after 5 minutes without an answer, so the agent did nothing. It will tell you it is waiting; ask again if you still want it.`,
+        timestamp: new Date(),
+      }]);
+    });
     const unlistenGatewayNew = listen("gateway_new_conversation", () => { void newConversationRef.current(); });
     const unlistenGatewayChanged = listen("gateway_changed", () => refreshGatewayRef.current());
     refreshGatewayRef.current();
@@ -3112,6 +3129,7 @@ export function App() {
       void unlistenGatewayTask.then((fn) => fn());
       void unlistenGatewayNew.then((fn) => fn());
       void unlistenApprovalResolved.then((fn) => fn());
+      void unlistenApprovalExpired.then((fn) => fn());
       void unlistenGatewayChanged.then((fn) => fn());
       void unlisten.then((fn) => fn());
       void unlistenStop.then((fn) => fn());

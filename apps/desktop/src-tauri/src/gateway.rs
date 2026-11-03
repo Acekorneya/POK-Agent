@@ -366,6 +366,40 @@ pub fn announce_approval(app: &tauri::AppHandle, request: &ApprovalRequest) {
     tauri::async_runtime::spawn(async move { gateway.send(&chat, &message).await });
 }
 
+/// A permission request needs a person: make sure the window can show it.
+/// A window hidden in the tray (the always-on gateway) is shown again, without
+/// taking focus from what the person is doing, and the taskbar button flashes.
+pub fn surface_for_approval(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+    if !window.is_visible().unwrap_or(true) || window.is_minimized().unwrap_or(false) {
+        let _ = window.show();
+        let _ = window.unminimize();
+    }
+    let _ = window.request_user_attention(Some(tauri::UserAttentionType::Informational));
+}
+
+/// Nobody answered a permission request in time: tell the chat that was asked,
+/// and forget the request so a later `/approve` does not look like it worked.
+pub fn announce_expired(app: &tauri::AppHandle, tool: &str) {
+    let state = app.state::<GatewayState>();
+    *state.shared.pending_approval.lock() = None;
+    let chat = state
+        .shared
+        .in_flight
+        .lock()
+        .as_ref()
+        .and_then(|flight| flight.approval_chat.clone());
+    let (Some(chat), Some(gateway)) = (chat, state.shared.gateway.lock().clone()) else {
+        return;
+    };
+    let message = format!(
+        "The permission request for {tool} expired because nobody answered, so nothing was done. Ask again if you still want it."
+    );
+    tauri::async_runtime::spawn(async move { gateway.send(&chat, &message).await });
+}
+
 #[derive(Serialize)]
 pub struct JobView {
     id: String,
