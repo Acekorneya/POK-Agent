@@ -892,7 +892,13 @@ impl OpenAiCompatibleBrain {
     /// The models the provider itself reports; capability fields can be
     /// sparse (OpenCode returns only ids).
     async fn raw_model_info(&self) -> Result<Vec<ModelInfo>> {
-        let Some(server_root) = self.base_url.strip_suffix("/v1") else {
+        // A hosted catalog is never an LM Studio server: skip the probe, which
+        // would only spend part of the 2-second capability-discovery budget.
+        let Some(server_root) = self
+            .base_url
+            .strip_suffix("/v1")
+            .filter(|_| !self.is_nebius())
+        else {
             return self.standard_model_info().await;
         };
         let response = self
@@ -987,9 +993,21 @@ impl OpenAiCompatibleBrain {
             .is_some_and(|host| host.ends_with("openrouter.ai"))
     }
 
+    /// Nebius Token Factory lists only ids unless asked for `verbose`, which
+    /// adds the input modality, context window and supported features.
+    fn is_nebius(&self) -> bool {
+        self.host()
+            .is_some_and(|host| host.ends_with("tokenfactory.nebius.com"))
+    }
+
     async fn standard_model_info(&self) -> Result<Vec<ModelInfo>> {
+        let models_url = if self.is_nebius() {
+            format!("{}/models?verbose=true", self.base_url)
+        } else {
+            format!("{}/models", self.base_url)
+        };
         let response = self
-            .authorized(self.client.get(format!("{}/models", self.base_url)))
+            .authorized(self.client.get(models_url))
             .send()
             .await
             .map_err(provider_error)?;
@@ -1171,6 +1189,17 @@ impl Brain for OpenAiCompatibleBrain {
     }
 }
 
+/// Whether a modality string such as `text+image->text` accepts images as
+/// input. `None` when it does not have that `input->output` shape.
+fn modality_accepts_images(modality: &str) -> Option<bool> {
+    let (input, _output) = modality.split_once("->")?;
+    Some(
+        input
+            .split(['+', ',', '/'])
+            .any(|part| part.trim().eq_ignore_ascii_case("image")),
+    )
+}
+
 fn openai_model_info(model: &Value) -> Option<ModelInfo> {
     let id = model.get("id")?.as_str()?.to_owned();
     let (reasoning_efforts, reasoning_default) = reasoning_metadata(model);
@@ -1184,6 +1213,20 @@ fn openai_model_info(model: &Value) -> Option<ModelInfo> {
             parameters
                 .iter()
                 .any(|parameter| parameter.as_str() == Some(name))
+        })
+    };
+    // Nebius states the input as "text+image->text" and lists `tools` and
+    // `reasoning` under `supported_features`; both are absent elsewhere.
+    let modality_vision = model
+        .pointer("/architecture/modality")
+        .and_then(Value::as_str)
+        .and_then(modality_accepts_images);
+    let supported_features = model.get("supported_features").and_then(Value::as_array);
+    let supports_feature = |name: &str| {
+        supported_features.map(|features| {
+            features
+                .iter()
+                .any(|feature| feature.as_str() == Some(name))
         })
     };
     Some(ModelInfo {
@@ -1204,11 +1247,13 @@ fn openai_model_info(model: &Value) -> Option<ModelInfo> {
                         .iter()
                         .any(|modality| modality.as_str() == Some("image"))
                 })
-            }),
+            })
+            .or(modality_vision),
         tool_use: model
             .pointer("/capabilities/trained_for_tool_use")
             .and_then(Value::as_bool)
-            .or_else(|| supported_parameters.map(|_| supports_parameter("tools"))),
+            .or_else(|| supported_parameters.map(|_| supports_parameter("tools")))
+            .or_else(|| supports_feature("tools")),
         reasoning: model
             .pointer("/capabilities/reasoning")
             .and_then(Value::as_bool)
@@ -1218,7 +1263,8 @@ fn openai_model_info(model: &Value) -> Option<ModelInfo> {
                     .is_some_and(Value::is_object)
                     .then_some(true)
             })
-            .or_else(|| supported_parameters.map(|_| supports_parameter("reasoning"))),
+            .or_else(|| supported_parameters.map(|_| supports_parameter("reasoning")))
+            .or_else(|| supports_feature("reasoning")),
         supported_parameters: supported_parameters
             .into_iter()
             .flatten()
@@ -2572,6 +2618,72 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(vision.vision, Some(true));
+    }
+
+    #[test]
+    fn nebius_catalog_reports_vision_tools_and_reasoning() {
+        // The verbose Token Factory catalog: no `input_modalities`, the input
+        // is the left side of `architecture.modality`.
+        let model = |id: &str, modality: &str, features: Value| {
+            let mut value = json!({
+                "id": id,
+                "context_length": 262144,
+                "architecture": {"modality": modality, "tokenizer": "Other"},
+            });
+            if !features.is_null() {
+                value["supported_features"] = features;
+            }
+            openai_model_info(&value).unwrap()
+        };
+        let seeing = model(
+            "example/vl-model",
+            "text+image->text",
+            json!(["tools", "reasoning"]),
+        );
+        assert_eq!(seeing.vision, Some(true));
+        assert_eq!(seeing.tool_use, Some(true));
+        assert_eq!(seeing.reasoning, Some(true));
+        assert_eq!(seeing.context_length, Some(262_144));
+
+        let text_only = model("example/text-model", "text->text", json!(["json_mode"]));
+        assert_eq!(text_only.vision, Some(false), "text-only is a known no");
+        assert_eq!(text_only.tool_use, Some(false));
+        assert_eq!(text_only.reasoning, Some(false));
+
+        // No feature list at all means unknown, not unsupported.
+        let unlisted = model("example/other", "text+image->text", Value::Null);
+        assert_eq!(unlisted.vision, Some(true));
+        assert_eq!(unlisted.tool_use, None);
+        assert_eq!(unlisted.reasoning, None);
+
+        // An id-only entry (the non-verbose list) stays unknown too.
+        let bare = openai_model_info(&json!({"id": "example/bare"})).unwrap();
+        assert_eq!(
+            (bare.vision, bare.tool_use, bare.reasoning),
+            (None, None, None)
+        );
+    }
+
+    #[test]
+    fn modalities_are_read_from_the_input_side_only() {
+        assert_eq!(modality_accepts_images("text+image->text"), Some(true));
+        assert_eq!(
+            modality_accepts_images("Text+Image+Audio->Text"),
+            Some(true)
+        );
+        assert_eq!(modality_accepts_images("text->text"), Some(false));
+        // An image *output* model does not read images.
+        assert_eq!(modality_accepts_images("text->image"), Some(false));
+        assert_eq!(modality_accepts_images("text->embedding"), Some(false));
+        assert_eq!(modality_accepts_images("not a modality"), None);
+    }
+
+    #[test]
+    fn only_the_nebius_host_asks_for_the_verbose_catalog() {
+        let brain = |url: &str| OpenAiCompatibleBrain::new(url.into(), None).unwrap();
+        assert!(brain("https://api.tokenfactory.nebius.com/v1/").is_nebius());
+        assert!(!brain("https://api.openai.com/v1").is_nebius());
+        assert!(!brain("http://127.0.0.1:1234/v1").is_nebius());
     }
 
     #[test]
