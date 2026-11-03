@@ -212,6 +212,10 @@ enum Commands {
         /// (repeatable).
         #[arg(long = "file")]
         files: Vec<PathBuf>,
+        /// Read lines from standard input while the agent works and send each
+        /// one as guidance, like typing in the app's message box mid-task.
+        #[arg(long)]
+        guide_from_stdin: bool,
     },
     Sessions {
         #[command(subcommand)]
@@ -557,6 +561,7 @@ async fn run_cli() -> anyhow::Result<()> {
             session: session_id,
             images,
             files,
+            guide_from_stdin,
         } => {
             let conversation_store = ConversationStore::open(&config.data_dir)?;
             conversation_store.import_legacy_diagnostics(&config.diagnostics_dir)?;
@@ -740,6 +745,7 @@ async fn run_cli() -> anyhow::Result<()> {
                 command_manager: Arc::new(pok_ai_core::commands::CommandManager::new(artifact_dir)),
                 current_tool_call_id: Default::default(),
             };
+            let guidance_queue = context.user_guidance_queue.clone();
             let mut session = Session::new(
                 brain,
                 Arc::new(std::mem::take(&mut tools)),
@@ -763,6 +769,20 @@ async fn run_cli() -> anyhow::Result<()> {
                 .with_initial_look(config.initial_look)
                 .with_standing_instructions(config.standing_instructions.as_deref())
                 .with_observer(console_observer);
+            if guide_from_stdin {
+                // A plain thread: reading standard input blocks, and ends with it.
+                std::thread::spawn(move || {
+                    for line in std::io::stdin().lines() {
+                        let Ok(line) = line else {
+                            break;
+                        };
+                        let line = line.trim();
+                        if !line.is_empty() {
+                            guidance_queue.lock().push_back(line.to_owned());
+                        }
+                    }
+                });
+            }
             let images = images
                 .iter()
                 .map(|path| {

@@ -445,6 +445,21 @@ impl ConversationStore {
     }
 }
 
+/// `text` without its `<system-reminder>…</system-reminder>` blocks.
+fn without_system_reminders(text: &str) -> String {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(start) = rest.find("<system-reminder>") {
+        out.push_str(&rest[..start]);
+        match rest[start..].find("</system-reminder>") {
+            Some(end) => rest = &rest[start + end + "</system-reminder>".len()..],
+            None => return out.trim_end().to_owned(),
+        }
+    }
+    out.push_str(rest);
+    out.trim_end().to_owned()
+}
+
 fn display_events_for_message(
     sequence: u64,
     message: &BrainMessage,
@@ -464,6 +479,8 @@ fn display_events_for_message(
         })
         .collect::<Vec<_>>()
         .join("\n");
+    // Instructions to the model that ride inside a message are not the user's words.
+    let text = without_system_reminders(&text);
     // Text the model wrote alongside its tool calls came first when the turn
     // was streamed, so it comes first when the conversation is restored.
     let mut events = Vec::new();
@@ -604,6 +621,28 @@ pub fn truncate_messages_at(messages: &mut Vec<BrainMessage>, sequence: u64) -> 
         .unwrap_or(usize::MAX)
         .min(messages.len());
     messages.truncate(keep);
+    repair_truncated_tail(messages);
+    before.saturating_sub(messages.len())
+}
+
+/// Rewind to just before the message at `sequence`: that message and everything
+/// after it are removed, as if it had not been sent yet. Used when the user
+/// reverts to one of their own requests and takes its text back to edit and
+/// send again. Recall gathered for the removed request goes with it. Returns
+/// how many messages were removed.
+pub fn truncate_messages_before(messages: &mut Vec<BrainMessage>, sequence: u64) -> usize {
+    let before = messages.len();
+    let keep = usize::try_from(sequence)
+        .unwrap_or(usize::MAX)
+        .min(messages.len());
+    messages.truncate(keep);
+    repair_truncated_tail(messages);
+    before.saturating_sub(messages.len())
+}
+
+/// Leave no tool call without its result, no result without its call, and no
+/// note that was meant for a request that is gone at the end of `messages`.
+fn repair_truncated_tail(messages: &mut Vec<BrainMessage>) {
     loop {
         match messages.last() {
             Some(message) if message.role == "tool" => {
@@ -623,13 +662,17 @@ pub fn truncate_messages_at(messages: &mut Vec<BrainMessage>, sequence: u64) -> 
                 }
                 messages.pop();
             }
-            Some(message) if message.origin == MessageOrigin::SystemReminder => {
+            Some(message)
+                if matches!(
+                    message.origin,
+                    MessageOrigin::SystemReminder | MessageOrigin::RetrievedContext
+                ) =>
+            {
                 messages.pop();
             }
             _ => break,
         }
     }
-    before.saturating_sub(messages.len())
 }
 
 pub fn sanitized_persisted_messages(messages: &[BrainMessage]) -> Vec<BrainMessage> {
@@ -829,6 +872,72 @@ mod tests {
         assert_eq!(truncate_messages_at(&mut messages, 5), 2);
         assert_eq!(messages.len(), 6);
         assert_eq!(messages.last().unwrap().role, "user");
+    }
+
+    #[test]
+    fn instructions_inside_a_guidance_message_are_not_shown_as_the_users_words() {
+        let message = BrainMessage::text_with_origin(
+            "user",
+            "[User Guidance] Use the dark theme\n\n<system-reminder>Say you saw it.</system-reminder>",
+            MessageOrigin::UserGuidance,
+        );
+        let shown = display_events_for_message(4, &message);
+        assert_eq!(shown.len(), 1);
+        assert_eq!(shown[0].text, "[User Guidance] Use the dark theme");
+        assert_eq!(
+            without_system_reminders("a <system-reminder>b</system-reminder> c"),
+            "a  c"
+        );
+        assert_eq!(without_system_reminders("plain"), "plain");
+        assert_eq!(without_system_reminders("x <system-reminder>unclosed"), "x");
+    }
+
+    #[test]
+    fn reverting_to_a_request_removes_it_and_what_came_with_it() {
+        let recall = BrainMessage::text_with_origin(
+            "system",
+            "skills recalled for the second request",
+            MessageOrigin::RetrievedContext,
+        );
+        let base = || {
+            vec![
+                BrainMessage::text("system", "system"),
+                BrainMessage::text("user", "first request"),
+                assistant_with_tools(Some("Looking first."), "call-a"),
+                tool_result("call-a"),
+                BrainMessage::text("assistant", "First answer"),
+                recall.clone(),
+                BrainMessage::text("user", "second request"),
+                assistant_with_tools(None, "call-b"),
+                tool_result("call-b"),
+            ]
+        };
+
+        // The second request, its work and the recall gathered for it all go;
+        // the conversation ends with the first answer.
+        let mut messages = base();
+        assert_eq!(truncate_messages_before(&mut messages, 6), 4);
+        assert_eq!(messages.len(), 5);
+        assert_eq!(messages.last().unwrap().role, "assistant");
+        assert!(matches!(
+            &messages.last().unwrap().content[0],
+            MessageContent::Text { text } if text == "First answer"
+        ));
+
+        // The first request: only the system prompt is left.
+        let mut messages = base();
+        truncate_messages_before(&mut messages, 1);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].role, "system");
+
+        // Past the end of a finished conversation changes nothing; and the
+        // clicked message itself is not kept (a reply, by contrast, is).
+        let mut finished = base()[..5].to_vec();
+        assert_eq!(truncate_messages_before(&mut finished, 99), 0);
+        assert_eq!(finished.len(), 5);
+        let mut kept = base();
+        truncate_messages_at(&mut kept, 6);
+        assert_eq!(kept.len(), 7, "reverting to a reply still keeps the reply");
     }
 
     #[test]

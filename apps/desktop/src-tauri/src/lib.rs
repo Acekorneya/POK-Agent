@@ -1836,9 +1836,10 @@ fn fork_title(original: &str) -> String {
     format!("{original} · fork").chars().take(80).collect()
 }
 
-/// Truncate the stored conversation at the clicked message. `fork` writes the
-/// result as a new conversation and returns it; otherwise the same
-/// conversation is rewritten in place. The live session is dropped so the
+/// Truncate the stored conversation at the clicked message. Reverting to the
+/// user's own request also removes that request (it returns to the message
+/// box); a fork keeps it. `fork` writes the result as a new conversation and
+/// returns it; otherwise the same conversation is rewritten in place. The live session is dropped so the
 /// next prompt rebuilds it from the truncated history.
 async fn rewrite_conversation(
     session_id: Option<Uuid>,
@@ -1884,7 +1885,14 @@ async fn rewrite_conversation(
             "that message is not part of the stored conversation yet; finish the turn and try again"
                 .to_string()
         })?;
-    pok_ai_core::conversation_store::truncate_messages_at(&mut snapshot.messages, sequence);
+    if mode == RewriteMode::Revert && anchor.kind == "prompt" {
+        // Going back to one of the user's own requests takes it out of the
+        // conversation too: the dashboard puts its text back in the box, so it
+        // can be edited and sent again without the model seeing it twice.
+        pok_ai_core::conversation_store::truncate_messages_before(&mut snapshot.messages, sequence);
+    } else {
+        pok_ai_core::conversation_store::truncate_messages_at(&mut snapshot.messages, sequence);
+    }
     snapshot.state = reset_conversation_state(&snapshot.state);
     let now = chrono::Utc::now().to_rfc3339();
     snapshot.summary.updated_at = now.clone();

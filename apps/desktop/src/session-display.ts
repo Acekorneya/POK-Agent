@@ -15,6 +15,8 @@ export type ChatMessage = {
   activitySwarm?: SwarmRunState;
   activityAttempts?: number;
   durationMs?: number;
+  /** A message sent while the agent was working: received and waiting, or read by the agent. */
+  guidanceState?: "queued" | "read";
   /** Images the user attached to a prompt (PNG data URLs). */
   images?: string[];
   /** Paths of files or folders the user attached to a prompt. */

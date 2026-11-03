@@ -43,6 +43,7 @@ touches one focused file. Child modules share their parent's imports
 | `context_window.rs` | Compaction and summaries, image pruning, request shaping for strict providers, provider rejection handling |
 | `tool_results.rs` | Bounded tool-result projections, tool-call pairing, fresh-evidence and artifact checks |
 | `model_output.rs` | Recovering malformed or XML-style tool calls, classifying each turn's payload |
+| `repetition.rs` | Loop guard on the words a model streams: share of the most common word, of repeated phrases and of different words over the latest 160 words; a loop is cut off, discarded and the model is told the percentages (third time: the tools are taken away, then the run stops) |
 | `intent.rs` | Classifying the request: apps, URLs, commits, live-information, desktop, visual or artifact outcomes |
 | `curation.rs` | Post-turn memory curation and learning procedures and helper tools from verified workflows; one general lesson from a run that did not succeed |
 | `skill_replay.rs` | Direct skill execution: System 1 replays a trusted skill's whole motor program for the same task before the planner's first call |

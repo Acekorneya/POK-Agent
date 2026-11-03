@@ -20,7 +20,12 @@ pub mod sidecar;
 pub mod telegram;
 pub mod whatsapp;
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, VecDeque},
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
 use chrono::{Local, Utc};
@@ -108,9 +113,14 @@ pub trait Channel: Send + Sync {
 /// The agent behind the gateway.
 #[async_trait]
 pub trait GatewayHost: Send + Sync {
-    /// Start a task. `Err` carries a sentence for the sender, for example
-    /// that the agent is busy.
-    async fn submit(&self, task: GatewayTask) -> std::result::Result<(), String>;
+    /// Start a task. `Err` says why not, in a sentence for the sender.
+    async fn submit(&self, task: GatewayTask) -> std::result::Result<(), SubmitError>;
+    /// Give words to the task that is running for `chat`, as the person would
+    /// by typing at the keyboard while it works. `Some` is what to tell the
+    /// sender (it was passed on); `None` when nothing is running for that chat.
+    async fn guide(&self, _chat: &str, _text: &str) -> Option<String> {
+        None
+    }
     async fn stop(&self) -> String;
     async fn new_conversation(&self) -> String;
     async fn status(&self) -> String;
@@ -119,6 +129,30 @@ pub trait GatewayHost: Send + Sync {
     /// Pairing requests or jobs changed; the settings page should refresh.
     fn changed(&self) {}
 }
+
+/// Why the host did not start a task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubmitError {
+    /// Another task is running. A message with pictures or files is kept and
+    /// started when that one ends; anything else is told to try again.
+    Busy(String),
+    /// Any other reason, in a sentence for the sender.
+    Failed(String),
+}
+
+impl SubmitError {
+    pub fn message(&self) -> &str {
+        match self {
+            Self::Busy(message) | Self::Failed(message) => message,
+        }
+    }
+}
+
+/// How many messages with attachments are kept while the agent is busy, and
+/// for how long. A photo sent a moment after the words that go with it must
+/// not be lost just because the words already started a task.
+const MAX_HELD: usize = 3;
+const HELD_FOR: Duration = Duration::from_secs(30 * 60);
 
 const FRIEND_HELP: &str = "POK-Agent is listening. Send a request and it becomes a task. Pictures and files you attach go with it. Permission requests go to the owner, who also controls the commands.";
 
@@ -189,6 +223,9 @@ pub struct Gateway {
     text_window: Duration,
     media_window: Duration,
     batches: Mutex<HashMap<String, Batch>>,
+    /// Tasks with attachments that arrived while the agent was busy, oldest
+    /// first; see [`Gateway::start_held`].
+    held: Mutex<VecDeque<(Instant, GatewayTask)>>,
 }
 
 struct Batch {
@@ -220,6 +257,7 @@ impl Gateway {
             text_window: TEXT_WINDOW,
             media_window: MEDIA_WINDOW,
             batches: Mutex::new(HashMap::new()),
+            held: Mutex::new(VecDeque::new()),
         }
     }
 
@@ -430,7 +468,14 @@ impl Gateway {
             Command::Help => HELP.to_owned(),
             Command::WhoAmI => format!("You are {name}. This chat is {chat}."),
             Command::Status => self.host.status().await,
-            Command::Stop => self.host.stop().await,
+            Command::Stop => {
+                let dropped = std::mem::take(&mut *self.held.lock()).len();
+                let mut reply = self.host.stop().await;
+                if dropped > 0 {
+                    reply.push_str(" I dropped what I was holding for later too.");
+                }
+                reply
+            }
             Command::New => self.host.new_conversation().await,
             Command::Approve => self.host.approve(true).await,
             Command::Deny => self.host.approve(false).await,
@@ -557,12 +602,96 @@ impl Gateway {
             files: prepared.files,
             approval_chat,
         };
-        match self.host.submit(task).await {
+        match self.host.submit(task.clone()).await {
             Ok(()) => {
                 self.send_typing(chat).await;
                 self.send(chat, &acknowledgement).await;
             }
-            Err(reason) => self.send(chat, &reason).await,
+            // Words sent while this chat's own task runs are a message to it.
+            Err(SubmitError::Busy(_))
+                if task.images.is_empty()
+                    && task.files.is_empty()
+                    && matches!(task.origin, TaskOrigin::Message { .. })
+                    && self.guided(&task.chat, &task.prompt).await =>
+            {
+                tracing::debug!("gateway message passed to the running task as guidance");
+            }
+            Err(SubmitError::Busy(reason)) if self.hold(task) => {
+                self.send(
+                    chat,
+                    &format!(
+                        "{reason}\n\nI kept what you attached and will look at it as soon as I am done. Send /stop to drop it."
+                    ),
+                )
+                .await;
+            }
+            Err(error) => self.send(chat, error.message()).await,
+        }
+    }
+
+    /// Pass words on to the running task and tell the sender so. `false` when
+    /// the host has no task of this chat to give them to.
+    async fn guided(&self, chat: &str, text: &str) -> bool {
+        match self.host.guide(chat, text).await {
+            Some(reply) => {
+                self.send(chat, &reply).await;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Keep a task that carries pictures or files until the agent is free.
+    /// `false` when it has no attachments (a plain message is told to try
+    /// again) or the queue is full.
+    fn hold(&self, task: GatewayTask) -> bool {
+        if task.images.is_empty() && task.files.is_empty() {
+            return false;
+        }
+        let mut held = self.held.lock();
+        held.retain(|(since, _)| since.elapsed() < HELD_FOR);
+        if held.len() >= MAX_HELD {
+            return false;
+        }
+        held.push_back((Instant::now(), task));
+        true
+    }
+
+    /// Start the oldest task that was kept while the agent was busy. The host
+    /// calls this each time a task ends.
+    pub async fn start_held(self: &Arc<Self>) {
+        loop {
+            let next = {
+                let mut held = self.held.lock();
+                held.retain(|(since, _)| since.elapsed() < HELD_FOR);
+                held.pop_front()
+            };
+            let Some((since, task)) = next else {
+                return;
+            };
+            let chat = task.chat.clone();
+            let what = if task.images.is_empty() {
+                "file"
+            } else {
+                "picture"
+            };
+            match self.host.submit(task.clone()).await {
+                Ok(()) => {
+                    self.send_typing(&chat).await;
+                    self.send(
+                        &chat,
+                        &format!("Now looking at the {what} you sent while I was busy."),
+                    )
+                    .await;
+                    return;
+                }
+                // Something else got in first: wait for the next task to end.
+                Err(SubmitError::Busy(_)) => {
+                    self.held.lock().push_front((since, task));
+                    return;
+                }
+                Err(error) => self.send(&chat, error.message()).await,
+            }
         }
     }
 

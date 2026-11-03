@@ -59,6 +59,7 @@ mod fast_actions;
 mod intent;
 mod model_output;
 mod motor_program;
+mod repetition;
 mod run_loop;
 mod skill_replay;
 mod tool_results;
@@ -73,6 +74,7 @@ use fast_actions::*;
 use intent::*;
 use model_output::*;
 use motor_program::*;
+use repetition::*;
 use skill_replay::*;
 use tool_results::*;
 
@@ -1127,7 +1129,8 @@ pub(crate) fn attached_files_block(paths: &[std::path::PathBuf]) -> String {
         .join("\n");
     format!(
         "\n\n<attached_files>\nThe user attached these; they are readable even outside the workspace:\n{lines}\n\
-         Open them to answer: read text files directly; for other formats (documents, spreadsheets, archives, media) \
+         Pictures shown to you directly in this message are already in front of you: look at those, do not open the saved copies in a viewer. \
+         Open the rest to answer: read text files directly; for other formats (documents, spreadsheets, archives, media) \
          write a small helper script or run a command that extracts the content, rather than guessing from the name.\n</attached_files>"
     )
 }

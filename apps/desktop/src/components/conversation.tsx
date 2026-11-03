@@ -120,7 +120,11 @@ function ConversationMessageView({ message: msg }: { message: ChatMessage }) {
         <MessageTools msg={msg} />
       </div>;
     case "guidance":
-      return <div className="console-line line-guidance"><small>Guidance</small>{msg.text}</div>;
+      return <div className="console-line line-guidance"><small>Guidance</small>{msg.text}
+        {msg.guidanceState && <span className="guidance-state" role="status">
+          {msg.guidanceState === "queued" ? "Received · the agent reads it at its next step and will answer or adjust" : "Read by the agent"}
+        </span>}
+      </div>;
     case "reasoning":
       return <details className="reasoning-disclosure"><summary>Reasoning <span>{msg.text.trim().split("\n").filter(Boolean).at(-1)?.slice(0, 110)}</span></summary><MarkdownMessage text={msg.text} /></details>;
     case "activity": {

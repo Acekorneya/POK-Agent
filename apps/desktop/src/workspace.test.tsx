@@ -107,10 +107,12 @@ describe("workspace presentation", () => {
     expect(screen.getByText("Drop files, folders or images to attach them")).not.toBeNull();
     fireEvent.drop(panel, { dataTransfer: { types: ["Files"], files: [png] } });
     expect(await screen.findByRole("img", { name: "chart.png" })).not.toBeNull();
-    // Images alone can be sent; the question defaults to describing them.
+    // Images alone can be sent. With no words the agent is told so and to react like a person:
+    // look, carry on if it belongs to the conversation, otherwise say what it sees and ask.
     await userEvent.click(screen.getByRole("button", { name: "Run task" }));
     await waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("run_prompt", expect.objectContaining({
-      prompt: "What is in this image?", images: [expect.stringMatching(/^data:image\/png;base64,/)],
+      prompt: expect.stringMatching(/^\[Sent a picture with no message\. Look at it\..*ask what they would like done with it\./),
+      images: [expect.stringMatching(/^data:image\/png;base64,/)],
     })));
     expect(screen.getByRole("img", { name: "Attached image 1" })).not.toBeNull();
     expect(screen.queryByRole("img", { name: "chart.png" })).toBeNull();
@@ -236,6 +238,71 @@ describe("workspace presentation", () => {
       sessionId: "saved",
       anchor: { kind: "response", ordinal: 0, text: "Earlier answer", sequence: 2 },
     }));
+  });
+  it("reverting to your own message takes it back into the message box to edit", async () => {
+    const previous = mock.invoke.getMockImplementation()!;
+    const user = userEvent.setup();
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    mock.invoke.mockImplementation((name, args) => name === "revert_conversation"
+      // The backend removed the message and everything after it.
+      ? Promise.resolve({
+        summary: { ...conversation, id: "saved" }, messages: [],
+        next_before_sequence: null, has_more: false, decision_router_enabled: false, decision_router_backend: "off", decision_activity: [],
+      })
+      : previous(name, args));
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: /Explore the project/ }));
+    const question = await screen.findByText("Earlier question");
+    const row = question.closest(".console-line") as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: "Revert to this message" }));
+    await waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("revert_conversation", {
+      sessionId: "saved",
+      anchor: { kind: "prompt", ordinal: 0, text: "Earlier question", sequence: 1 },
+    }));
+    // It says the message comes back, and it does: in the box, ready to edit.
+    expect(confirm.mock.calls.at(-1)?.[0]).toContain("goes back into the box");
+    const box = screen.getByRole("textbox", { name: "Message the agent" }) as HTMLTextAreaElement;
+    await waitFor(() => expect(box.value).toBe("Earlier question"));
+    await waitFor(() => expect(document.activeElement).toBe(box));
+    expect(screen.queryByText("Earlier answer")).toBeNull();
+  });
+  it("puts back only the words that were typed, not the lists the app added", async () => {
+    const previous = mock.invoke.getMockImplementation()!;
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const stored = "Telegram: what is this? find where to buy it\n\n<attached_files>\nThe user attached these:\n- C:\\data\\inbox\\t1\\photo.jpg (.jpg file, 96.0 KB)\n</attached_files>";
+    mock.invoke.mockImplementation((name, args) => name === "resume_conversation"
+      ? Promise.resolve({ summary: conversation, messages: [
+        { sequence: 1, subsequence: 0, sender: "user", kind: "prompt", text: stored },
+        { sequence: 2, subsequence: 0, sender: "agent", kind: "response", text: "Earlier answer" },
+      ], next_before_sequence: null, has_more: false, decision_router_enabled: false, decision_activity: [] })
+      : name === "revert_conversation"
+        ? Promise.resolve({ summary: { ...conversation, id: "saved" }, messages: [], next_before_sequence: null, has_more: false, decision_router_enabled: false, decision_router_backend: "off", decision_activity: [] })
+        : previous(name, args));
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: /Explore the project/ }));
+    const row = (await screen.findByText(/what is this\? find where to buy it/)).closest(".console-line") as HTMLElement;
+    await user.click(within(row).getByRole("button", { name: "Revert to this message" }));
+    const box = screen.getByRole("textbox", { name: "Message the agent" }) as HTMLTextAreaElement;
+    await waitFor(() => expect(box.value).toBe("what is this? find where to buy it"));
+  });
+  it("reverting to a reply keeps the box as it was", async () => {
+    const previous = mock.invoke.getMockImplementation()!;
+    const user = userEvent.setup();
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    mock.invoke.mockImplementation((name, args) => name === "revert_conversation"
+      ? Promise.resolve({
+        summary: { ...conversation, id: "saved" },
+        messages: [{ sequence: 1, subsequence: 0, sender: "user", kind: "prompt", text: "Earlier question" }],
+        next_before_sequence: null, has_more: false, decision_router_enabled: false, decision_router_backend: "off", decision_activity: [],
+      })
+      : previous(name, args));
+    await renderApp();
+    await user.click(screen.getByRole("button", { name: /Explore the project/ }));
+    const answer = await screen.findByText("Earlier answer");
+    await user.click(within(answer.closest(".console-line") as HTMLElement).getByRole("button", { name: "Revert to this message" }));
+    await waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("revert_conversation", expect.anything()));
+    expect((screen.getByRole("textbox", { name: "Message the agent" }) as HTMLTextAreaElement).value).toBe("");
   });
   it("restores tool activity in its original chronological position", async () => {
     const previous = mock.invoke.getMockImplementation()!;
@@ -715,6 +782,14 @@ describe("workspace presentation", () => {
     fireEvent.change(input, { target: { value: "Start with the README" } });
     await userEvent.click(screen.getByRole("button", { name: "Send Guidance" }));
     expect(mock.invoke).toHaveBeenCalledWith("send_guidance", { message: "Start with the README" });
+    // The message is acknowledged at once, then marked read when the agent takes it in.
+    expect(screen.getByText(/Received · the agent reads it at its next step/)).toBeTruthy();
+    emit({ type: "guidance_injected", text: "Start with the README" });
+    expect(await screen.findByText("Read by the agent")).toBeTruthy();
+    expect(screen.queryByText(/Received · the agent reads it/)).toBeNull();
+    // A message that came from elsewhere (the phone) shows up already read.
+    emit({ type: "guidance_injected", text: "use the dark theme" });
+    expect(await screen.findByText("use the dark theme")).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "Pause agent" }));
     expect(mock.invoke).toHaveBeenCalledWith("pause_agent");
     emit({ type: "paused" });

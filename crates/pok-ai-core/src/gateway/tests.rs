@@ -164,6 +164,9 @@ impl Channel for FakeChannel {
 struct MockHost {
     tasks: Mutex<Vec<GatewayTask>>,
     busy: AtomicBool,
+    /// The chat whose task is running; words from it are passed on as guidance.
+    steerable_chat: Mutex<Option<String>>,
+    guidance: Mutex<Vec<(String, String)>>,
     stops: AtomicUsize,
     approvals: Mutex<Vec<bool>>,
     changes: AtomicUsize,
@@ -171,12 +174,22 @@ struct MockHost {
 
 #[async_trait]
 impl GatewayHost for MockHost {
-    async fn submit(&self, task: GatewayTask) -> std::result::Result<(), String> {
+    async fn submit(&self, task: GatewayTask) -> std::result::Result<(), SubmitError> {
         if self.busy.load(Ordering::SeqCst) {
-            return Err("Busy with another task.".into());
+            return Err(SubmitError::Busy("Busy with another task.".into()));
         }
         self.tasks.lock().unwrap().push(task);
         Ok(())
+    }
+    async fn guide(&self, chat: &str, text: &str) -> Option<String> {
+        if self.steerable_chat.lock().unwrap().as_deref() != Some(chat) {
+            return None;
+        }
+        self.guidance
+            .lock()
+            .unwrap()
+            .push((chat.to_owned(), text.to_owned()));
+        Some("Got it, passing that on.".into())
     }
     async fn stop(&self) -> String {
         self.stops.fetch_add(1, Ordering::SeqCst);
@@ -389,6 +402,158 @@ async fn a_busy_agent_tells_the_sender_instead_of_queueing() {
     );
 }
 
+/// The words started a task a moment before the photo that went with them
+/// arrived. The photo used to be refused ("busy") and lost, so the model never
+/// saw it and answered from the PC screen instead.
+#[tokio::test]
+async fn a_photo_that_arrives_while_busy_is_kept_and_looked_at_next() {
+    let fixture = fixture().await;
+    fixture.approve("telegram:5", "telegram:5", "Sam");
+    fixture
+        .fake
+        .add_file("late", "photos/file_9.jpg", jpeg_bytes(64, 48));
+    fixture.host.busy.store(true, Ordering::SeqCst);
+
+    fixture.update(photo_message(1, 5, "late", None)).await;
+    assert!(fixture.host.tasks.lock().unwrap().is_empty());
+    let reply = fixture.fake.sent().last().unwrap().1.clone();
+    assert!(reply.contains("kept what you attached"), "{reply}");
+
+    // Still busy: nothing starts, and the photo stays kept.
+    fixture.gateway.start_held().await;
+    assert!(fixture.host.tasks.lock().unwrap().is_empty());
+
+    // The running task ends: the photo is the next task, with its picture.
+    fixture.host.busy.store(false, Ordering::SeqCst);
+    fixture.gateway.start_held().await;
+    {
+        let tasks = fixture.host.tasks.lock().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].images.len(), 1, "the picture came along");
+        assert!(
+            tasks[0]
+                .prompt
+                .starts_with("[Sent a picture with no message.")
+        );
+        assert_eq!(tasks[0].chat, "telegram:5");
+    }
+    assert!(
+        fixture
+            .fake
+            .sent()
+            .last()
+            .unwrap()
+            .1
+            .contains("Now looking at the picture you sent while I was busy")
+    );
+    // Started once: nothing is left to start.
+    fixture.gateway.start_held().await;
+    assert_eq!(fixture.host.tasks.lock().unwrap().len(), 1);
+}
+
+/// Words sent while the task for this very chat is running are a message to
+/// that task: passed on, and the sender is told right away, not "busy".
+#[tokio::test]
+async fn words_sent_during_your_own_task_reach_it_and_are_acknowledged() {
+    let fixture = fixture().await;
+    fixture.approve("telegram:5", "telegram:5", "Sam");
+    fixture.approve("telegram:6", "telegram:6", "Alex");
+    fixture.host.busy.store(true, Ordering::SeqCst);
+    *fixture.host.steerable_chat.lock().unwrap() = Some("telegram:5".into());
+
+    fixture
+        .update(private_message(1, 5, "actually use the dark theme"))
+        .await;
+    assert!(fixture.host.tasks.lock().unwrap().is_empty());
+    assert_eq!(
+        fixture.host.guidance.lock().unwrap().clone(),
+        vec![(
+            "telegram:5".to_owned(),
+            "actually use the dark theme".to_owned()
+        )]
+    );
+    assert_eq!(
+        fixture.fake.sent().last().unwrap().1,
+        "Got it, passing that on."
+    );
+
+    // Someone else's chat cannot steer it: they are told it is busy.
+    fixture.update(private_message(2, 6, "do my thing")).await;
+    assert_eq!(fixture.host.guidance.lock().unwrap().len(), 1);
+    assert_eq!(
+        fixture.fake.sent().last().unwrap().1,
+        "Busy with another task."
+    );
+}
+
+/// A picture cannot be passed to a running task as words: it is kept for the
+/// next one, even from the chat that could steer.
+#[tokio::test]
+async fn a_picture_sent_during_your_own_task_is_kept_not_passed_on_as_words() {
+    let fixture = fixture().await;
+    fixture.approve("telegram:5", "telegram:5", "Sam");
+    fixture
+        .fake
+        .add_file("late", "photos/file_7.jpg", jpeg_bytes(64, 48));
+    fixture.host.busy.store(true, Ordering::SeqCst);
+    *fixture.host.steerable_chat.lock().unwrap() = Some("telegram:5".into());
+    fixture.update(photo_message(1, 5, "late", None)).await;
+    assert!(fixture.host.guidance.lock().unwrap().is_empty());
+    assert_eq!(fixture.gateway.held.lock().len(), 1);
+}
+
+#[tokio::test]
+async fn plain_words_while_busy_are_still_just_told_to_wait() {
+    let fixture = fixture().await;
+    fixture.approve("telegram:5", "telegram:5", "Sam");
+    fixture.host.busy.store(true, Ordering::SeqCst);
+    fixture.update(private_message(1, 5, "do it")).await;
+    assert_eq!(
+        fixture.fake.sent().last().unwrap().1,
+        "Busy with another task."
+    );
+    fixture.host.busy.store(false, Ordering::SeqCst);
+    fixture.gateway.start_held().await;
+    assert!(fixture.host.tasks.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn only_a_few_pictures_are_kept_and_stop_drops_them() {
+    let fixture = fixture().await;
+    fixture.approve("telegram:5", "telegram:5", "Sam");
+    fixture
+        .fake
+        .add_file("p", "photos/file_8.jpg", jpeg_bytes(64, 48));
+    fixture.host.busy.store(true, Ordering::SeqCst);
+    for update_id in 1..=5 {
+        fixture.update(photo_message(update_id, 5, "p", None)).await;
+    }
+    assert_eq!(
+        fixture.gateway.held.lock().len(),
+        3,
+        "the fourth and fifth were told to wait"
+    );
+    assert_eq!(
+        fixture.fake.sent().last().unwrap().1,
+        "Busy with another task."
+    );
+
+    fixture.update(private_message(6, 5, "/stop")).await;
+    assert!(fixture.gateway.held.lock().is_empty());
+    assert!(
+        fixture
+            .fake
+            .sent()
+            .last()
+            .unwrap()
+            .1
+            .contains("dropped what I was holding")
+    );
+    fixture.host.busy.store(false, Ordering::SeqCst);
+    fixture.gateway.start_held().await;
+    assert!(fixture.host.tasks.lock().unwrap().is_empty());
+}
+
 #[tokio::test]
 async fn groups_bots_and_messages_without_content_are_ignored() {
     let fixture = fixture().await;
@@ -590,7 +755,7 @@ async fn a_photo_with_a_caption_reaches_the_task_as_a_png_for_the_model() {
 }
 
 #[tokio::test]
-async fn a_picture_without_words_becomes_a_default_question() {
+async fn a_picture_without_words_is_handed_over_like_one_given_to_a_person() {
     let fixture = fixture().await;
     fixture.approve("telegram:5", "telegram:5", "Sam");
     fixture
@@ -598,7 +763,13 @@ async fn a_picture_without_words_becomes_a_default_question() {
         .add_file("only", "photos/file_2.jpg", jpeg_bytes(64, 48));
     fixture.update(photo_message(1, 5, "only", None)).await;
     let tasks = fixture.host.tasks.lock().unwrap();
-    assert_eq!(tasks[0].prompt, "What is in this picture?");
+    assert!(
+        tasks[0]
+            .prompt
+            .starts_with("[Sent a picture with no message. Look at it."),
+        "{}",
+        tasks[0].prompt
+    );
 }
 
 #[tokio::test]

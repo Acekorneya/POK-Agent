@@ -3063,3 +3063,51 @@ fn loading_indicators_are_recognised_by_role_or_name() {
         rect
     )));
 }
+
+#[test]
+fn a_plan_whose_steps_arrive_as_a_json_string_is_read() {
+    // Some small models send the list as a string: a type error on every try.
+    let mut args = json!({
+        "status": "in_progress",
+        "steps": "[{\"id\": \"1\", \"content\": \"Look it up\", \"status\": \"in_progress\"}]"
+    });
+    unwrap_stringified_steps(&mut args);
+    assert!(args["steps"].is_array(), "{args}");
+    assert_eq!(args["steps"][0]["content"], "Look it up");
+    let parsed: UpdateTaskPlanArgs = serde_json::from_value(args).unwrap();
+    assert_eq!(parsed.steps.len(), 1);
+    // Anything else is left as it was.
+    let mut other = json!({"steps": "not json", "status": "completed"});
+    unwrap_stringified_steps(&mut other);
+    assert_eq!(other["steps"], "not json");
+    let mut list = json!({"steps": [{"id": "1", "content": "x", "status": "pending"}]});
+    let before = list.clone();
+    unwrap_stringified_steps(&mut list);
+    assert_eq!(list, before);
+}
+
+/// The live Nemotron-3.5-Lightning call that failed every time: a string, with
+/// its own field names.
+#[test]
+fn a_plan_in_the_models_own_field_names_is_read() {
+    let mut args = json!({
+        "status": "in_progress",
+        "steps": "[{\"step\": 1, \"action\": \"Verify the event date\", \"completed\": true}, {\"step\": 2, \"action\": \"Answer\", \"completed\": false}]"
+    });
+    normalize_plan_arguments(&mut args);
+    let parsed: UpdateTaskPlanArgs = serde_json::from_value(args).unwrap();
+    assert_eq!(parsed.steps.len(), 2);
+    assert_eq!(parsed.steps[0].id, "1");
+    assert_eq!(parsed.steps[0].content, "Verify the event date");
+    assert_eq!(parsed.steps[0].status, TaskItemStatus::Completed);
+    assert_eq!(parsed.steps[1].status, TaskItemStatus::Pending);
+
+    // A correct plan is left exactly as it was.
+    let mut correct = json!({"steps": [
+        {"id": "a", "content": "Look", "status": "in_progress"},
+        {"id": "b", "description": "Report", "status": "pending"}
+    ]});
+    let before = correct.clone();
+    normalize_plan_arguments(&mut correct);
+    assert_eq!(correct, before);
+}

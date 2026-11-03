@@ -149,7 +149,11 @@ converted, phone rotation is applied, and large images are scaled to 1568 px), s
 can read it: Nebius, OpenAI, Anthropic, Gemini, OpenRouter, or a local model. Documents are saved in
 the gateway inbox and the agent may read them; an album sent together becomes one task. If the
 selected model cannot see images, the picture is kept as a file and the agent says so instead of the
-task failing. Voice notes and video are saved, but cannot be transcribed or watched yet. Files are
+task failing. A picture or file sent with no words is handled the way a person would: the agent
+looks at it, carries on if it plainly belongs to what you were just talking about, and otherwise
+says what it sees and asks what you want done. A picture that arrives while another task is running
+is kept (up to three, for 30 minutes) and looked at as soon as that task ends; `/stop` drops them.
+Voice notes and video are saved, but cannot be transcribed or watched yet. Files are
 downloaded only for people you approved, up to 20 MB each, and are deleted from the inbox after a
 week.
 
@@ -763,7 +767,13 @@ without the review.
 
 The desktop presents messages and compact live tool steps in one conversation. Expand a step
 to inspect command output, file changes, or results; reasoning and the task plan also expand on
-demand. The composer supports guidance during a run, pause/resume, and emergency stop. Scrolling
+demand. The composer supports guidance during a run, pause/resume, and emergency stop. A message
+sent while the agent works shows at once as received, changes to "Read by the agent" when it takes
+it in, and the agent is told to say in one sentence that it saw it and what happens next (switching
+now, after this step, or the answer if it was only a question). Messages from the phone chat that
+started the task are passed on the same way. **Revert** on one of your own messages takes it out of
+the conversation, with everything after it, and puts its words back in the message box to edit and
+send again; on a reply it keeps the reply. Scrolling
 back stops automatic following; **Jump to latest** returns to the live output. The sidebar searches
 the latest 50 conversations, grouped by workspace. Restored conversations show messages; historical
 tool activity remains in session diagnostics.

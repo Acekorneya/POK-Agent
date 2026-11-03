@@ -60,6 +60,16 @@ type DecisionRouterStatus = {
   training_log?: boolean;
   training_dir?: string;
 };
+/** What the agent is told when pictures or files arrive without a word: look first, carry on if they belong to the conversation, otherwise say what they are and ask. Same wording as the phone gateway. */
+function noMessageRequest(images: number, files: number): string {
+  const total = images + files;
+  const them = total === 1 ? "it" : "them";
+  const plain = total === 1 ? "it plainly goes" : "they plainly go";
+  const what = files === 0 ? (images === 1 ? "a picture" : `${images} pictures`)
+    : images === 0 ? (files === 1 ? "a file" : `${files} files`)
+    : `${total} attachments`;
+  return `[Sent ${what} with no message. Look at ${them}. If ${plain} with what we were just talking about, carry on from there. Otherwise tell them briefly what you see and ask what they would like done with ${them}. Do not act on ${them} before they answer.]`;
+}
 type WhatsAppState = "off" | "connecting" | "waiting_for_scan" | "connected" | "logged_out" | "failed";
 type WhatsAppView = {
   enabled: boolean; mode: "self_chat" | "bot" | "friends"; call_name: string; owner_needs_call: boolean;
@@ -445,6 +455,15 @@ function restoredChatMessage(message: ConversationHistoryMessage, timestamp: str
   };
 }
 
+
+/** What goes back into the message box when the user takes a sent message back to edit it: their own words, without the lists the app adds (attached files, the note for a picture sent alone) or the "Telegram: " label of a phone message. */
+function textForComposer(text: string): string {
+  let words = text.replace(/\s*<attached_files>[\s\S]*?<\/attached_files>\s*$/, "").trim();
+  if (/^\[Sent [^\]]* with no message\.[\s\S]*\]$/.test(words)) return "";
+  const label = new RegExp(`^(?:${Object.values(REMOTE_SOURCE_NAMES).join("|")}(?: · [^:]+)?): `);
+  words = words.replace(label, "");
+  return words.replace(/\n\n\[Attachment notes:[\s\S]*\]$/, "").trim();
+}
 
 /** How a clicked feed message maps back to the stored conversation: message
  * kind, occurrence of the exact text among that kind, and the text itself.
@@ -2858,18 +2877,30 @@ export function App() {
           break;
         case "guidance_injected":
           setMessages((prev) => {
+            // The agent has now read what is waiting: the messages sent from this
+            // window change from "received" to "read". Words that came another way
+            // (from the phone) appear now, already read.
+            const delivered = String(payload.text ?? "");
+            let matched = false;
+            const next = prev.map((m) => {
+              if (m.type === "guidance" && m.guidanceState === "queued" && delivered.includes(m.text)) {
+                matched = true;
+                return { ...m, guidanceState: "read" as const };
+              }
+              return m;
+            });
+            if (matched) return next;
             const lastUserMsg = [...prev].reverse().find(m => m.sender === "user" && m.type === "guidance");
-            if (lastUserMsg && lastUserMsg.text === payload.text) {
-              return prev;
-            }
+            if (lastUserMsg && lastUserMsg.text === delivered) return prev;
             return [
-              ...prev,
+              ...next,
               {
                 id: 'guidance-' + Date.now(),
                 sender: "user",
                 type: "guidance",
-                text: payload.text ?? "",
-                timestamp: new Date()
+                text: delivered,
+                timestamp: new Date(),
+                guidanceState: "read" as const
               }
             ];
           });
@@ -3178,7 +3209,9 @@ export function App() {
           sender: "user",
           type: "guidance",
           text: message,
-          timestamp: new Date()
+          timestamp: new Date(),
+          // Shown at once, so the message never looks ignored while a long step finishes.
+          guidanceState: "queued"
         }
       ]);
       await invoke("send_guidance", { message });
@@ -3203,8 +3236,7 @@ export function App() {
     setAgentFrame(null);
     emergencyStopRequested.current = false;
     const currentPrompt = remote ? remote.prompt + remoteNote : prompt.trim() ? prompt
-      : files.length > 0 ? (files.length + images.length > 1 ? "Look at these and tell me what they contain." : "Look at this and tell me what it contains.")
-      : images.length > 1 ? "What is in these images?" : "What is in this image?";
+      : noMessageRequest(images.length, files.length);
     if (!remote) attachments.clear();
     setCurrentTurn(0);
     setLiveActivity({ phase: "starting", label: "Starting the task", startedAt: Date.now() });
@@ -3531,7 +3563,10 @@ export function App() {
     if (busy || messageActionPending.current) return;
     const anchor = messageAnchor(message, messages);
     if (!anchor) return;
-    if (kind === "revert" && !window.confirm("Erase everything after this message from the conversation? The agent will rebuild its context from that point.")) return;
+    const takesBackPrompt = kind === "revert" && message.type === "prompt";
+    if (kind === "revert" && !window.confirm(takesBackPrompt
+      ? "Take this message back? It and everything after it are erased from the conversation, and the message goes back into the box so you can edit it and send it again."
+      : "Erase everything after this message from the conversation? The agent will rebuild its context from that point.")) return;
     messageActionPending.current = true;
     try {
       const payload = await invoke<ResumeConversationPayload>(
@@ -3539,6 +3574,11 @@ export function App() {
         { sessionId: activeConversationIdRef.current || null, anchor },
       );
       applyConversationPayload(payload, kind === "fork" ? "Forked into a new conversation" : "Conversation reverted");
+      if (takesBackPrompt) {
+        // The message is out of the conversation now: it is in the box to edit or send again.
+        setPrompt(textForComposer(message.text));
+        requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(".composer textarea")?.focus());
+      }
       await refreshConversations();
     } catch (error) {
       setLiveActivity({

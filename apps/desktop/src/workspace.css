@@ -79,6 +79,7 @@ main.app-shell.navigation-closed { grid-template-columns: minmax(0, 1fr); }
 .console-line:hover .message-tools, .console-line:focus-within .message-tools { opacity: 1; }
 .message-tools button { font: inherit; font-size: 11px; line-height: 1.4; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--raised); color: var(--muted); cursor: pointer; }
 .message-tools button:hover, .message-tools button:focus-visible { color: var(--text); border-color: var(--accent); }
+.guidance-state { display: block; margin-top: 6px; font-size: 0.78em; color: var(--muted, var(--text)); opacity: 0.75; }
 .line-prompt, .line-guidance { align-self: flex-end; max-width: 85%; background: var(--raised); border: 1px solid var(--border); border-radius: 16px 16px 4px 16px; padding: 12px 16px; color: var(--text); }
 .line-response { white-space: normal; padding: 4px 0; border: 0; background: transparent; }
 .line-guidance small { display: block; font-size: 10px; margin-bottom: 4px; }

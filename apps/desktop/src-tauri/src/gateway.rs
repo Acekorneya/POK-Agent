@@ -16,7 +16,7 @@ use std::sync::{
 use async_trait::async_trait;
 use parking_lot::Mutex as SyncMutex;
 use pok_ai_core::gateway::{
-    Channel, Gateway, GatewayHost, GatewayTask, TaskOrigin,
+    Channel, Gateway, GatewayHost, GatewayTask, SubmitError, TaskOrigin,
     access::{AccessControl, AllowedUser, PendingPairing},
     schedule::{JobStore, parse_schedule},
     sidecar,
@@ -244,16 +244,16 @@ impl AppHost {
 
 #[async_trait]
 impl GatewayHost for AppHost {
-    async fn submit(&self, task: GatewayTask) -> Result<(), String> {
+    async fn submit(&self, task: GatewayTask) -> Result<(), SubmitError> {
         {
             let mut flight = self.shared.in_flight.lock();
             if let Some(current) = flight.as_ref()
                 && current.started.elapsed() < TASK_TIMEOUT
             {
-                return Err(
+                return Err(SubmitError::Busy(
                     "I am busy with another task. Send /status to see it, or /stop to cancel it."
                         .into(),
-                );
+                ));
             }
             let requester = match &task.origin {
                 TaskOrigin::Message { user, .. }
@@ -301,8 +301,31 @@ impl GatewayHost for AppHost {
             )
             .map_err(|error| {
                 *self.shared.in_flight.lock() = None;
-                format!("The app could not take that task: {error}")
+                SubmitError::Failed(format!("The app could not take that task: {error}"))
             })
+    }
+
+    async fn guide(&self, chat: &str, text: &str) -> Option<String> {
+        // Only the chat whose task is running can steer it, and not a scheduled
+        // job. One lock, read once.
+        let steers_it = self
+            .shared
+            .in_flight
+            .lock()
+            .as_ref()
+            .is_some_and(|flight| flight.chat == chat && flight.scheduled.is_none());
+        if !steers_it {
+            return None;
+        }
+        self.app
+            .state::<AppRuntime>()
+            .user_guidance_queue
+            .lock()
+            .push_back(text.to_owned());
+        Some(
+            "Got it. I will read that at my next step and fold it into what I am doing. Send /stop to cancel the task."
+                .into(),
+        )
     }
 
     async fn stop(&self) -> String {
@@ -1031,6 +1054,8 @@ pub async fn gateway_task_done(
         None => body,
     };
     gateway.send(&flight.chat, &message).await;
+    // A picture that came while this task ran is looked at next.
+    gateway.start_held().await;
     Ok(())
 }
 

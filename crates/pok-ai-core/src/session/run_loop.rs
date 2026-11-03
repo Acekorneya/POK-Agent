@@ -530,6 +530,11 @@ impl Session {
         // Once entered, final-answer mode remains active until a visible answer
         // completes the run. Recovery retries must never silently restore tools.
         let mut final_answer_only_active = false;
+        // How many replies were cut off for repeating themselves.
+        let mut repetition_interrupts = 0_u8;
+        // A request that asks for repeated output ("300 times") is not a fault.
+        let repetition_guard =
+            !request_asks_for_repetition(&self.context.active_task.lock().root_request);
         let mut reasoning_output_limit_streak = 0_u32;
         // The last pure lookup and how many times in a row it was repeated
         // unchanged: a model that keeps re-asking for what it already holds.
@@ -660,9 +665,17 @@ impl Session {
                     )
                 };
                 *self.context.task_hint.lock() = task_hint;
+                // The user wrote while the work was going on. Like a person who
+                // is spoken to mid-task, the agent says it heard, and what it
+                // will do about it, instead of folding the message in silently.
+                // The instruction rides in the same message (a model obeys it
+                // far more reliably there than in a separate note), and is left
+                // out when the conversation is shown again.
                 self.messages.push(BrainMessage::text_with_origin(
                     "user",
-                    format!("[User Guidance] {guidance}"),
+                    format!(
+                        "[User Guidance] {guidance}\n\n<system-reminder>{GUIDANCE_ACKNOWLEDGEMENT}</system-reminder>"
+                    ),
                     MessageOrigin::UserGuidance,
                 ));
                 if confirms_completion && !explicit_repeat {
@@ -1103,6 +1116,11 @@ impl Session {
                 let pause = self.context.pause.clone();
                 let mut pause_interrupted = false;
                 let mut idle_deadline = tokio::time::Instant::now() + PROVIDER_STREAM_IDLE_LIMIT;
+                // Watches the words as they arrive, so a model stuck repeating
+                // itself is stopped within a hundred words, not at the token limit.
+                let mut answer_monitor = RepetitionMonitor::new();
+                let mut thinking_monitor = RepetitionMonitor::new();
+                let mut repeating: Option<(&'static str, RepetitionReport)> = None;
                 loop {
                     let event = tokio::select! {
                         () = self.context.cancellation.cancelled() => {
@@ -1491,10 +1509,23 @@ impl Session {
                                 });
                             }
                             text.push_str(&delta);
+                            if repetition_guard && let Some(report) = answer_monitor.push(&delta) {
+                                repeating = Some(("reply", report));
+                                break;
+                            }
                         }
                         BrainEvent::ReasoningDelta { text: delta } => {
                             reasoning.push_str(&delta);
+                            let looping = if repetition_guard {
+                                thinking_monitor.push(&delta)
+                            } else {
+                                None
+                            };
                             self.emit(AgentEvent::ReasoningDelta { text: delta });
+                            if let Some(report) = looping {
+                                repeating = Some(("thinking", report));
+                                break;
+                            }
                         }
                         BrainEvent::ToolCall { call } => calls.push(call),
                         BrainEvent::MalformedToolCall {
@@ -1549,6 +1580,53 @@ impl Session {
                             self.emit(AgentEvent::ModelFinished { reason });
                         }
                     }
+                }
+                if let Some((part, report)) = repeating.take() {
+                    drop(stream);
+                    repetition_interrupts = repetition_interrupts.saturating_add(1);
+                    let measured = report.describe();
+                    increment_metric(&mut metrics, "repetition_interrupts", 1);
+                    self.log(
+                        "model_output_repeating",
+                        json!({
+                            "turn": turn_index + 1,
+                            "stream": part,
+                            "interrupts": repetition_interrupts,
+                            "words": report.words,
+                            "top_word": report.top_word,
+                            "top_word_percent": (report.top_share * 100.0).round(),
+                            "repeated_phrases_percent": (report.repeated_phrases * 100.0).round(),
+                            "different_words_percent": (report.distinct_words * 100.0).round(),
+                            "sample": report.sample,
+                            "discarded_text_chars": text.len(),
+                            "discarded_reasoning_chars": reasoning.len(),
+                            "discarded_tool_calls": calls.len(),
+                        }),
+                    )?;
+                    self.emit(AgentEvent::ModelTurnInterrupted {
+                        reason: format!(
+                            "The model started repeating itself ({measured}); that output was discarded and it was told to move on."
+                        ),
+                    });
+                    if repetition_interrupts >= MAX_REPETITION_INTERRUPTS {
+                        return Err(PokError::Provider(format!(
+                            "the model kept repeating itself and was stopped {repetition_interrupts} times ({measured}). Try again, or choose another model"
+                        )));
+                    }
+                    let advice = if repetition_interrupts >= 2 {
+                        final_answer_only_active = true;
+                        "Answer now in a few plain sentences from the evidence you already have, or say what is blocking you. Do not call tools."
+                    } else {
+                        "If you already have what you need, answer in a few plain sentences. Otherwise make one concrete tool call that moves the task forward, or say what is blocking you."
+                    };
+                    self.messages.push(BrainMessage::text_with_origin(
+                        "system",
+                        format!(
+                            "<system-reminder>Your last {part} fell into a loop and was cut off: {measured}. It was discarded; do not write it again. {advice}</system-reminder>"
+                        ),
+                        MessageOrigin::SystemReminder,
+                    ));
+                    continue 'turns;
                 }
                 if let Some((previous, current)) = environment_interrupted.take() {
                     drop(stream);
@@ -2727,14 +2805,21 @@ impl Session {
                 }
                 let mut plan_loop_recovery = None;
                 let mut strategy_recovery = None;
-                if call.name == "update_task_plan" && result.is_ok() {
-                    self.emit_task_state();
-                    let changed = result
-                        .as_ref()
-                        .ok()
-                        .and_then(|value| value.get("plan_updated"))
-                        .and_then(Value::as_bool)
-                        .unwrap_or(true);
+                if call.name == "update_task_plan" {
+                    if result.is_ok() {
+                        self.emit_task_state();
+                    }
+                    // A plan update that failed to apply changed nothing
+                    // either. It counts toward the streak instead of resetting
+                    // it: a model that alternated failing and unchanged
+                    // updates (45 calls in one reported run) never reached the
+                    // limit while each kind reset the other's counter.
+                    let changed = result.as_ref().is_ok_and(|value| {
+                        value
+                            .get("plan_updated")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(true)
+                    });
                     if changed {
                         unchanged_plan_streak = 0;
                         diagnostic_command_streak = 0;
@@ -3239,6 +3324,14 @@ const SWARM_HINT_DIRECT_ACTIONS: u32 = 3;
 /// before that tool is withheld for the rest of the run: a run stuck on one
 /// failing resource changes approach, answers, or times out instead of
 /// retrying until the turn budget is gone.
+/// Said to the model each time the user's message reaches it in the middle of a
+/// task. The reply is visible to the user as the model's own words before its
+/// next tool call.
+const GUIDANCE_ACKNOWLEDGEMENT: &str = "The user sent the message above while you were working. Start your next reply with one short sentence to them that shows you saw it and says what happens next, even if you also call a tool. Examples: \"Got it, switching to the dark theme now.\" / \"Noted, I will do that right after this step.\" / \"About a minute more; I am on the second of three searches.\" If it is only a question, answer it in that sentence. Then carry on with the task. If you cannot tell what they want, ask them. Do not drop the original task unless they said to.";
+
+/// Replies cut off for repeating themselves before the run gives up. The
+/// second one also takes the tools away so the model has to answer.
+const MAX_REPETITION_INTERRUPTS: u8 = 3;
 const TOOL_STALL_NOTICE: u32 = 4;
 const TOOL_STALL_WITHHOLD: u32 = 8;
 /// Calls to withheld tools answered with the guard before the run is put

@@ -1904,6 +1904,79 @@ fn bounded_context_caps_one_nested_visual_message_to_current_pair() {
     assert!(actions.iter().any(|action| action == "removed_images:16"));
 }
 
+fn user_message_with_pictures(prefix: &str, count: usize) -> BrainMessage {
+    let mut content = vec![MessageContent::Text {
+        text: format!("{prefix} request"),
+    }];
+    content.extend((0..count).map(|index| MessageContent::ImagePng {
+        base64: format!("{prefix}-photo-{index}"),
+    }));
+    BrainMessage {
+        role: "user".into(),
+        content,
+        origin: MessageOrigin::UserInput,
+        tool_call_id: None,
+        tool_calls: Vec::new(),
+    }
+}
+
+/// A phone message with four photos reached the model with two, because the
+/// rule that keeps a screenshot pair was applied to the user's pictures too.
+#[test]
+fn every_photo_the_user_attached_reaches_the_model() {
+    let screenshot = |name: &str| BrainMessage {
+        role: "user".into(),
+        content: vec![
+            MessageContent::Text {
+                text: "screenshot".into(),
+            },
+            MessageContent::ImagePng {
+                base64: name.into(),
+            },
+        ],
+        origin: MessageOrigin::ToolImage,
+        tool_call_id: None,
+        tool_calls: Vec::new(),
+    };
+    let messages = vec![
+        BrainMessage::text("system", "system"),
+        screenshot("old-screen-a"),
+        screenshot("old-screen-b"),
+        user_message_with_pictures("now", 4),
+    ];
+    let (bounded, _, actions) = bounded_context(&messages, 1, 100_000, 50_000, 1.0);
+    let rendered = serde_json::to_string(&bounded).unwrap();
+    for index in 0..4 {
+        assert!(
+            rendered.contains(&format!("now-photo-{index}")),
+            "photo {index} was dropped: {actions:?}"
+        );
+    }
+    // Stale screenshots still go; the photos do not count against them.
+    assert!(!rendered.contains("old-screen-a"));
+    assert_eq!(count_images(&bounded), 4 + 1);
+}
+
+#[test]
+fn only_the_newest_user_pictures_are_kept_when_there_are_too_many() {
+    let messages = vec![
+        BrainMessage::text("system", "system"),
+        user_message_with_pictures("older", 5),
+        BrainMessage::text("assistant", "I see them."),
+        user_message_with_pictures("newer", 5),
+    ];
+    let (bounded, _, actions) = bounded_context(&messages, 1, 100_000, 50_000, 1.0);
+    let rendered = serde_json::to_string(&bounded).unwrap();
+    assert_eq!(count_images(&bounded), MAX_USER_IMAGES);
+    for index in 0..5 {
+        assert!(rendered.contains(&format!("newer-photo-{index}")));
+    }
+    // The three kept from the older message are its newest.
+    assert!(rendered.contains("older-photo-4") && rendered.contains("older-photo-2"));
+    assert!(!rendered.contains("older-photo-1") && !rendered.contains("older-photo-0"));
+    assert!(actions.iter().any(|action| action == "removed_images:2"));
+}
+
 #[test]
 fn image_byte_budget_prunes_oldest_images_first() {
     let mut messages = vec![BrainMessage {
@@ -6351,18 +6424,310 @@ async fn a_plan_update_that_keeps_failing_is_stopped_and_the_run_answers() {
         "{}",
         summary.answer
     );
-    // Eight failures, two refused calls, then the answer: not hundreds.
+    // A failed update now counts as a plan that went nowhere: the plan tool is
+    // withdrawn after the first one (it used to take eight failures and two
+    // refused calls), and this model answers as soon as it is: not hundreds.
     let requests = brain.plan_requests.load(Ordering::SeqCst);
     assert!(
-        requests <= 12,
+        requests <= 4,
         "the run kept retrying a failing plan update {requests} times"
     );
     let trace = std::fs::read_to_string(summary.artifact_dir.join("trace.jsonl")).unwrap();
-    assert!(trace.contains("\"kind\":\"tool_stall_notice\""), "{trace}");
+    assert!(trace.contains("\"kind\":\"plan_loop_recovery\""), "{trace}");
+}
+
+/// Records the last request it was sent and answers in one line.
+struct RecordsTheRequestBrain {
+    last: std::sync::Mutex<Vec<BrainMessage>>,
+}
+
+#[async_trait]
+impl Brain for RecordsTheRequestBrain {
+    async fn list_models(&self) -> Result<Vec<String>> {
+        Ok(vec!["mock".into()])
+    }
+    fn stream(&self, request: BrainRequest) -> crate::brain::BrainStream {
+        *self.last.lock().unwrap() = request.messages;
+        Box::pin(futures::stream::iter(vec![
+            Ok(BrainEvent::TextDelta {
+                text: "Got it, switching to the dark theme.".into(),
+            }),
+            Ok(BrainEvent::Finished {
+                reason: Some("stop".into()),
+            }),
+        ]))
+    }
+}
+
+/// A message sent while the agent works used to be folded in silently. The
+/// model is now told it must say it heard, and what it will do.
+#[tokio::test]
+async fn a_message_sent_during_the_task_is_to_be_acknowledged_by_the_agent() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let brain = Arc::new(RecordsTheRequestBrain {
+        last: std::sync::Mutex::new(Vec::new()),
+    });
+    let mut registry = ToolRegistry::new();
+    crate::builtins::register_desktop_tools(&mut registry);
+    let context = crate::builtins::tests::mock_input_context(
+        Arc::new(crate::platform::MockDesktop::default()),
+        &temp_dir,
+    );
+    context
+        .user_guidance_queue
+        .lock()
+        .push_back("Use the dark theme instead".into());
+    let mut session = Session::new(
+        brain.clone(),
+        Arc::new(registry),
+        context,
+        "mock-model".into(),
+        64,
+    )
+    .unwrap();
+    let summary = session.run("Change the theme of the page.").await.unwrap();
+    assert_eq!(summary.answer, "Got it, switching to the dark theme.");
+
+    let seen = brain.last.lock().unwrap().clone();
+    let guidance = seen
+        .iter()
+        .position(|message| {
+            message.origin == MessageOrigin::UserGuidance
+                && serde_json::to_string(message)
+                    .unwrap()
+                    .contains("[User Guidance] Use the dark theme instead")
+        })
+        .expect("the user's message reaches the model");
+    // In the same message: the instruction to say it was heard and what happens next.
+    let reminder = serde_json::to_string(&seen[guidance]).unwrap();
     assert!(
-        trace.contains("\"kind\":\"tool_stall_withheld\""),
+        reminder.contains("while you were working")
+            && reminder.contains("Start your next reply with one short sentence")
+            && reminder.contains("answer it in that sentence")
+            && reminder.contains("If you cannot tell what they want, ask"),
+        "{reminder}"
+    );
+}
+
+/// Alternates a plan update that changes nothing with one that fails, on every
+/// turn, tools withheld or not: the shape of the Nemotron run that made 45
+/// plan calls in a minute. Each kind used to reset the other's counter.
+struct AlternatesFailingAndUnchangedPlanUpdatesBrain {
+    requests: AtomicU64,
+}
+
+#[async_trait]
+impl Brain for AlternatesFailingAndUnchangedPlanUpdatesBrain {
+    async fn list_models(&self) -> Result<Vec<String>> {
+        Ok(vec!["mock".into()])
+    }
+    fn stream(&self, request: BrainRequest) -> crate::brain::BrainStream {
+        let attempt = self.requests.fetch_add(1, Ordering::SeqCst) + 1;
+        // Answers only when every tool is taken away (the answer-only turn).
+        if request.tools.is_empty() || attempt >= 200 {
+            return Box::pin(futures::stream::iter(vec![
+                Ok(BrainEvent::TextDelta {
+                    text: "Here is what I found so far.".into(),
+                }),
+                Ok(BrainEvent::Finished {
+                    reason: Some("stop".into()),
+                }),
+            ]));
+        }
+        let arguments = if attempt % 2 == 1 {
+            // Valid, and the same every time: "plan unchanged".
+            json!({
+                "status": "in_progress",
+                "steps": [
+                    {"id": "1", "content": "Look it up", "status": "in_progress"},
+                    {"id": "2", "content": "Report", "status": "pending"}
+                ]
+            })
+        } else {
+            // Fails every time: no step is in progress.
+            json!({
+                "status": "in_progress",
+                "steps": [
+                    {"id": "1", "content": "Look it up", "status": "pending"},
+                    {"id": "2", "content": "Report", "status": "pending"}
+                ]
+            })
+        };
+        Box::pin(futures::stream::iter(vec![
+            Ok(BrainEvent::ToolCall {
+                call: CompletedToolCall {
+                    id: format!("plan-{attempt}"),
+                    name: "update_task_plan".into(),
+                    arguments,
+                },
+            }),
+            Ok(BrainEvent::Finished {
+                reason: Some("tool_calls".into()),
+            }),
+        ]))
+    }
+}
+
+#[tokio::test]
+async fn failing_and_unchanged_plan_updates_in_turn_still_end_in_an_answer() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let brain = Arc::new(AlternatesFailingAndUnchangedPlanUpdatesBrain {
+        requests: AtomicU64::new(0),
+    });
+    let mut registry = ToolRegistry::new();
+    crate::builtins::register_desktop_tools(&mut registry);
+    let context = crate::builtins::tests::mock_input_context(
+        Arc::new(crate::platform::MockDesktop::default()),
+        &temp_dir,
+    );
+    let mut session = Session::new(
+        brain.clone(),
+        Arc::new(registry),
+        context,
+        "mock-model".into(),
+        64,
+    )
+    .unwrap();
+    let summary = session.run("Find the next event date.").await.unwrap();
+    assert_eq!(summary.answer, "Here is what I found so far.");
+    let requests = brain.requests.load(Ordering::SeqCst);
+    assert!(
+        requests <= 12,
+        "the plan kept being rewritten for {requests} requests"
+    );
+    let trace = std::fs::read_to_string(summary.artifact_dir.join("trace.jsonl")).unwrap();
+    assert!(
+        trace.contains("\"recovery_mode\":\"answer_only\""),
         "{trace}"
     );
+}
+
+/// Streams a loop ("different temperature different…", the end of a reported
+/// 943-turn run) for its first `loops` replies, then answers properly. Records
+/// how many tools each request offered.
+struct LoopsInItsOutputBrain {
+    loops: u64,
+    requests: AtomicU64,
+    tools_offered: std::sync::Mutex<Vec<usize>>,
+}
+
+#[async_trait]
+impl Brain for LoopsInItsOutputBrain {
+    async fn list_models(&self) -> Result<Vec<String>> {
+        Ok(vec!["mock".into()])
+    }
+    fn stream(&self, request: BrainRequest) -> crate::brain::BrainStream {
+        let attempt = self.requests.fetch_add(1, Ordering::SeqCst) + 1;
+        self.tools_offered.lock().unwrap().push(request.tools.len());
+        // A safety net so a regression fails the test instead of hanging it.
+        if attempt <= self.loops && attempt < 40 {
+            let mut events: Vec<Result<BrainEvent>> = (0..300)
+                .map(|_| {
+                    Ok(BrainEvent::TextDelta {
+                        text: "different temperature different different ".into(),
+                    })
+                })
+                .collect();
+            events.push(Ok(BrainEvent::Finished {
+                reason: Some("stop".into()),
+            }));
+            Box::pin(futures::stream::iter(events))
+        } else {
+            Box::pin(futures::stream::iter(vec![
+                Ok(BrainEvent::TextDelta {
+                    text: "The weather outside is clear and warm.".into(),
+                }),
+                Ok(BrainEvent::Finished {
+                    reason: Some("stop".into()),
+                }),
+            ]))
+        }
+    }
+}
+
+async fn run_with_looping_brain(
+    loops: u64,
+) -> (
+    Arc<LoopsInItsOutputBrain>,
+    Session,
+    std::result::Result<RunSummary, PokError>,
+) {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let brain = Arc::new(LoopsInItsOutputBrain {
+        loops,
+        requests: AtomicU64::new(0),
+        tools_offered: std::sync::Mutex::new(Vec::new()),
+    });
+    let mut registry = ToolRegistry::new();
+    crate::builtins::register_desktop_tools(&mut registry);
+    let context = crate::builtins::tests::mock_input_context(
+        Arc::new(crate::platform::MockDesktop::default()),
+        &temp_dir,
+    );
+    let mut session = Session::new(
+        brain.clone(),
+        Arc::new(registry),
+        context,
+        "mock-model".into(),
+        64,
+    )
+    .unwrap();
+    let result = session.run("How is the weather outside?").await;
+    // Keep the trace readable after the temp dir goes away with this function.
+    std::mem::forget(temp_dir);
+    (brain, session, result)
+}
+
+#[tokio::test]
+async fn a_reply_that_loops_is_cut_off_with_its_percentages_and_the_model_is_guided_back() {
+    let (brain, session, result) = run_with_looping_brain(1).await;
+    let summary = result.unwrap();
+    assert_eq!(summary.answer, "The weather outside is clear and warm.");
+    assert_eq!(brain.requests.load(Ordering::SeqCst), 2);
+
+    let trace = std::fs::read_to_string(summary.artifact_dir.join("trace.jsonl")).unwrap();
+    let event = trace
+        .lines()
+        .find(|line| line.contains("\"kind\":\"model_output_repeating\""))
+        .expect("the loop was recorded");
+    let payload: Value = serde_json::from_str(event).unwrap();
+    let payload = &payload["payload"];
+    assert_eq!(payload["stream"], "reply");
+    assert_eq!(payload["top_word"], "different");
+    assert!(payload["top_word_percent"].as_f64().unwrap() >= 40.0);
+    // Cut off after a couple of hundred words, not after all the 1,200 sent.
+    assert!(
+        payload["discarded_text_chars"].as_u64().unwrap() < 3_000,
+        "{payload}"
+    );
+
+    // The loop is not kept in the conversation; the guidance is.
+    let history = serde_json::to_string(&session.messages).unwrap();
+    assert!(!history.contains("different different"), "{history}");
+    assert!(
+        history.contains("fell into a loop and was cut off"),
+        "{history}"
+    );
+    // Three of every four words were "different": the model is told so.
+    assert!(
+        history.contains("was 75% of its last"),
+        "the percentage is told to the model: {history}"
+    );
+}
+
+#[tokio::test]
+async fn a_model_that_keeps_looping_is_made_to_answer_and_then_stopped() {
+    let (brain, session, result) = run_with_looping_brain(100).await;
+    let error = result.unwrap_err().to_string();
+    assert!(error.contains("kept repeating itself"), "{error}");
+    assert!(error.contains("choose another model"), "{error}");
+    // Three cut-offs, then it gave up: nothing like hundreds of turns.
+    assert_eq!(brain.requests.load(Ordering::SeqCst), 3);
+    // After the second one the tools were taken away so it must answer.
+    let offered = brain.tools_offered.lock().unwrap().clone();
+    assert!(offered[0] > 0 && offered[1] > 0, "{offered:?}");
+    assert_eq!(offered[2], 0, "{offered:?}");
+    drop(session);
 }
 
 /// Asks for the time every turn while the tool is offered and answers once it

@@ -374,16 +374,21 @@ pub(super) fn compact_superseded_observations(messages: &mut [BrainMessage]) -> 
     compacted
 }
 
+/// Keep the screenshots the model needs now and drop the stale ones. Pictures
+/// the user attached are not screenshots: every one of them stays (up to
+/// [`MAX_USER_IMAGES`], newest first), so a message with four photos reaches the
+/// model with four photos, not with the two a screenshot pair would allow.
 pub(super) fn prune_stale_images(messages: &mut [BrainMessage], visual_limit: usize) -> usize {
+    let has_image = |message: &BrainMessage| {
+        message
+            .content
+            .iter()
+            .any(|part| matches!(part, MessageContent::ImagePng { .. }))
+    };
     let image_positions = messages
         .iter()
         .enumerate()
-        .filter(|(_, message)| {
-            message
-                .content
-                .iter()
-                .any(|part| matches!(part, MessageContent::ImagePng { .. }))
-        })
+        .filter(|(_, message)| message.origin != MessageOrigin::UserInput && has_image(message))
         .map(|(index, _)| index)
         .collect::<Vec<_>>();
     let stale_count = image_positions.len().saturating_sub(visual_limit);
@@ -401,6 +406,32 @@ pub(super) fn prune_stale_images(messages: &mut [BrainMessage], visual_limit: us
             });
         }
         removed_total += removed;
+    }
+
+    // The user's own pictures: the newest MAX_USER_IMAGES stay, older ones go.
+    let mut budget = MAX_USER_IMAGES;
+    for message in messages
+        .iter_mut()
+        .rev()
+        .filter(|message| message.origin == MessageOrigin::UserInput)
+    {
+        let count = message
+            .content
+            .iter()
+            .filter(|part| matches!(part, MessageContent::ImagePng { .. }))
+            .count();
+        if count == 0 {
+            continue;
+        }
+        let keep = count.min(budget);
+        budget -= keep;
+        let removed = retain_latest_images_in_message(message, keep);
+        if removed > 0 {
+            message.content.push(MessageContent::Text {
+                text: format!("[{removed} earlier picture omitted to keep the request small]"),
+            });
+            removed_total += removed;
+        }
     }
     removed_total
 }

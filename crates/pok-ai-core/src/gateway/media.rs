@@ -370,20 +370,17 @@ fn tiff_orientation(tiff: &[u8]) -> Option<u16> {
         .filter(|value| (1..=8).contains(value))
 }
 
-/// The request the agent receives: the sender's words (or a default question
-/// when they sent only a picture or file), then notes about what was skipped.
+/// The request the agent receives: the sender's words, or, when they sent only
+/// pictures or files, a note that says so and how to react like a person who
+/// was handed something: look first, carry on if it belongs to the
+/// conversation, otherwise say what it is and ask what they want. Then notes
+/// about what was skipped.
 pub fn compose_prompt(text: &str, prepared: &Prepared) -> String {
     let text = text.trim();
     let mut prompt = if !text.is_empty() {
         text.to_owned()
-    } else if prepared.images.len() > 1 {
-        "What is in these pictures?".to_owned()
-    } else if !prepared.images.is_empty() {
-        "What is in this picture?".to_owned()
-    } else if !prepared.files.is_empty() {
-        "Look at this and tell me what it contains.".to_owned()
     } else {
-        String::new()
+        no_message_request(prepared.images.len(), prepared.files.len())
     };
     if !prompt.is_empty() && !prepared.notes.is_empty() {
         prompt.push_str("\n\n[Attachment notes: ");
@@ -391,6 +388,24 @@ pub fn compose_prompt(text: &str, prepared: &Prepared) -> String {
         prompt.push(']');
     }
     prompt
+}
+
+/// The request for attachments that came without a single word. `files`
+/// includes the saved copy of every picture, so only files beyond the pictures
+/// count as files. Empty when nothing was attached.
+pub fn no_message_request(images: usize, files: usize) -> String {
+    let files = files.saturating_sub(images);
+    let (what, them, plain) = match (images, files) {
+        (0, 0) => return String::new(),
+        (1, 0) => ("a picture".to_owned(), "it", "it plainly goes"),
+        (n, 0) if n > 1 => (format!("{n} pictures"), "them", "they plainly go"),
+        (0, 1) => ("a file".to_owned(), "it", "it plainly goes"),
+        (0, n) => (format!("{n} files"), "them", "they plainly go"),
+        (i, f) => (format!("{} attachments", i + f), "them", "they plainly go"),
+    };
+    format!(
+        "[Sent {what} with no message. Look at {them}. If {plain} with what we were just talking about, carry on from there. Otherwise tell them briefly what you see and ask what they would like done with {them}. Do not act on {them} before they answer.]"
+    )
 }
 
 /// Delete saved attachments older than `max_age`. Failures are ignored: a
@@ -705,11 +720,35 @@ mod tests {
             ..Prepared::default()
         };
         assert_eq!(compose_prompt("  fix this  ", &one), "fix this");
-        assert_eq!(compose_prompt("", &one), "What is in this picture?");
-        assert_eq!(compose_prompt("", &two), "What is in these pictures?");
-        assert_eq!(
-            compose_prompt("", &file),
-            "Look at this and tell me what it contains."
+        // Words and nothing else when there are words; with none, a note that
+        // says a picture came alone and how to take it, like a person would.
+        let alone = compose_prompt("", &one);
+        assert!(alone.starts_with("[Sent a picture with no message. Look at it."));
+        assert!(alone.contains("carry on from there"), "{alone}");
+        assert!(alone.contains("ask what they would like done with it"));
+        assert!(alone.contains("Do not act on it before they answer."));
+        assert!(
+            compose_prompt("", &two).starts_with("[Sent 2 pictures with no message. Look at them.")
+        );
+        assert!(compose_prompt("", &file).starts_with("[Sent a file with no message. Look at it."));
+        // A picture's saved copy is not a second attachment...
+        let picture_and_copy = Prepared {
+            images: vec!["x".into()],
+            files: vec![PathBuf::from("picture-1.jpg")],
+            ..Prepared::default()
+        };
+        assert!(
+            compose_prompt("", &picture_and_copy).starts_with("[Sent a picture with no message.")
+        );
+        // ...but a document sent along with it is.
+        let picture_and_document = Prepared {
+            images: vec!["x".into()],
+            files: vec![PathBuf::from("picture-1.jpg"), PathBuf::from("a.pdf")],
+            ..Prepared::default()
+        };
+        assert!(
+            compose_prompt("", &picture_and_document)
+                .starts_with("[Sent 2 attachments with no message.")
         );
         assert_eq!(compose_prompt("", &Prepared::default()), "");
         let noted = Prepared {

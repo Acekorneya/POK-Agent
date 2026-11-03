@@ -53,6 +53,69 @@ pub(super) struct UpdateTaskPlanArgs {
 
 pub(super) struct UpdateTaskPlanTool;
 
+/// Some small models send `steps` as a string that holds the JSON list
+/// (`"steps": "[{\"id\": \"1\", ...}]"`) instead of the list itself. The
+/// call then failed with a type error on every attempt (17 times in one
+/// reported run); the meaning is unambiguous, so read it.
+/// Read a plan the way small models write it. Besides a string holding the
+/// list, they name the fields their own way: `{"step": 1, "action": "...",
+/// "completed": true}` instead of `{"id", "content", "status"}` (seen in a
+/// live Nemotron run, where every such call failed). Only the names are mapped;
+/// what the plan says is untouched, and a correct plan passes through as it is.
+pub(super) fn normalize_plan_arguments(args: &mut Value) {
+    unwrap_stringified_steps(args);
+    let Some(Value::Array(steps)) = args.get_mut("steps") else {
+        return;
+    };
+    for step in steps {
+        let Some(item) = step.as_object_mut() else {
+            continue;
+        };
+        if !item.contains_key("id") {
+            for alias in ["step", "index", "number", "n"] {
+                if let Some(value) = item.remove(alias) {
+                    item.insert("id".into(), value);
+                    break;
+                }
+            }
+        }
+        if !item.contains_key("content") && !item.contains_key("description") {
+            for alias in ["action", "title", "text", "task", "name", "summary"] {
+                if let Some(value) = item.remove(alias) {
+                    item.insert("content".into(), value);
+                    break;
+                }
+            }
+        }
+        if !item.contains_key("status") {
+            let done = ["completed", "done", "complete"]
+                .iter()
+                .find_map(|key| item.get(*key).and_then(Value::as_bool));
+            if let Some(done) = done {
+                item.insert(
+                    "status".into(),
+                    Value::String(if done { "completed" } else { "pending" }.into()),
+                );
+            }
+        }
+        for key in ["completed", "done", "complete"] {
+            item.remove(key);
+        }
+    }
+}
+
+pub(super) fn unwrap_stringified_steps(args: &mut Value) {
+    let Some(steps) = args.get_mut("steps") else {
+        return;
+    };
+    let Some(text) = steps.as_str() else {
+        return;
+    };
+    if let Ok(parsed @ Value::Array(_)) = serde_json::from_str::<Value>(text.trim()) {
+        *steps = parsed;
+    }
+}
+
 #[async_trait]
 impl Tool for UpdateTaskPlanTool {
     fn name(&self) -> &'static str {
@@ -71,7 +134,8 @@ impl Tool for UpdateTaskPlanTool {
         RiskClass::ReadOnly
     }
 
-    async fn execute(&self, args: Value, context: &ToolContext) -> Result<Value> {
+    async fn execute(&self, mut args: Value, context: &ToolContext) -> Result<Value> {
+        normalize_plan_arguments(&mut args);
         let mut args: UpdateTaskPlanArgs = serde_json::from_value(args)?;
         hydrate_plan_update(&mut args, &context.active_task.lock());
         if args.steps.is_empty() {
