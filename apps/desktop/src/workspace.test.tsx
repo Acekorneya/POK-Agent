@@ -381,15 +381,41 @@ describe("workspace presentation", () => {
       expect(mock.invoke).toHaveBeenCalledWith("gateway_set_whatsapp", { enabled: true, mode: "bot" });
       expect(await screen.findByText("Connecting…")).toBeTruthy();
     });
+    it("lets you share your own number with friends who must ask with pok, and trust them separately", async () => {
+      await openGateway({
+        running: true, enabled: true, home_chat: "whatsapp:15550199@s.whatsapp.net",
+        whatsapp: whatsapp({ enabled: true, mode: "friends", state: "connected", account: "+15550199" }),
+        allowed: [{ id: "whatsapp:15550100", name: "Sam (+15550100)", trusted: false }],
+        pending: [{ code: "WXYZ-2345", user_id: "whatsapp:15550142", chat_id: "whatsapp:15550142@s.whatsapp.net", channel: "whatsapp", name: "Alex (+15550142)", guest: true, expires_in: 3000 }],
+      }, {
+        gateway_set_person_trusted: (args: { userId: string; trusted: boolean }) => status({
+          allowed: [{ id: args.userId, name: "Sam (+15550100)", trusted: args.trusted }],
+          whatsapp: whatsapp({ enabled: true, mode: "friends", state: "connected", account: "+15550199" }),
+        }),
+      });
+      // The mode is offered, and selected.
+      const mode = await screen.findByRole("combobox", { name: "WhatsApp mode" }) as HTMLSelectElement;
+      expect(mode.value).toBe("friends");
+      expect(within(mode).getByRole("option", { name: /Me and friends I approve/ })).toBeTruthy();
+      // A friend who asked quietly is shown as such, with no code that was ever sent.
+      expect(screen.getByText(/asked quietly, they have not been told anything/)).toBeTruthy();
+      // An approved friend is labelled, not trusted, and can be trusted on purpose.
+      expect(screen.getByText("WhatsApp · friend")).toBeTruthy();
+      const trust = screen.getByRole("checkbox", { name: "Trust Sam (+15550100)" }) as HTMLInputElement;
+      expect(trust.checked).toBe(false);
+      await userEvent.click(trust);
+      expect(mock.invoke).toHaveBeenCalledWith("gateway_set_person_trusted", { userId: "whatsapp:15550100", trusted: true });
+      expect(await screen.findByText("WhatsApp · trusted")).toBeTruthy();
+    });
     it("names each person's channel and marks who gets scheduled results", async () => {
       await openGateway({
         running: true, enabled: true, has_token: true, home_chat: "whatsapp:15550100@s.whatsapp.net",
-        allowed: [{ id: "telegram:900", name: "@sam" }, { id: "whatsapp:15550100", name: "Sam (+15550100)" }],
-        pending: [{ code: "ABCD-2345", user_id: "whatsapp:15550142", chat_id: "whatsapp:15550142@s.whatsapp.net", channel: "whatsapp", name: "Alex (+15550142)", expires_in: 3000 }],
+        allowed: [{ id: "telegram:900", name: "@sam", trusted: true }, { id: "whatsapp:15550100", name: "Sam (+15550100)", trusted: true }],
+        pending: [{ code: "ABCD-2345", user_id: "whatsapp:15550142", chat_id: "whatsapp:15550142@s.whatsapp.net", channel: "whatsapp", name: "Alex (+15550142)", guest: false, expires_in: 3000 }],
       }, { gateway_remove_user: () => status({ allowed: [] }) });
       expect(await screen.findByText(/WhatsApp · pairing code ABCD-2345/)).toBeTruthy();
-      expect(screen.getByText("Telegram · approved")).toBeTruthy();
-      expect(screen.getByText("WhatsApp · approved · receives scheduled results")).toBeTruthy();
+      expect(screen.getByText("Telegram · trusted")).toBeTruthy();
+      expect(screen.getByText("WhatsApp · trusted · receives scheduled results")).toBeTruthy();
       const removes = screen.getAllByRole("button", { name: "Remove" });
       await userEvent.click(removes[1]);
       expect(mock.invoke).toHaveBeenCalledWith("gateway_remove_user", { userId: "whatsapp:15550100" });

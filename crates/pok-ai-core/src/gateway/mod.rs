@@ -51,6 +51,21 @@ pub struct GatewayTask {
     pub images: Vec<String>,
     /// Files the sender attached (pictures included), saved in the inbox.
     pub files: Vec<PathBuf>,
+    /// Where permission requests for this task are announced: the sender
+    /// when they are the owner or trusted, otherwise the owner's home chat
+    /// (`None` when there is none; the dashboard still asks on the PC).
+    pub approval_chat: Option<String>,
+}
+
+/// What to do with a message from someone who is not approved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Strangers {
+    /// Tell them how to get approved: reply with a one-time pairing code.
+    Pair,
+    /// Say nothing to them. The owner still sees the request in Settings and
+    /// can approve it. For a personal number, where a reply to everyone who
+    /// writes would be a nuisance.
+    Quiet,
 }
 
 /// A message from a messaging app, ready for the dispatcher.
@@ -67,6 +82,8 @@ pub struct Inbound {
     /// The channel itself vouches for the sender, without an allowlist entry:
     /// the owner's own account writing to itself.
     pub trusted: bool,
+    /// How to treat the sender if they are not approved.
+    pub strangers: Strangers,
 }
 
 /// A messaging app the gateway listens on and answers through.
@@ -96,6 +113,8 @@ pub trait GatewayHost: Send + Sync {
     /// Pairing requests or jobs changed; the settings page should refresh.
     fn changed(&self) {}
 }
+
+const FRIEND_HELP: &str = "POK-Agent is listening. Send a request and it becomes a task. Pictures and files you attach go with it. Permission requests go to the owner, who also controls the commands.";
 
 const HELP: &str = "POK-Agent is listening. Send a message and it becomes a task. Pictures and files you attach go with it.\n\n\
 /status - what it is doing\n\
@@ -170,6 +189,7 @@ struct Batch {
     name: String,
     texts: Vec<String>,
     media: Vec<Arc<dyn MediaSource>>,
+    owner: bool,
 }
 
 /// How often scheduled jobs are checked.
@@ -293,6 +313,7 @@ impl Gateway {
             chat: chat.clone(),
             images: Vec::new(),
             files: Vec::new(),
+            approval_chat: Some(chat.clone()),
         };
         if self.host.submit(task).await.is_ok() {
             if let Err(error) = self.jobs.mark_run(&job.id, Utc::now()) {
@@ -309,9 +330,24 @@ impl Gateway {
         let user = address(inbound.channel, &inbound.user);
         let chat = address(inbound.channel, &inbound.chat);
         if !inbound.trusted && !self.access.is_allowed(&user) {
-            self.greet_stranger(&user, &chat, &inbound.name).await;
+            match inbound.strangers {
+                Strangers::Pair => self.greet_stranger(&user, &chat, &inbound.name).await,
+                Strangers::Quiet => {
+                    // No reply; the owner sees who asked and decides.
+                    if self
+                        .access
+                        .request_guest_access(&user, &chat, &inbound.name)
+                        .is_some()
+                    {
+                        self.host.changed();
+                    }
+                }
+            }
             return;
         }
+        // The owner, or someone the owner trusts, may use every command and
+        // answers permission requests; a friend only asks for tasks.
+        let owner = inbound.trusted || self.access.is_trusted(&user);
         // The owner writing from their own linked account: make that chat
         // the home for scheduled results if none is chosen yet.
         if inbound.trusted && self.access.home_chat().is_none() {
@@ -321,10 +357,10 @@ impl Gateway {
         let text = inbound.text.trim().to_owned();
         // A caption that starts with a slash is still a request, not a command.
         if inbound.media.is_empty() && text.starts_with('/') {
-            self.run_command(&chat, &inbound.name, &text).await;
+            self.run_command(&chat, &inbound.name, &text, owner).await;
             return;
         }
-        self.queue_task(chat, inbound, text).await;
+        self.queue_task(chat, inbound, text, owner).await;
     }
 
     async fn greet_stranger(&self, user: &str, chat: &str, name: &str) {
@@ -343,8 +379,25 @@ impl Gateway {
         }
     }
 
-    async fn run_command(&self, chat: &str, name: &str, text: &str) {
-        let reply = match parse_command(text) {
+    async fn run_command(&self, chat: &str, name: &str, text: &str, owner: bool) {
+        let command = parse_command(text);
+        // Stopping tasks, answering permission requests, scheduling and the
+        // like act on the owner's computer and reveal what it is doing.
+        if !owner
+            && !matches!(
+                command,
+                Command::Help | Command::WhoAmI | Command::Unknown(_) | Command::Task(_)
+            )
+        {
+            self.send(
+                chat,
+                "Only the owner can use that command. Send what you want done as a request instead.",
+            )
+            .await;
+            return;
+        }
+        let reply = match command {
+            Command::Help if !owner => FRIEND_HELP.to_owned(),
             Command::Help => HELP.to_owned(),
             Command::WhoAmI => format!("You are {name}. This chat is {chat}."),
             Command::Status => self.host.status().await,
@@ -376,14 +429,20 @@ impl Gateway {
 
     /// A task message. Messages from the same chat that follow within the
     /// batching window join it.
-    async fn queue_task(self: &Arc<Self>, chat: String, inbound: Inbound, text: String) {
+    async fn queue_task(
+        self: &Arc<Self>,
+        chat: String,
+        inbound: Inbound,
+        text: String,
+        owner: bool,
+    ) {
         let window = if inbound.media.is_empty() {
             self.text_window
         } else {
             self.media_window
         };
         if window.is_zero() {
-            self.start_task(&chat, &inbound.name, vec![text], inbound.media)
+            self.start_task(&chat, &inbound.name, vec![text], inbound.media, owner)
                 .await;
             return;
         }
@@ -400,6 +459,7 @@ impl Gateway {
                         name: inbound.name,
                         texts: vec![text],
                         media: inbound.media,
+                        owner,
                     },
                 );
                 true
@@ -412,7 +472,7 @@ impl Gateway {
                 let batch = gateway.batches.lock().remove(&chat);
                 if let Some(batch) = batch {
                     gateway
-                        .start_task(&chat, &batch.name, batch.texts, batch.media)
+                        .start_task(&chat, &batch.name, batch.texts, batch.media, batch.owner)
                         .await;
                 }
             });
@@ -425,6 +485,7 @@ impl Gateway {
         name: &str,
         texts: Vec<String>,
         sources: Vec<Arc<dyn MediaSource>>,
+        owner: bool,
     ) {
         let id = uuid::Uuid::new_v4().simple().to_string();
         let mut prepared = Prepared::default();
@@ -449,6 +510,12 @@ impl Gateway {
             return;
         }
         let acknowledgement = acknowledgement(&prepared);
+        // A friend's permission requests go to the owner, not to the friend.
+        let approval_chat = if owner {
+            Some(chat.to_owned())
+        } else {
+            self.access.home_chat().filter(|home| home != chat)
+        };
         let task = GatewayTask {
             id,
             origin: TaskOrigin::Message {
@@ -459,6 +526,7 @@ impl Gateway {
             chat: chat.to_owned(),
             images: prepared.images,
             files: prepared.files,
+            approval_chat,
         };
         match self.host.submit(task).await {
             Ok(()) => {

@@ -4283,6 +4283,7 @@ pub fn run() {
             gateway::gateway_approve_pairing,
             gateway::gateway_deny_pairing,
             gateway::gateway_remove_user,
+            gateway::gateway_set_person_trusted,
             gateway::gateway_add_job,
             gateway::gateway_remove_job,
             gateway::gateway_set_job_enabled,

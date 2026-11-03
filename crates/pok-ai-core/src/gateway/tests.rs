@@ -796,7 +796,45 @@ fn inbound(channel: &'static str, user: &str, text: &str, trusted: bool) -> Inbo
         text: text.to_owned(),
         media: Vec::new(),
         trusted,
+        strangers: Strangers::Pair,
     }
+}
+
+/// A message from someone on a personal number: no reply if they are unknown.
+fn quiet(channel: &'static str, user: &str, text: &str) -> Inbound {
+    Inbound {
+        strangers: Strangers::Quiet,
+        ..inbound(channel, user, text, false)
+    }
+}
+
+/// A WhatsApp-style gateway with the owner already home, for the friend tests.
+async fn owner_and_friend_fixture() -> (
+    tempfile::TempDir,
+    Arc<FakeChannel>,
+    Arc<MockHost>,
+    Arc<Gateway>,
+) {
+    let dir = tempfile::tempdir().unwrap();
+    let whatsapp = other_channel("whatsapp");
+    let host = Arc::new(MockHost::default());
+    let gateway = Arc::new(
+        Gateway::new(
+            vec![whatsapp.clone()],
+            Arc::new(AccessControl::open(&dir.path().join("access.json"))),
+            Arc::new(JobStore::open(&dir.path().join("jobs.json"))),
+            host.clone(),
+            dir.path().join("inbox"),
+        )
+        .with_batch_windows(Duration::ZERO, Duration::ZERO),
+    );
+    // The owner writes to themselves once, which makes that chat home.
+    gateway
+        .handle_inbound(inbound("whatsapp", "15550199", "hello", true))
+        .await;
+    host.tasks.lock().unwrap().clear();
+    whatsapp.sent.lock().unwrap().clear();
+    (dir, whatsapp, host, gateway)
 }
 
 #[tokio::test]
@@ -1134,6 +1172,157 @@ async fn whatsapp_round_trip_over_the_sidecar_protocol() {
     );
 }
 
+#[tokio::test]
+async fn whatsapp_friends_mode_over_the_sidecar_protocol() {
+    use whatsapp::{SELF_CHAT_PREFIX, WhatsAppChannel, WhatsAppConfig, WhatsAppMode};
+
+    let dir = tempfile::tempdir().unwrap();
+    let channel = WhatsAppChannel::new(WhatsAppConfig {
+        sidecar: "unused".into(),
+        data_dir: dir.path().join("whatsapp"),
+        mode: WhatsAppMode::Friends,
+    });
+    let host = Arc::new(MockHost::default());
+    let gateway = Arc::new(
+        Gateway::new(
+            vec![channel.clone()],
+            Arc::new(AccessControl::open(&dir.path().join("access.json"))),
+            Arc::new(JobStore::open(&dir.path().join("jobs.json"))),
+            host.clone(),
+            dir.path().join("inbox"),
+        )
+        .with_batch_windows(Duration::ZERO, Duration::ZERO),
+    );
+    // Sam was approved earlier as a friend; Alex has never been seen.
+    let code = gateway
+        .access()
+        .request_guest_access(
+            "whatsapp:15550100",
+            "whatsapp:15550100@s.whatsapp.net",
+            "Sam",
+        )
+        .unwrap();
+    gateway.access().approve(&code).unwrap();
+
+    let (agent_reads, sidecar_writes) = tokio::io::duplex(1 << 20);
+    let (sidecar_reads, agent_writes) = tokio::io::duplex(1 << 20);
+    let cancel = CancellationToken::new();
+    let session = tokio::spawn({
+        let (channel, gateway, cancel) = (channel.clone(), gateway.clone(), cancel.clone());
+        async move {
+            channel
+                .run_session(agent_reads, agent_writes, gateway, &cancel)
+                .await;
+        }
+    });
+    let commands = Arc::new(Mutex::new(Vec::<Value>::new()));
+    let events = scripted_sidecar(sidecar_reads, sidecar_writes, commands.clone(), Vec::new());
+    events
+        .send(json!({"event": "connected", "phone": "15550199"}))
+        .unwrap();
+
+    let now = chrono::Utc::now().timestamp();
+    let incoming = |id: &str, sender: &str, text: &str| {
+        json!({
+            "event": "message", "id": id, "chat": format!("{sender}@s.whatsapp.net"),
+            "chat_kind": "direct", "sender": sender, "name": "Sam", "from_me": false,
+            "self_chat": false, "text": text, "timestamp": now
+        })
+    };
+
+    // 1. An ordinary chat between the owner and a friend is never touched.
+    events
+        .send(incoming(
+            "A1",
+            "15550100",
+            "are we still on for dinner tonight?",
+        ))
+        .unwrap();
+    // 2. A stranger who tries the wake word gets no reply, but is recorded.
+    events
+        .send(incoming("A2", "15550142", "pok hello, are you there?"))
+        .unwrap();
+    eventually("the quiet request", || {
+        !gateway.access().pending().is_empty()
+    })
+    .await;
+    assert!(host.tasks.lock().unwrap().is_empty());
+    assert!(
+        commands
+            .lock()
+            .unwrap()
+            .iter()
+            .all(|command| command["cmd"] != "send_text"),
+        "nobody was answered yet"
+    );
+    assert!(gateway.access().pending()[0].guest);
+
+    // 3. The approved friend asks properly: a task starts, and the reply says
+    //    it is the agent writing, to the friend's chat.
+    events
+        .send(incoming(
+            "A3",
+            "15550100",
+            "Pok, what is on my calendar today?",
+        ))
+        .unwrap();
+    eventually("the friend's task", || {
+        !host.tasks.lock().unwrap().is_empty()
+    })
+    .await;
+    {
+        let tasks = host.tasks.lock().unwrap();
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].prompt, "what is on my calendar today?");
+        assert_eq!(tasks[0].chat, "whatsapp:15550100@s.whatsapp.net");
+        // No owner chat yet: the permission requests wait for the dashboard.
+        assert_eq!(tasks[0].approval_chat, None);
+    }
+    eventually("the acknowledgement", || {
+        commands
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|command| command["cmd"] == "send_text")
+    })
+    .await;
+    let reply = commands
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|command| command["cmd"] == "send_text")
+        .cloned()
+        .unwrap();
+    assert_eq!(reply["chat"], "15550100@s.whatsapp.net");
+    assert!(
+        reply["text"]
+            .as_str()
+            .unwrap()
+            .starts_with(SELF_CHAT_PREFIX),
+        "{reply}"
+    );
+
+    // 4. The owner's own messages to that friend, and the agent's own echo,
+    //    are never requests.
+    let started = host.tasks.lock().unwrap().len();
+    events
+        .send(json!({
+            "event": "message", "id": "A4", "chat": "15550100@s.whatsapp.net",
+            "chat_kind": "direct", "sender": "15550199", "name": "me", "from_me": true,
+            "self_chat": false, "text": "pok do something", "timestamp": now
+        }))
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert_eq!(host.tasks.lock().unwrap().len(), started);
+
+    drop(events);
+    cancel.cancel();
+    tokio::time::timeout(Duration::from_secs(5), session)
+        .await
+        .unwrap()
+        .unwrap();
+}
+
 /// Runs the real `pok-ai-whatsapp` program through the real channel code:
 /// spawn, pipes, events, QR code, shutdown. It needs the built program and
 /// internet access, so it is opt-in:
@@ -1230,4 +1419,187 @@ async fn a_missing_whatsapp_component_is_reported_clearly() {
         .await
         .expect("a missing program does not keep the gateway from stopping")
         .unwrap();
+}
+
+#[tokio::test]
+async fn an_unknown_sender_who_asks_gets_no_reply_but_the_owner_sees_the_request() {
+    let (_dir, whatsapp, host, gateway) = owner_and_friend_fixture().await;
+    let changes = host.changes.load(Ordering::SeqCst);
+    gateway
+        .handle_inbound(quiet("whatsapp", "15550100", "what is on my calendar?"))
+        .await;
+    assert!(host.tasks.lock().unwrap().is_empty(), "nothing runs");
+    assert!(
+        whatsapp.sent.lock().unwrap().is_empty(),
+        "an unknown sender is never answered, not even with a code"
+    );
+    let pending = gateway.access().pending();
+    assert_eq!(pending.len(), 1);
+    assert!(pending[0].guest);
+    assert_eq!(pending[0].user_id, "whatsapp:15550100");
+    assert!(
+        host.changes.load(Ordering::SeqCst) > changes,
+        "Settings refreshes"
+    );
+
+    // Asking again does not pile up requests.
+    gateway
+        .handle_inbound(quiet("whatsapp", "15550100", "hello?"))
+        .await;
+    assert_eq!(gateway.access().pending().len(), 1);
+
+    // Once approved they are a friend, not trusted, and the owner stays home.
+    let code = pending[0].code.clone();
+    gateway.access().approve(&code).unwrap();
+    assert!(gateway.access().is_allowed("whatsapp:15550100"));
+    assert!(!gateway.access().is_trusted("whatsapp:15550100"));
+    assert_eq!(
+        gateway.access().home_chat().as_deref(),
+        Some("whatsapp:15550199")
+    );
+}
+
+#[tokio::test]
+async fn a_friend_asks_for_tasks_but_their_permission_requests_go_to_the_owner() {
+    let (_dir, _whatsapp, host, gateway) = owner_and_friend_fixture().await;
+    let code = gateway
+        .access()
+        .request_guest_access("whatsapp:15550100", "whatsapp:15550100", "Sam")
+        .unwrap();
+    gateway.access().approve(&code).unwrap();
+
+    gateway
+        .handle_inbound(quiet("whatsapp", "15550100", "look this up"))
+        .await;
+    gateway
+        .handle_inbound(inbound("whatsapp", "15550199", "owner task", true))
+        .await;
+    let tasks = host.tasks.lock().unwrap();
+    assert_eq!(tasks.len(), 2);
+    assert_eq!(tasks[0].chat, "whatsapp:15550100");
+    assert_eq!(
+        tasks[0].approval_chat.as_deref(),
+        Some("whatsapp:15550199"),
+        "a friend's prompts are shown to the owner"
+    );
+    assert_eq!(
+        tasks[1].approval_chat.as_deref(),
+        Some("whatsapp:15550199"),
+        "the owner answers their own"
+    );
+}
+
+#[tokio::test]
+async fn a_friend_cannot_use_commands_or_answer_permission_requests() {
+    let (_dir, whatsapp, host, gateway) = owner_and_friend_fixture().await;
+    let code = gateway
+        .access()
+        .request_guest_access("whatsapp:15550100", "whatsapp:15550100", "Sam")
+        .unwrap();
+    gateway.access().approve(&code).unwrap();
+
+    for command in [
+        "/approve",
+        "/deny",
+        "/stop",
+        "/new",
+        "/status",
+        "/sethome",
+        "/jobs",
+        "/schedule daily 09:00 do things",
+        "/unschedule abc",
+    ] {
+        gateway
+            .handle_inbound(quiet("whatsapp", "15550100", command))
+            .await;
+        let reply = whatsapp.sent.lock().unwrap().pop().unwrap();
+        assert_eq!(reply.0, "15550100");
+        assert!(reply.1.contains("Only the owner"), "{command}: {}", reply.1);
+    }
+    assert!(host.approvals.lock().unwrap().is_empty());
+    assert_eq!(host.stops.load(Ordering::SeqCst), 0);
+    assert!(gateway.jobs().list().is_empty());
+    assert_eq!(
+        gateway.access().home_chat().as_deref(),
+        Some("whatsapp:15550199"),
+        "a friend cannot take over the scheduled results"
+    );
+
+    // Help is allowed and says what a friend can do.
+    gateway
+        .handle_inbound(quiet("whatsapp", "15550100", "/help"))
+        .await;
+    assert!(
+        whatsapp
+            .sent
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap()
+            .1
+            .contains("owner")
+    );
+
+    // The owner keeps everything.
+    gateway
+        .handle_inbound(inbound("whatsapp", "15550199", "/approve", true))
+        .await;
+    assert_eq!(*host.approvals.lock().unwrap(), vec![true]);
+}
+
+#[tokio::test]
+async fn a_trusted_person_keeps_every_command_and_answers_their_own_prompts() {
+    let (_dir, _whatsapp, host, gateway) = owner_and_friend_fixture().await;
+    let code = gateway
+        .access()
+        .request_guest_access("whatsapp:15550100", "whatsapp:15550100", "Sam")
+        .unwrap();
+    gateway.access().approve(&code).unwrap();
+    gateway
+        .access()
+        .set_trusted("whatsapp:15550100", true)
+        .unwrap();
+
+    gateway
+        .handle_inbound(quiet("whatsapp", "15550100", "/stop"))
+        .await;
+    assert_eq!(host.stops.load(Ordering::SeqCst), 1);
+    gateway
+        .handle_inbound(quiet("whatsapp", "15550100", "do it"))
+        .await;
+    assert_eq!(
+        host.tasks.lock().unwrap()[0].approval_chat.as_deref(),
+        Some("whatsapp:15550100")
+    );
+}
+
+#[tokio::test]
+async fn with_no_home_chat_a_friends_permission_requests_wait_on_the_pc() {
+    let dir = tempfile::tempdir().unwrap();
+    let whatsapp = other_channel("whatsapp");
+    let host = Arc::new(MockHost::default());
+    let gateway = Arc::new(
+        Gateway::new(
+            vec![whatsapp.clone()],
+            Arc::new(AccessControl::open(&dir.path().join("access.json"))),
+            Arc::new(JobStore::open(&dir.path().join("jobs.json"))),
+            host.clone(),
+            dir.path().join("inbox"),
+        )
+        .with_batch_windows(Duration::ZERO, Duration::ZERO),
+    );
+    let code = gateway
+        .access()
+        .request_guest_access("whatsapp:15550100", "whatsapp:15550100", "Sam")
+        .unwrap();
+    gateway.access().approve(&code).unwrap();
+    gateway
+        .handle_inbound(quiet("whatsapp", "15550100", "look this up"))
+        .await;
+    let tasks = host.tasks.lock().unwrap();
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(
+        tasks[0].approval_chat, None,
+        "never the friend's own chat: the dashboard on the PC asks"
+    );
 }

@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    Channel, Gateway, Inbound,
+    Channel, Gateway, Inbound, Strangers,
     media::{Download, MediaKind, MediaSource},
 };
 use crate::error::{PokError, Result};
@@ -393,6 +393,7 @@ impl TelegramChannel {
                 text,
                 media,
                 trusted: false,
+                strangers: Strangers::Pair,
             })
             .await;
     }

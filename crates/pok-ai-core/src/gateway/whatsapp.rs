@@ -24,7 +24,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use async_trait::async_trait;
@@ -38,7 +38,7 @@ use tokio::{
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    Channel, Gateway, Inbound,
+    Channel, Gateway, Inbound, Strangers,
     media::{Download, MediaKind, MediaSource, safe_component},
 };
 use crate::error::{PokError, Result};
@@ -56,6 +56,12 @@ const REPLY_TIMEOUT: Duration = Duration::from_secs(120);
 pub const SELF_CHAT_PREFIX: &str = "POK-Agent: ";
 /// How many of our own message ids are remembered for the echo check.
 const REMEMBERED_SENDS: usize = 256;
+/// The word a friend starts a request with in friends mode.
+pub const WAKE_WORD: &str = "pok";
+/// After a friend's request, their next messages in that chat join it without
+/// the wake word for this long: the rest of a photo album, or a message the
+/// app split in two.
+const FOLLOW_UP_WINDOW: Duration = Duration::from_secs(20);
 
 /// Whose messages the agent answers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -68,6 +74,13 @@ pub enum WhatsAppMode {
     /// A dedicated number that approved people message; strangers get a
     /// pairing code like on Telegram.
     Bot,
+    /// The owner's own number, shared with friends. "Message yourself" works
+    /// as in `SelfChat`. A friend asks by starting a message with "pok"
+    /// (everything else they write is a normal chat with the owner and is
+    /// never touched); someone not yet approved gets no reply at all, and the
+    /// owner sees the request in Settings. Friends cannot answer permission
+    /// requests or use commands.
+    Friends,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
@@ -206,6 +219,8 @@ pub struct WhatsAppChannel {
     status: Mutex<WhatsAppStatus>,
     link: Mutex<Option<Arc<Link>>>,
     sent_ids: Mutex<VecDeque<String>>,
+    /// Friends mode: when each chat last made a request.
+    engaged: Mutex<HashMap<String, Instant>>,
     /// The saved session is deleted once the sidecar has exited: set when the
     /// device was unlinked, so a revoked session is never tried again.
     wipe_session: AtomicBool,
@@ -218,6 +233,7 @@ impl WhatsAppChannel {
             status: Mutex::new(WhatsAppStatus::default()),
             link: Mutex::new(None),
             sent_ids: Mutex::new(VecDeque::new()),
+            engaged: Mutex::new(HashMap::new()),
             wipe_session: AtomicBool::new(false),
         })
     }
@@ -339,7 +355,41 @@ impl WhatsAppChannel {
                 }
                 Some(Sender::Person)
             }
+            WhatsAppMode::Friends => {
+                if message.from_me {
+                    // The owner's own chat, as in self-chat mode. What the
+                    // owner writes to friends is never a request, and the
+                    // agent's replies there carry the prefix.
+                    if !message.self_chat
+                        || message
+                            .text
+                            .trim_start()
+                            .starts_with(SELF_CHAT_PREFIX.trim_end())
+                    {
+                        return None;
+                    }
+                    return Some(Sender::Owner);
+                }
+                if message.sender.trim().is_empty() {
+                    return None;
+                }
+                Some(Sender::Person)
+            }
         }
+    }
+
+    /// Whether `chat` made a request a moment ago (friends mode).
+    fn is_engaged(&self, chat: &str) -> bool {
+        self.engaged
+            .lock()
+            .get(chat)
+            .is_some_and(|since| since.elapsed() < FOLLOW_UP_WINDOW)
+    }
+
+    fn mark_engaged(&self, chat: &str) {
+        let mut engaged = self.engaged.lock();
+        engaged.retain(|_, since| since.elapsed() < FOLLOW_UP_WINDOW * 3);
+        engaged.insert(chat.to_owned(), Instant::now());
     }
 
     async fn on_event(self: &Arc<Self>, event: Event, link: &Arc<Link>, gateway: &Arc<Gateway>) {
@@ -412,14 +462,28 @@ impl WhatsAppChannel {
                 let gateway = gateway.clone();
                 // Fetching attachments needs this read loop to keep running.
                 tokio::spawn(async move {
-                    let inbound = channel.to_inbound(*message, sender);
-                    gateway.handle_inbound(inbound).await;
+                    if let Some(inbound) = channel.to_inbound(*message, sender) {
+                        gateway.handle_inbound(inbound).await;
+                    }
                 });
             }
         }
     }
 
-    fn to_inbound(self: &Arc<Self>, message: WaMessage, sender: Sender) -> Inbound {
+    /// The message for the dispatcher, or `None` when it is not a request:
+    /// in friends mode a friend's message counts only when it starts with the
+    /// wake word (or follows one closely).
+    fn to_inbound(self: &Arc<Self>, message: WaMessage, sender: Sender) -> Option<Inbound> {
+        let owner = sender == Sender::Owner;
+        let mut text = message.text.clone();
+        if self.config.mode == WhatsAppMode::Friends && !owner {
+            match strip_wake_word(&text) {
+                Some(request) => text = request,
+                None if self.is_engaged(&message.chat) => {}
+                None => return None,
+            }
+            self.mark_engaged(&message.chat);
+        }
         let media = message
             .media
             .iter()
@@ -431,8 +495,7 @@ impl WhatsAppChannel {
                 }) as Arc<dyn MediaSource>
             })
             .collect();
-        let owner = sender == Sender::Owner;
-        Inbound {
+        Some(Inbound {
             channel: "whatsapp",
             chat: message.chat.clone(),
             user: if owner {
@@ -453,10 +516,15 @@ impl WhatsAppChannel {
             } else {
                 format!("{} (+{})", message.name.trim(), message.sender)
             },
-            text: message.text,
+            text,
             media,
             trusted: owner,
-        }
+            strangers: if self.config.mode == WhatsAppMode::Friends {
+                Strangers::Quiet
+            } else {
+                Strangers::Pair
+            },
+        })
     }
 
     /// Read events and write commands until the sidecar's pipes close.
@@ -629,11 +697,7 @@ impl Channel for WhatsAppChannel {
     }
 
     async fn send_text(&self, chat: &str, text: &str) -> Result<()> {
-        let prefix = if self.config.mode == WhatsAppMode::SelfChat {
-            SELF_CHAT_PREFIX
-        } else {
-            ""
-        };
+        let prefix = reply_prefix(self.config.mode);
         for part in super::split_text(&to_whatsapp_markup(text), MESSAGE_CHARS) {
             let reply = self
                 .command(
@@ -717,6 +781,49 @@ pub fn session_exists(data_dir: &std::path::Path) -> bool {
 }
 
 // ---- text and QR helpers ---------------------------------------------------
+
+/// What every reply starts with. On the owner's own number it says the agent
+/// wrote it: that keeps the self-chat from answering itself, and tells friends
+/// it is not the owner typing. A dedicated number needs none.
+pub fn reply_prefix(mode: WhatsAppMode) -> &'static str {
+    match mode {
+        WhatsAppMode::Bot => "",
+        WhatsAppMode::SelfChat | WhatsAppMode::Friends => SELF_CHAT_PREFIX,
+    }
+}
+
+/// The request after the wake word ("pok", "@pok", "pok agent", "pok-agent",
+/// any case), or `None` when the text does not start with it. "pokemon" does
+/// not count. `Some("")` means the wake word alone.
+pub fn strip_wake_word(text: &str) -> Option<String> {
+    let trimmed = text.trim_start();
+    let rest = trimmed.strip_prefix('@').unwrap_or(trimmed);
+    // ASCII lowercasing keeps every byte offset, so slicing `rest` is safe.
+    let lower = rest.to_ascii_lowercase();
+    let after_word = lower.strip_prefix(WAKE_WORD)?;
+    let mut consumed = rest.len() - after_word.len();
+    for suffix in ["-agent", " agent"] {
+        if lower[consumed..].starts_with(suffix) {
+            consumed += suffix.len();
+            break;
+        }
+    }
+    let remainder = &rest[consumed..];
+    // The word must end here.
+    if remainder
+        .chars()
+        .next()
+        .is_some_and(|c| !(c.is_whitespace() || matches!(c, ',' | ':' | ';' | '!' | '.' | '?')))
+    {
+        return None;
+    }
+    Some(
+        remainder
+            .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, ',' | ':' | ';' | '!'))
+            .trim()
+            .to_owned(),
+    )
+}
 
 /// The QR code to scan, as an SVG image, or `None` if it cannot be drawn.
 pub fn qr_svg(code: &str) -> Option<String> {
@@ -961,6 +1068,142 @@ mod tests {
                 )
                 .is_none()
         );
+    }
+
+    #[test]
+    fn friends_mode_serves_the_owners_own_chat_and_friends_only() {
+        let channel = channel(WhatsAppMode::Friends);
+        let now = 1_010;
+        assert_eq!(
+            channel.route(&message("1", "direct", true, true, "research x"), now),
+            Some(Sender::Owner)
+        );
+        assert_eq!(
+            channel.route(&message("2", "direct", false, false, "pok hi"), now),
+            Some(Sender::Person)
+        );
+        // What the owner types to a friend is a normal chat, never a request.
+        assert_eq!(
+            channel.route(&message("3", "direct", true, false, "pok hi"), now),
+            None
+        );
+        // The agent's own replies in the self-chat are not new requests.
+        let echo = message(
+            "4",
+            "direct",
+            true,
+            true,
+            &format!("{SELF_CHAT_PREFIX}Done."),
+        );
+        assert_eq!(channel.route(&echo, now), None);
+        // Groups stay out.
+        assert_eq!(
+            channel.route(&message("5", "group", false, false, "pok hi"), now),
+            None
+        );
+    }
+
+    #[test]
+    fn the_wake_word_is_recognised_in_its_usual_spellings_only() {
+        let request = |text: &str| strip_wake_word(text);
+        assert_eq!(
+            request("pok what is on today").as_deref(),
+            Some("what is on today")
+        );
+        assert_eq!(request("  Pok, research X").as_deref(), Some("research X"));
+        assert_eq!(request("@POK: do it").as_deref(), Some("do it"));
+        assert_eq!(
+            request("pok agent summarize this").as_deref(),
+            Some("summarize this")
+        );
+        assert_eq!(
+            request("POK-Agent open the calendar").as_deref(),
+            Some("open the calendar")
+        );
+        assert_eq!(request("pok").as_deref(), Some(""), "the word alone");
+        // Ordinary chat that merely begins with the same letters is not a request.
+        assert_eq!(request("pokemon is great"), None);
+        assert_eq!(request("poke me later"), None);
+        assert_eq!(request("pok-man"), None);
+        assert_eq!(
+            request("are we on for dinner? pok"),
+            None,
+            "it must come first"
+        );
+        assert_eq!(request(""), None);
+        // Non-ASCII text in front is simply not the wake word.
+        assert_eq!(request("é pok x"), None);
+    }
+
+    #[test]
+    fn in_friends_mode_only_requests_with_the_wake_word_reach_the_agent() {
+        let channel = channel(WhatsAppMode::Friends);
+        let friend = |text: &str| message("9", "direct", false, false, text);
+        // A normal chat with the owner is never touched.
+        assert!(
+            channel
+                .to_inbound(friend("are we still on for dinner?"), Sender::Person)
+                .is_none()
+        );
+        let request = channel
+            .to_inbound(friend("Pok, what is on my calendar?"), Sender::Person)
+            .unwrap();
+        assert_eq!(request.text, "what is on my calendar?");
+        assert_eq!(
+            request.strangers,
+            Strangers::Quiet,
+            "strangers get no reply"
+        );
+        assert!(!request.trusted, "a friend is never the owner");
+
+        // The rest of an album, or a message the app split, rides along...
+        assert_eq!(
+            channel
+                .to_inbound(friend("and the second part"), Sender::Person)
+                .unwrap()
+                .text,
+            "and the second part"
+        );
+        // ...but a while later it is an ordinary chat again.
+        channel.engaged.lock().insert(
+            "15550100@s.whatsapp.net".into(),
+            Instant::now().checked_sub(Duration::from_secs(30)).unwrap(),
+        );
+        assert!(
+            channel
+                .to_inbound(friend("thanks!"), Sender::Person)
+                .is_none()
+        );
+
+        // The owner never needs the word.
+        let owner = channel
+            .to_inbound(
+                message("10", "direct", true, true, "just do it"),
+                Sender::Owner,
+            )
+            .unwrap();
+        assert_eq!(owner.text, "just do it");
+        assert!(owner.trusted);
+    }
+
+    #[test]
+    fn a_dedicated_number_does_not_use_a_wake_word_and_pairs_strangers() {
+        let channel = channel(WhatsAppMode::Bot);
+        let inbound = channel
+            .to_inbound(
+                message("1", "direct", false, false, "hello"),
+                Sender::Person,
+            )
+            .unwrap();
+        assert_eq!(inbound.text, "hello");
+        assert_eq!(inbound.strangers, Strangers::Pair);
+    }
+
+    #[test]
+    fn replies_name_the_agent_except_on_a_dedicated_number() {
+        assert_eq!(reply_prefix(WhatsAppMode::SelfChat), SELF_CHAT_PREFIX);
+        assert_eq!(reply_prefix(WhatsAppMode::Friends), SELF_CHAT_PREFIX);
+        assert_eq!(reply_prefix(WhatsAppMode::Bot), "");
     }
 
     #[test]

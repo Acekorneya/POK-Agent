@@ -45,6 +45,11 @@ struct InFlight {
     id: String,
     /// Where the answer goes, as `<channel>:<id>`.
     chat: String,
+    /// Where permission requests are announced (the owner's chat for a
+    /// friend's task); `None` leaves them to the dashboard on the PC.
+    approval_chat: Option<String>,
+    /// The friend's name when someone other than the owner asked.
+    requester: Option<String>,
     prompt: String,
     scheduled: Option<String>,
     started: std::time::Instant,
@@ -223,9 +228,19 @@ impl GatewayHost for AppHost {
                         .into(),
                 );
             }
+            let requester = match &task.origin {
+                TaskOrigin::Message { user, .. }
+                    if task.approval_chat.as_deref() != Some(task.chat.as_str()) =>
+                {
+                    Some(user.clone())
+                }
+                _ => None,
+            };
             *flight = Some(InFlight {
                 id: task.id.clone(),
                 chat: task.chat.clone(),
+                approval_chat: task.approval_chat.clone(),
+                requester,
                 prompt: task.prompt.clone(),
                 scheduled: match &task.origin {
                     TaskOrigin::Schedule { job } => Some(job.clone()),
@@ -323,12 +338,13 @@ impl GatewayHost for AppHost {
 /// The agent is waiting for permission: tell the chat that sent the task.
 pub fn announce_approval(app: &tauri::AppHandle, request: &ApprovalRequest) {
     let state = app.state::<GatewayState>();
-    let Some(chat) = state
+    // One lock, read once.
+    let Some((chat, requester)) = state
         .shared
         .in_flight
         .lock()
         .as_ref()
-        .map(|flight| flight.chat.clone())
+        .map(|flight| (flight.approval_chat.clone(), flight.requester.clone()))
     else {
         return;
     };
@@ -336,8 +352,14 @@ pub fn announce_approval(app: &tauri::AppHandle, request: &ApprovalRequest) {
         return;
     };
     *state.shared.pending_approval.lock() = Some(request.id);
+    // Nowhere to ask but the PC (a friend's task, no owner chat): the
+    // dashboard shows the request there.
+    let Some(chat) = chat else {
+        return;
+    };
+    let whose = requester.map_or_else(String::new, |name| format!(" for {name}'s request"));
     let message = format!(
-        "Permission needed: {} - {}\nReply /approve or /deny, or answer on the PC.",
+        "Permission needed{whose}: {} - {}\nReply /approve or /deny, or answer on the PC.",
         request.tool,
         preview(&request.reason, 240)
     );
@@ -675,8 +697,9 @@ pub fn gateway_approve_pairing(
     state: State<'_, GatewayState>,
 ) -> Result<GatewayStatus, String> {
     let (access, _) = state.stores(runtime.inner());
-    // The chat to tell is known only until the code is used up.
-    let asked_from = access.pending_chat(&code);
+    // The chat to tell, and whether this is a friend, are known only until
+    // the code is used up.
+    let request = access.pending_request(&code);
     let user = access
         .approve(&code)
         .map_err(|error| error.to_string())?
@@ -684,14 +707,22 @@ pub fn gateway_approve_pairing(
             "That code is not open any more. Ask them to message the bot again.".to_string()
         })?;
     if let Some(gateway) = state.shared.gateway.lock().clone() {
-        let chat = asked_from.or_else(|| access.home_chat()).unwrap_or(user.id);
+        let friend = request.as_ref().is_some_and(|request| request.guest);
+        let chat = request
+            .map(|request| request.chat_id)
+            .or_else(|| access.home_chat())
+            .unwrap_or(user.id);
+        let welcome = if friend {
+            format!(
+                "You can ask me things now. Start your message with \"{}\", for example \"{} what is on my calendar today\". Pictures and files you attach go with it. Anything that needs permission goes to the owner.",
+                pok_ai_core::gateway::whatsapp::WAKE_WORD,
+                pok_ai_core::gateway::whatsapp::WAKE_WORD
+            )
+        } else {
+            "You are approved. Send me a task, or /help for the commands.".to_owned()
+        };
         tauri::async_runtime::spawn(async move {
-            gateway
-                .send(
-                    &chat,
-                    "You are approved. Send me a task, or /help for the commands.",
-                )
-                .await;
+            gateway.send(&chat, &welcome).await;
         });
     }
     Ok(status(runtime.inner(), state.inner()))
@@ -717,6 +748,23 @@ pub fn gateway_remove_user(
         .stores(runtime.inner())
         .0
         .remove(&user_id)
+        .map_err(|error| error.to_string())?;
+    Ok(status(runtime.inner(), state.inner()))
+}
+
+/// Trust a person (they answer permission requests and use every command) or
+/// make them a friend (they only ask for tasks).
+#[tauri::command]
+pub fn gateway_set_person_trusted(
+    user_id: String,
+    trusted: bool,
+    runtime: State<'_, AppRuntime>,
+    state: State<'_, GatewayState>,
+) -> Result<GatewayStatus, String> {
+    state
+        .stores(runtime.inner())
+        .0
+        .set_trusted(&user_id, trusted)
         .map_err(|error| error.to_string())?;
     Ok(status(runtime.inner(), state.inner()))
 }
@@ -970,6 +1018,8 @@ mod tests {
         *shared.in_flight.lock() = Some(InFlight {
             id: "a".into(),
             chat: "telegram:1".into(),
+            approval_chat: Some("telegram:1".into()),
+            requester: None,
             prompt: "open   the\ncalendar".into(),
             scheduled: None,
             started: std::time::Instant::now(),

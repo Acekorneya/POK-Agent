@@ -62,7 +62,7 @@ type DecisionRouterStatus = {
 };
 type WhatsAppState = "off" | "connecting" | "waiting_for_scan" | "connected" | "logged_out" | "failed";
 type WhatsAppView = {
-  enabled: boolean; mode: "self_chat" | "bot"; available: boolean; linked: boolean;
+  enabled: boolean; mode: "self_chat" | "bot" | "friends"; available: boolean; linked: boolean;
   state: WhatsAppState; qr_svg?: string | null; account?: string | null; error?: string | null;
 };
 type GatewayStatus = {
@@ -70,8 +70,10 @@ type GatewayStatus = {
   busy: boolean; task?: string | null; home_chat?: string | null;
   whatsapp: WhatsAppView;
   /** `id` is `<channel>:<id>`, such as `telegram:900` or `whatsapp:15550100`. */
-  allowed: { id: string; name: string }[];
-  pending: { code: string; user_id: string; chat_id: string; channel: string; name: string; expires_in: number }[];
+  /** A trusted person answers permission requests and uses every command; a friend only asks for tasks. */
+  allowed: { id: string; name: string; trusted: boolean }[];
+  /** `guest`: a friend who asked without being told a code (WhatsApp friends mode). */
+  pending: { code: string; user_id: string; chat_id: string; channel: string; name: string; guest: boolean; expires_in: number }[];
   jobs: { id: string; name: string; prompt: string; schedule: string; enabled: boolean; last_run?: string | null }[];
 };
 type WebSearchProvider = "auto" | "duckduckgo" | "brave" | "tavily" | "searxng";
@@ -3998,10 +4000,11 @@ export function App() {
             {gateway && !gateway.whatsapp.available && (
               <p className="error-text" role="alert">This copy of POK-Agent was built without the WhatsApp component, so WhatsApp is not available. Use the installer or portable download from the releases page.</p>
             )}
-            <SettingRow label="Whose messages" help="“Only me” uses your own number: open WhatsApp, find “Message yourself”, and write there. Nobody else is ever answered. “Other people” suits a dedicated number: approved people can message it, and strangers get a pairing code you approve below.">
+            <SettingRow label="Whose messages" help="“Only me” uses your own number: open WhatsApp, find “Message yourself”, and write there. Nobody else is ever answered. “Me and friends” is the same on your own number, and friends you approve can ask too by starting a message with “pok”; everything else they write to you is left alone, and someone not approved gets no reply at all. “Other people” suits a dedicated number: approved people can message it, and strangers get a pairing code you approve below.">
               <select aria-label="WhatsApp mode" value={gateway?.whatsapp.mode ?? "self_chat"} disabled={gatewayBusy}
                 onChange={(event) => void gatewayCall("gateway_set_whatsapp", { enabled: gateway?.whatsapp.enabled ?? false, mode: event.target.value })}>
                 <option value="self_chat">Only me (Message yourself)</option>
+                <option value="friends">Me and friends I approve (your own number)</option>
                 <option value="bot">Other people (a dedicated number)</option>
               </select>
             </SettingRow>
@@ -4033,11 +4036,11 @@ export function App() {
 
           <SettingsCard title="People"
             status={<StatusPill tone={gateway?.allowed.length ? "ok" : "off"}>{gateway?.allowed.length ?? 0} approved</StatusPill>}
-            description="Anyone else who messages the bot or a dedicated WhatsApp number gets a one-time pairing code and nothing more. Approve a code only if you recognise the name; approving gives that person control of this agent.">
+            description="Anyone else who messages the bot or a dedicated WhatsApp number gets a one-time pairing code and nothing more. On your own number (friends mode) someone who starts a message with “pok” appears here without being answered. A friend can ask for tasks; their permission requests come to you, and they cannot use commands. Trust someone only if you would hand them your keyboard.">
             {(gateway?.pending ?? []).map((request) => (
               <div className="memory" key={request.code}>
                 <strong>{request.name} wants access</strong>
-                <small>{channelLabel(request.channel)} · pairing code {request.code} · expires in {Math.max(1, Math.round(request.expires_in / 60))} min</small>
+                <small>{channelLabel(request.channel)} · {request.guest ? "asked quietly, they have not been told anything" : `pairing code ${request.code}`} · expires in {Math.max(1, Math.round(request.expires_in / 60))} min</small>
                 <div className="memory-actions">
                   <button type="button" className="primary" disabled={gatewayBusy} onClick={() => void gatewayCall("gateway_approve_pairing", { code: request.code })}>Approve</button>
                   <button type="button" disabled={gatewayBusy} onClick={() => void gatewayCall("gateway_deny_pairing", { code: request.code })}>Deny</button>
@@ -4047,14 +4050,16 @@ export function App() {
             {(gateway?.allowed ?? []).map((person) => (
               <div className="memory" key={person.id}>
                 <strong>{person.name}</strong>
-                <small>{channelLabel(person.id.split(":")[0])} · approved{isHomeChat(gateway?.home_chat, person.id) ? " · receives scheduled results" : ""}</small>
+                <small>{channelLabel(person.id.split(":")[0])} · {person.trusted ? "trusted" : "friend"}{isHomeChat(gateway?.home_chat, person.id) ? " · receives scheduled results" : ""}</small>
                 <div className="memory-actions">
+                  <Switch label={`Trust ${person.name}`} checked={person.trusted} disabled={gatewayBusy}
+                    onChange={(checked) => void gatewayCall("gateway_set_person_trusted", { userId: person.id, trusted: checked })} />
                   <button type="button" disabled={gatewayBusy} onClick={() => void gatewayCall("gateway_remove_user", { userId: person.id })}>Remove</button>
                 </div>
               </div>
             ))}
             {!gateway?.pending.length && !gateway?.allowed.length && (
-              <p className="settings-note">No one yet. Turn the gateway on, then send any message to your bot to get a pairing code. In WhatsApp “Only me” mode you do not need one.</p>
+              <p className="settings-note">No one yet. Turn the gateway on, then send any message to your bot to get a pairing code. In WhatsApp “Only me” mode you do not need one; in “Me and friends” a friend starts a message with “pok” and appears here.</p>
             )}
           </SettingsCard>
 

@@ -167,9 +167,17 @@ way WhatsApp Web does (the same approach as Hermes Agent and OpenClaw). **This i
 WhatsApp's terms do not allow custom clients and an account can be suspended. A spare number is the
 safer choice.**
 
-1. In *Settings → Gateway → WhatsApp*, choose whose messages count. *Only me* uses your own number: write in WhatsApp's "Message
-   yourself" chat and nobody else is ever answered. *Other people* suits a dedicated number: approved
-   people can message it and strangers get a pairing code, like Telegram.
+1. In *Settings → Gateway → WhatsApp*, choose whose messages count:
+   - *Only me* uses your own number: write in WhatsApp's "Message yourself" chat and nobody else is
+     ever answered.
+   - *Me and friends I approve* is the same on your own number, and friends can ask too. A friend
+     starts a message with **pok** (for example "pok what is on my calendar today", with photos or
+     files if they help); everything else they write to you stays a normal chat the agent never
+     touches. Someone not approved yet gets no reply at all: the request appears under *People* and
+     you decide. Friends can ask for tasks only, since their permission requests come to you and
+     they cannot use commands; trust a person under *People* if you want them to have everything.
+   - *Other people* suits a dedicated number: approved people can message it and strangers get a
+     pairing code, like Telegram.
 2. Turn on *Listen on WhatsApp* and scan the QR code under WhatsApp → Settings → Linked devices →
    Link a device. The session is kept in `<data dir>/whatsapp/session` (it holds keys: treat it like a
    password; *Unlink this computer* deletes it).
@@ -185,8 +193,10 @@ count (never groups), messages sent while the gateway was off are dropped instea
 and a task that needs permission waits for `/approve` or `/deny` (or a click on the PC). Whatever the
 dashboard's permission mode is, tasks that arrive from a messaging app or a schedule always ask first,
 and they never get an automatic first look at whatever window is in front. The Telegram bot token is
-kept in Windows Credential Manager. The agent's replies in your WhatsApp self-chat start with
-"POK-Agent:" so they are never mistaken for a new request.
+kept in Windows Credential Manager. On your own WhatsApp number every reply starts with
+"POK-Agent:", so it is never mistaken for a new request and friends can always tell it is not you.
+Everyone you approve shares one conversation and one task at a time, so approve only people you
+would trust with your keyboard.
 
 **Always on.** Turn on *Start with Windows* (Settings → Gateway) and POK-Agent starts hidden in the
 system tray when you sign in, already listening. While the gateway is on, closing the window just

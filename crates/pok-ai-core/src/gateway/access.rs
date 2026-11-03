@@ -62,6 +62,16 @@ pub struct AllowedUser {
     #[serde(deserialize_with = "address_or_legacy_number")]
     pub id: String,
     pub name: String,
+    /// A trusted person answers permission requests and may use every
+    /// command, like the owner. A friend (not trusted) can only ask for tasks;
+    /// their permission requests go to the owner. People saved before this
+    /// existed are trusted, as they always were.
+    #[serde(default = "trusted_by_default")]
+    pub trusted: bool,
+}
+
+const fn trusted_by_default() -> bool {
+    true
 }
 
 impl AllowedUser {
@@ -77,6 +87,9 @@ pub struct PendingPairing {
     pub chat_id: String,
     pub channel: String,
     pub name: String,
+    /// A friend asked for access without being told a code: approving makes
+    /// them a friend, not a trusted person.
+    pub guest: bool,
     /// Seconds until the code expires.
     pub expires_in: u64,
 }
@@ -95,6 +108,7 @@ struct Pending {
     user_id: String,
     chat_id: String,
     name: String,
+    guest: bool,
     created: Instant,
 }
 
@@ -137,6 +151,25 @@ impl AccessControl {
             .any(|user| user.id == user_id)
     }
 
+    /// Whether an approved person is trusted (see [`AllowedUser::trusted`]).
+    pub fn is_trusted(&self, user_id: &str) -> bool {
+        self.saved
+            .lock()
+            .allowed
+            .iter()
+            .any(|user| user.id == user_id && user.trusted)
+    }
+
+    pub fn set_trusted(&self, user_id: &str, trusted: bool) -> Result<bool> {
+        let mut saved = self.saved.lock();
+        let Some(user) = saved.allowed.iter_mut().find(|user| user.id == user_id) else {
+            return Ok(false);
+        };
+        user.trusted = trusted;
+        self.save(&saved)?;
+        Ok(true)
+    }
+
     pub fn allowed(&self) -> Vec<AllowedUser> {
         self.saved.lock().allowed.clone()
     }
@@ -154,6 +187,17 @@ impl AccessControl {
     /// A one-time code for an unknown sender, or `None` when too many are
     /// already open. Asking again returns the same open code.
     pub fn request_pairing(&self, user_id: &str, chat_id: &str, name: &str) -> Option<String> {
+        self.request(user_id, chat_id, name, false)
+    }
+
+    /// Record that someone asked to use the agent, without telling them
+    /// anything. The owner sees the request in Settings; approving it makes
+    /// the person a friend (not trusted).
+    pub fn request_guest_access(&self, user_id: &str, chat_id: &str, name: &str) -> Option<String> {
+        self.request(user_id, chat_id, name, true)
+    }
+
+    fn request(&self, user_id: &str, chat_id: &str, name: &str, guest: bool) -> Option<String> {
         let mut pending = self.pending.lock();
         pending.retain(|entry| entry.created.elapsed() < PAIRING_TTL);
         if let Some(existing) = pending.iter().find(|entry| entry.user_id == user_id) {
@@ -168,6 +212,7 @@ impl AccessControl {
             user_id: user_id.to_owned(),
             chat_id: chat_id.to_owned(),
             name: name.to_owned(),
+            guest,
             created: Instant::now(),
         });
         Some(code)
@@ -184,6 +229,7 @@ impl AccessControl {
                 chat_id: entry.chat_id.clone(),
                 channel: split_address(&entry.user_id).0.to_owned(),
                 name: entry.name.clone(),
+                guest: entry.guest,
                 expires_in: PAIRING_TTL
                     .saturating_sub(entry.created.elapsed())
                     .as_secs(),
@@ -191,17 +237,13 @@ impl AccessControl {
             .collect()
     }
 
-    /// The chat an open code was requested from, so the person can be told
-    /// they were approved.
-    pub fn pending_chat(&self, code: &str) -> Option<String> {
+    /// An open request by its code, so the person can be told they were
+    /// approved and how to talk to the agent.
+    pub fn pending_request(&self, code: &str) -> Option<PendingPairing> {
         let wanted = normalize_code(code);
-        self.pending
-            .lock()
-            .iter()
-            .find(|entry| {
-                entry.created.elapsed() < PAIRING_TTL && normalize_code(&entry.code) == wanted
-            })
-            .map(|entry| entry.chat_id.clone())
+        self.pending()
+            .into_iter()
+            .find(|entry| normalize_code(&entry.code) == wanted)
     }
 
     /// Approve an open code (case and dash insensitive). The first person
@@ -222,12 +264,14 @@ impl AccessControl {
         let user = AllowedUser {
             id: entry.user_id,
             name: entry.name,
+            trusted: !entry.guest,
         };
         let mut saved = self.saved.lock();
         if !saved.allowed.iter().any(|existing| existing.id == user.id) {
             saved.allowed.push(user.clone());
         }
-        if saved.home_chat.is_none() {
+        // Scheduled results go to the first trusted person, never to a friend.
+        if saved.home_chat.is_none() && !entry.guest {
             saved.home_chat = Some(entry.chat_id);
         }
         self.save(&saved)?;
@@ -410,13 +454,82 @@ mod tests {
                 "Sam",
             )
             .unwrap();
-        assert_eq!(
-            access.pending_chat(&code.to_lowercase()).as_deref(),
-            Some("whatsapp:15550100@s.whatsapp.net")
-        );
-        assert!(access.pending_chat("NOPE-NOPE").is_none());
+        let request = access.pending_request(&code.to_lowercase()).unwrap();
+        assert_eq!(request.chat_id, "whatsapp:15550100@s.whatsapp.net");
+        assert!(!request.guest);
+        assert!(access.pending_request("NOPE-NOPE").is_none());
         access.approve(&code).unwrap();
-        assert!(access.pending_chat(&code).is_none(), "gone once approved");
+        assert!(
+            access.pending_request(&code).is_none(),
+            "gone once approved"
+        );
+    }
+
+    #[test]
+    fn a_friend_is_approved_without_trust_and_never_becomes_home() {
+        let (_dir, access) = store();
+        // The owner is first, so they are home.
+        let owner = access
+            .request_pairing("telegram:1", "telegram:1", "Owner")
+            .unwrap();
+        access.approve(&owner).unwrap();
+        assert!(access.is_trusted("telegram:1"));
+
+        let code = access
+            .request_guest_access(
+                "whatsapp:15550100",
+                "whatsapp:15550100@s.whatsapp.net",
+                "Sam",
+            )
+            .unwrap();
+        assert!(access.pending_request(&code).unwrap().guest);
+        let friend = access.approve(&code).unwrap().unwrap();
+        assert!(!friend.trusted);
+        assert!(access.is_allowed("whatsapp:15550100"));
+        assert!(!access.is_trusted("whatsapp:15550100"));
+        assert_eq!(access.home_chat().as_deref(), Some("telegram:1"));
+
+        // The owner can promote them, and demote them again.
+        assert!(access.set_trusted("whatsapp:15550100", true).unwrap());
+        assert!(access.is_trusted("whatsapp:15550100"));
+        assert!(access.set_trusted("whatsapp:15550100", false).unwrap());
+        assert!(!access.set_trusted("whatsapp:nobody", true).unwrap());
+    }
+
+    #[test]
+    fn a_friend_alone_does_not_become_the_home_chat() {
+        let (_dir, access) = store();
+        let code = access
+            .request_guest_access(
+                "whatsapp:15550100",
+                "whatsapp:15550100@s.whatsapp.net",
+                "Sam",
+            )
+            .unwrap();
+        access.approve(&code).unwrap();
+        assert!(
+            access.home_chat().is_none(),
+            "scheduled results are never sent to a friend by default"
+        );
+    }
+
+    #[test]
+    fn trust_survives_a_restart_and_older_files_stay_trusted() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("access.json");
+        std::fs::write(
+            &path,
+            r#"{"allowed": [{"id": "telegram:9", "name": "Old"}, {"id": "whatsapp:1", "name": "Friend", "trusted": false}]}"#,
+        )
+        .unwrap();
+        let access = AccessControl::open(&path);
+        assert!(
+            access.is_trusted("telegram:9"),
+            "saved before the flag existed"
+        );
+        assert!(!access.is_trusted("whatsapp:1"));
+        access.set_trusted("whatsapp:1", true).unwrap();
+        assert!(AccessControl::open(&path).is_trusted("whatsapp:1"));
     }
 
     #[test]
