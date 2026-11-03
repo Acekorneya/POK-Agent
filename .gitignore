@@ -10,6 +10,7 @@
 !/eval/
 !/exams/
 !/scripts/
+!/sidecars/
 !/.github/
 
 # Rust, Node, and frontend build output at any workspace depth.

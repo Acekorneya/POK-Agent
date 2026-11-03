@@ -9,7 +9,11 @@ and the NSIS installer. Writes to target/release/publish/v<version>:
   POK-Agent-windows-x64.exe        standalone executable
   POK-Agent-windows-x64-setup.exe  NSIS installer
   POK-Agent-windows-x64.zip        portable ZIP (exe, example config, README, LICENSE, NOTICE)
-  SHA256SUMS.txt                checksums of the three files above
+  POK-Agent-whatsapp-windows-x64.exe
+                                   the optional WhatsApp component the app downloads on request
+                                   (from scripts/build-whatsapp-sidecar.ps1; skipped with a warning
+                                   when it has not been built)
+  SHA256SUMS.txt                checksums of the files above
 
 Prints the output folder. Used by run-windows.ps1 -Release and the release workflow.
 
@@ -59,7 +63,19 @@ foreach ($File in @("LICENSE", "NOTICE", "README.md", "pok-ai.example.toml")) {
 Compress-Archive -Path (Join-Path $PortableDir "*") -DestinationPath $ZipAsset -CompressionLevel Optimal -Force
 Remove-Item -Path $PortableDir -Recurse -Force
 
-$ChecksumLines = foreach ($Asset in @($ExecutableAsset, $InstallerAsset, $ZipAsset)) {
+# The app downloads this one by name and checks it against SHA256SUMS.txt.
+$Assets = @($ExecutableAsset, $InstallerAsset, $ZipAsset)
+$WhatsAppBuild = Join-Path $ProjectDir "sidecars/whatsapp/target/release/pok-ai-whatsapp.exe"
+if (Test-Path $WhatsAppBuild) {
+    $WhatsAppAsset = Join-Path $PublishDir "POK-Agent-whatsapp-windows-x64.exe"
+    Copy-Item $WhatsAppBuild $WhatsAppAsset -Force
+    $Assets += $WhatsAppAsset
+}
+else {
+    Write-Warning "The WhatsApp component was not built (scripts/build-whatsapp-sidecar.ps1), so this release will not offer it."
+}
+
+$ChecksumLines = foreach ($Asset in $Assets) {
     $Hash = (Get-FileHash -Path $Asset -Algorithm SHA256).Hash.ToLowerInvariant()
     "$Hash  $([System.IO.Path]::GetFileName($Asset))"
 }

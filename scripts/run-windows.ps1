@@ -175,14 +175,17 @@ function Assert-GitHubReleaseReady {
 }
 
 function Publish-GitHubRelease($Metadata) {
+    # The optional WhatsApp component is published with every release.
+    & (Join-Path $PSScriptRoot "build-whatsapp-sidecar.ps1") | Out-Null
     $PublishDir = (& (Join-Path $PSScriptRoot "package-release.ps1") -Version $Metadata.Version | Select-Object -Last 1).Trim()
     $ExecutableAsset = Join-Path $PublishDir "POK-Agent-windows-x64.exe"
     $InstallerAsset = Join-Path $PublishDir "POK-Agent-windows-x64-setup.exe"
     $ZipAsset = Join-Path $PublishDir "POK-Agent-windows-x64.zip"
+    $WhatsAppAsset = Join-Path $PublishDir "POK-Agent-whatsapp-windows-x64.exe"
     $ChecksumAsset = Join-Path $PublishDir "SHA256SUMS.txt"
 
     Write-Host "Publishing $($Metadata.Tag) to $($Metadata.Repository)..." -ForegroundColor Cyan
-    & gh release create $Metadata.Tag $ExecutableAsset $InstallerAsset $ZipAsset $ChecksumAsset `
+    & gh release create $Metadata.Tag $ExecutableAsset $InstallerAsset $ZipAsset $WhatsAppAsset $ChecksumAsset `
         --repo $Metadata.Repository `
         --target $Metadata.HeadCommit `
         --title "POK-Agent $($Metadata.Tag)" `

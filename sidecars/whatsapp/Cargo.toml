@@ -1,0 +1,42 @@
+# The WhatsApp linked-device client for POK-Agent.
+#
+# This crate is deliberately NOT part of the main workspace: the unofficial
+# WhatsApp Web library needs a newer Rust than the agent (1.94 vs 1.88) and its
+# own SQLite binding, and it must exist only on computers that opted in. The
+# agent starts it as a child process and talks to it with JSON lines (see
+# crates/pok-ai-core/src/gateway/whatsapp.rs for the protocol).
+[package]
+name = "pok-ai-whatsapp"
+version = "0.1.14"
+edition = "2024"
+rust-version = "1.94"
+license = "Apache-2.0"
+description = "WhatsApp linked-device sidecar for POK-Agent"
+publish = false
+
+# An empty table makes this its own workspace root.
+[workspace]
+
+[dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "io-std", "fs", "sync", "time"] }
+# Pinned: the protocol client changes with WhatsApp. `simd` (a default feature)
+# needs a nightly compiler, so the other defaults are listed explicitly.
+whatsapp-rust = { version = "=0.7.0", default-features = false, features = [
+    "sqlite-storage",
+    "tokio-transport",
+    "tokio-runtime",
+    "tokio-native",
+    "ureq-client",
+] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = true

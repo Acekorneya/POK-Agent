@@ -54,3 +54,32 @@ jobs:
           npm --prefix apps/desktop ci
           npm --prefix apps/desktop test
           npm --prefix apps/desktop run build
+
+  # The WhatsApp component is its own crate with its own Rust version (1.94)
+  # and lockfile, so it is checked on its own.
+  whatsapp-sidecar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: sidecars/whatsapp
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@1.94.0
+        with:
+          components: clippy, rustfmt
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: whatsapp-sidecar
+          workspaces: sidecars/whatsapp -> target
+
+      - name: Formatting
+        run: cargo fmt -- --check
+
+      - name: Clippy
+        run: cargo clippy --locked --all-targets -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked
