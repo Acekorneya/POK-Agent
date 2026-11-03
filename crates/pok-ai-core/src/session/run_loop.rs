@@ -3246,12 +3246,16 @@ const TOOL_STALL_WITHHOLD: u32 = 8;
 const TOOL_STALL_MAX_BLOCKS: u32 = 2;
 
 /// Whether the stall guard counts this tool's failures. Command tools have
-/// their own no-progress guard, and bookkeeping/swarm tools are excluded so
-/// the guard only stops a repeated failing fetch, read, or action.
+/// their own no-progress guard, and discovery/swarm tools are excluded so the
+/// guard only stops a repeated failing fetch, read, plan update, or action.
+/// `update_task_plan` is counted for *errors* only: a valid update that
+/// changes nothing is the plan-loop guard's business, and any success resets
+/// this count. Without it a model sending the same invalid plan on every turn
+/// ran 922 times in 16 minutes (a reported run) with nothing to stop it.
 fn tool_stall_tracks(name: &str) -> bool {
     !matches!(
         name,
-        "run_command" | "manage_command" | "update_task_plan" | "discover_tools" | "run_agents"
+        "run_command" | "manage_command" | "discover_tools" | "run_agents"
     )
 }
 

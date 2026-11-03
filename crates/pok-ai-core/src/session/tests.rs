@@ -6272,6 +6272,99 @@ async fn a_tool_that_keeps_failing_is_withheld_and_the_run_answers() {
     assert!(refused, "{:?}", session.messages);
 }
 
+/// A small model that, once a permission request went unanswered, sends the
+/// same invalid plan update on every turn (922 times in 16 minutes in a
+/// reported run, with the turn limit extended seven times and nothing
+/// stopping it). It answers only when the plan tool is withheld.
+struct KeepsSendingAnInvalidPlanBrain {
+    plan_requests: AtomicU64,
+}
+
+#[async_trait]
+impl Brain for KeepsSendingAnInvalidPlanBrain {
+    async fn list_models(&self) -> Result<Vec<String>> {
+        Ok(vec!["mock".into()])
+    }
+    fn stream(&self, request: BrainRequest) -> crate::brain::BrainStream {
+        let attempt = self.plan_requests.fetch_add(1, Ordering::SeqCst) + 1;
+        // A safety net so a regression fails the test instead of hanging it.
+        let offered = request
+            .tools
+            .iter()
+            .any(|tool| tool.name == "update_task_plan");
+        if offered && attempt < 400 {
+            Box::pin(futures::stream::iter(vec![
+                Ok(BrainEvent::ToolCall {
+                    call: CompletedToolCall {
+                        id: format!("plan-{attempt}"),
+                        name: "update_task_plan".into(),
+                        // In progress, but no step is: the reported error.
+                        arguments: json!({
+                            "status": "in_progress",
+                            "steps": [
+                                {"id": "1", "content": "Write the notes", "status": "pending"},
+                                {"id": "2", "content": "Check them", "status": "pending"}
+                            ]
+                        }),
+                    },
+                }),
+                Ok(BrainEvent::Finished {
+                    reason: Some("tool_calls".into()),
+                }),
+            ]))
+        } else {
+            Box::pin(futures::stream::iter(vec![
+                Ok(BrainEvent::TextDelta {
+                    text: "The plan update keeps failing; reporting that instead.".into(),
+                }),
+                Ok(BrainEvent::Finished {
+                    reason: Some("stop".into()),
+                }),
+            ]))
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_plan_update_that_keeps_failing_is_stopped_and_the_run_answers() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let brain = Arc::new(KeepsSendingAnInvalidPlanBrain {
+        plan_requests: AtomicU64::new(0),
+    });
+    let mut registry = ToolRegistry::new();
+    crate::builtins::register_desktop_tools(&mut registry);
+    let context = crate::builtins::tests::mock_input_context(
+        Arc::new(crate::platform::MockDesktop::default()),
+        &temp_dir,
+    );
+    let mut session = Session::new(
+        brain.clone(),
+        Arc::new(registry),
+        context,
+        "mock-model".into(),
+        64,
+    )
+    .unwrap();
+    let summary = session.run("Make notes on my desktop.").await.unwrap();
+    assert!(
+        summary.answer.contains("keeps failing"),
+        "{}",
+        summary.answer
+    );
+    // Eight failures, two refused calls, then the answer: not hundreds.
+    let requests = brain.plan_requests.load(Ordering::SeqCst);
+    assert!(
+        requests <= 12,
+        "the run kept retrying a failing plan update {requests} times"
+    );
+    let trace = std::fs::read_to_string(summary.artifact_dir.join("trace.jsonl")).unwrap();
+    assert!(trace.contains("\"kind\":\"tool_stall_notice\""), "{trace}");
+    assert!(
+        trace.contains("\"kind\":\"tool_stall_withheld\""),
+        "{trace}"
+    );
+}
+
 /// Asks for the time every turn while the tool is offered and answers once it
 /// is withdrawn: the shape of the desktop run that made thirteen identical
 /// get_current_time calls.
