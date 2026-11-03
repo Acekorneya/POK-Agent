@@ -25,6 +25,7 @@ portable-pty.workspace = true
 process-wrap = { version = "10", features = ["tokio1"] }
 regex.workspace = true
 roxmltree.workspace = true
+qrcode.workspace = true
 reqwest.workspace = true
 rusqlite.workspace = true
 schemars.workspace = true

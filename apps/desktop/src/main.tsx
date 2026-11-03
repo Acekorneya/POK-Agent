@@ -60,11 +60,18 @@ type DecisionRouterStatus = {
   training_log?: boolean;
   training_dir?: string;
 };
+type WhatsAppState = "off" | "connecting" | "waiting_for_scan" | "connected" | "logged_out" | "failed";
+type WhatsAppView = {
+  enabled: boolean; mode: "self_chat" | "bot"; installed: boolean; linked: boolean;
+  state: WhatsAppState; qr_svg?: string | null; account?: string | null; error?: string | null;
+};
 type GatewayStatus = {
   running: boolean; enabled: boolean; has_token: boolean; bot?: string | null; error?: string | null;
-  busy: boolean; task?: string | null; home_chat?: number | null;
-  allowed: { id: number; name: string }[];
-  pending: { code: string; user_id: number; chat_id: number; name: string; expires_in: number }[];
+  busy: boolean; task?: string | null; home_chat?: string | null;
+  whatsapp: WhatsAppView;
+  /** `id` is `<channel>:<id>`, such as `telegram:900` or `whatsapp:15550100`. */
+  allowed: { id: string; name: string }[];
+  pending: { code: string; user_id: string; chat_id: string; channel: string; name: string; expires_in: number }[];
   jobs: { id: string; name: string; prompt: string; schedule: string; enabled: boolean; last_run?: string | null }[];
 };
 type WebSearchProvider = "auto" | "duckduckgo" | "brave" | "tavily" | "searxng";
@@ -74,8 +81,28 @@ type WebTryResult = {
   results: { rank: number; title: string; url: string; snippet: string }[];
 };
 const WEB_PROVIDER_NAMES: Record<string, string> = { auto: "Automatic", tavily: "Tavily", duckduckgo: "DuckDuckGo", brave: "Brave", searxng: "SearXNG" };
-/** A task that arrived through the Telegram gateway or a scheduled job. */
-type RemoteTask = { id: string; prompt: string; source: "telegram" | "schedule"; who: string };
+/** A task that arrived through a messaging app (Telegram, WhatsApp) or a scheduled job. Pictures
+    are PNG data URLs; files are paths saved in the gateway inbox (pictures included). */
+type RemoteTask = {
+  id: string; prompt: string; source: "telegram" | "whatsapp" | "schedule"; who: string;
+  images?: string[]; files?: string[];
+};
+const REMOTE_SOURCE_NAMES: Record<RemoteTask["source"], string> = { telegram: "Telegram", whatsapp: "WhatsApp", schedule: "Scheduled" };
+const channelLabel = (channel: string) => (channel === "whatsapp" ? "WhatsApp" : channel === "telegram" ? "Telegram" : channel);
+/** The home chat is a chat address; a WhatsApp chat carries the person's number plus a server part. */
+const isHomeChat = (home: string | null | undefined, person: string) =>
+  !!home && (home === person || home.startsWith(`${person}@`));
+function whatsappPill(view?: WhatsAppView) {
+  if (!view?.enabled) return <StatusPill tone="off">Off</StatusPill>;
+  switch (view.state) {
+    case "connected": return <StatusPill tone="ok">Linked{view.account ? ` · ${view.account}` : ""}</StatusPill>;
+    case "waiting_for_scan": return <StatusPill tone="warn">Scan the code</StatusPill>;
+    case "connecting": return <StatusPill tone="warn">Connecting…</StatusPill>;
+    case "logged_out": return <StatusPill tone="warn">Unlinked</StatusPill>;
+    case "failed": return <StatusPill tone="error">Not running</StatusPill>;
+    default: return <StatusPill tone="off">Starting</StatusPill>;
+  }
+}
 type MemoryRecord = {
   id: string; source: string; text: string; approved: boolean; enabled: boolean; created_at: string;
   updated_at: string; reinforcement_count: number; review_status: string; related_memory_id?: string;
@@ -3130,17 +3157,24 @@ export function App() {
       return;
     }
 
-    const images = remote ? [] : attachments.items.map((item) => item.dataUrl);
-    const files = remote ? [] : attachments.files.map((file) => file.path);
+    let images = remote ? (remote.images ?? []) : attachments.items.map((item) => item.dataUrl);
+    const files = remote ? (remote.files ?? []) : attachments.files.map((file) => file.path);
     if (!remote && ((!prompt.trim() && images.length === 0 && files.length === 0) || !model || modelTransitioning)) return;
+    // A person at the keyboard is told to pick another model. A phone message must still be
+    // answered, so its pictures are kept as files and the agent is told the model cannot see them.
+    let remoteNote = "";
     if (images.length > 0 && !modelCanSee) {
-      attachments.setError(`${model} can't see images. Choose a vision model, or turn Vision input on in Settings → Model if it can.`);
-      return;
+      if (!remote) {
+        attachments.setError(`${model} can't see images. Choose a vision model, or turn Vision input on in Settings → Model if it can.`);
+        return;
+      }
+      remoteNote = `\n\n[The sender attached ${images.length === 1 ? "a picture" : `${images.length} pictures`}, but ${model} cannot see images. ${images.length === 1 ? "It is" : "They are"} saved among the attached files; use a tool to inspect ${images.length === 1 ? "it" : "them"} if that helps, or say that a vision model is needed.]`;
+      images = [];
     }
     setBusy(true);
     setAgentFrame(null);
     emergencyStopRequested.current = false;
-    const currentPrompt = remote ? remote.prompt : prompt.trim() ? prompt
+    const currentPrompt = remote ? remote.prompt + remoteNote : prompt.trim() ? prompt
       : files.length > 0 ? (files.length + images.length > 1 ? "Look at these and tell me what they contain." : "Look at this and tell me what it contains.")
       : images.length > 1 ? "What is in these images?" : "What is in this image?";
     if (!remote) attachments.clear();
@@ -3154,7 +3188,7 @@ export function App() {
         id: 'user-prompt-' + Date.now(),
         sender: "user",
         type: "prompt",
-        text: remote ? `${remote.source === "schedule" ? `Scheduled · ${remote.who}` : "Telegram"}: ${currentPrompt}` : currentPrompt,
+        text: remote ? `${remote.source === "schedule" ? `Scheduled · ${remote.who}` : REMOTE_SOURCE_NAMES[remote.source]}: ${currentPrompt}` : currentPrompt,
         timestamp: new Date(),
         images: images.length > 0 ? images : undefined,
         files: files.length > 0 ? files : undefined,
@@ -3175,7 +3209,7 @@ export function App() {
         fullContext,
         decisionRouterEnabled: jevEnabled,
         decisionRouterBackend,
-        // A task from Telegram or a schedule never gets an automatic look at whatever window is in front.
+        // A task from a messaging app or a schedule never gets an automatic look at whatever window is in front.
         initialLook: remote ? "off" : null,
         images: images.length > 0 ? images : null,
         files: files.length > 0 ? files : null,
@@ -3938,8 +3972,8 @@ export function App() {
                 <button type="button" className="primary" disabled={!gatewayToken.trim() || gatewayBusy} onClick={() => void saveGatewayToken()}>Save token</button>
               </div>
             </SettingRow>
-            <SettingRow label="Always on" help="While on, closing the window keeps POK-Agent running in the system tray so scheduled tasks and messages still arrive.">
-              <Switch label="Run the Telegram gateway" checked={gateway?.running ?? false} disabled={!gateway?.has_token || gatewayBusy}
+            <SettingRow label="Always on" help="While on, closing the window keeps POK-Agent running in the system tray so scheduled tasks and messages still arrive. This runs every channel you set up, Telegram and WhatsApp.">
+              <Switch label="Run the gateway" checked={gateway?.running ?? false} disabled={(!gateway?.has_token && !gateway?.whatsapp.enabled) || gatewayBusy}
                 onChange={(checked) => void gatewayCall("gateway_set_enabled", { enabled: checked })} />
             </SettingRow>
             <SettingRow label="Start with Windows" help="Starts hidden in the system tray when you sign in, so the agent is already listening. The PC has to be awake and signed in: a locked or sleeping PC cannot run tasks.">
@@ -3953,18 +3987,61 @@ export function App() {
             {!gatewayError && gateway?.error && <p className="error-text">{gateway.error}</p>}
             {gateway?.running && (
               <p className="settings-note" role="status">
-                Message @{gateway.bot} on Telegram. {gateway.busy ? `Working on: ${gateway.task ?? "a task"}` : "Idle, waiting for a message."}
+                {gateway.bot ? `Message @${gateway.bot} on Telegram. ` : ""}{gateway.busy ? `Working on: ${gateway.task ?? "a task"}` : "Idle, waiting for a message."}
               </p>
             )}
           </SettingsCard>
 
+          <SettingsCard title="WhatsApp"
+            status={whatsappPill(gateway?.whatsapp)}
+            description="Message your agent from WhatsApp too: send a photo or a file with a request, such as “what is this? find where to buy it”, and the agent works on it here and answers in the chat. POK-Agent signs in as a linked device, like WhatsApp Web. That is unofficial: WhatsApp's terms do not allow it and an account can be suspended, so a spare number is the safer choice.">
+            <SettingRow label="Component" help="The WhatsApp client is a separate small program that is downloaded on request, so it exists only on computers that want it. It is checked against the release's published checksum before it is kept.">
+              {gateway?.whatsapp.installed
+                ? <StatusPill tone="ok">Installed</StatusPill>
+                : <div className="inline-field">
+                    <button type="button" className="primary" disabled={gatewayBusy} onClick={() => void gatewayCall("gateway_install_whatsapp")}>{gatewayBusy ? "Downloading…" : "Install"}</button>
+                  </div>}
+            </SettingRow>
+            <SettingRow label="Whose messages" help="“Only me” uses your own number: open WhatsApp, find “Message yourself”, and write there. Nobody else is ever answered. “Other people” suits a dedicated number: approved people can message it, and strangers get a pairing code you approve below.">
+              <select aria-label="WhatsApp mode" value={gateway?.whatsapp.mode ?? "self_chat"} disabled={gatewayBusy}
+                onChange={(event) => void gatewayCall("gateway_set_whatsapp", { enabled: gateway?.whatsapp.enabled ?? false, mode: event.target.value })}>
+                <option value="self_chat">Only me (Message yourself)</option>
+                <option value="bot">Other people (a dedicated number)</option>
+              </select>
+            </SettingRow>
+            <SettingRow label="Listen on WhatsApp" help="Starts the gateway if it is off. The first time, a QR code appears here to scan.">
+              <Switch label="Listen on WhatsApp" checked={gateway?.whatsapp.enabled ?? false}
+                disabled={!gateway?.whatsapp.installed || gatewayBusy}
+                onChange={(checked) => void gatewayCall("gateway_set_whatsapp", { enabled: checked, mode: gateway?.whatsapp.mode })} />
+            </SettingRow>
+            {gateway?.whatsapp.state === "waiting_for_scan" && gateway.whatsapp.qr_svg && (
+              <div className="whatsapp-link" role="group" aria-label="Link WhatsApp">
+                <img alt="WhatsApp link QR code" width={220} height={220}
+                  src={`data:image/svg+xml;utf8,${encodeURIComponent(gateway.whatsapp.qr_svg)}`} />
+                <p className="settings-note">On your phone open WhatsApp, then Settings, Linked devices, Link a device, and scan this code. It refreshes by itself.</p>
+              </div>
+            )}
+            {gateway?.whatsapp.state === "connected" && (
+              <p className="settings-note" role="status">
+                Linked{gateway.whatsapp.account ? ` as ${gateway.whatsapp.account}` : ""}.{" "}
+                {gateway.whatsapp.mode === "self_chat" ? "Write in “Message yourself” to give the agent a task." : "Anyone you approve can message this number."}
+              </p>
+            )}
+            {(gateway?.whatsapp.linked || gateway?.whatsapp.state === "connected") && (
+              <div className="inline-field">
+                <button type="button" disabled={gatewayBusy} onClick={() => void gatewayCall("gateway_whatsapp_logout")}>Unlink this computer</button>
+              </div>
+            )}
+            {gateway?.whatsapp.enabled && gateway.whatsapp.error && <p className="error-text">{gateway.whatsapp.error}</p>}
+          </SettingsCard>
+
           <SettingsCard title="People"
             status={<StatusPill tone={gateway?.allowed.length ? "ok" : "off"}>{gateway?.allowed.length ?? 0} approved</StatusPill>}
-            description="Anyone else who messages the bot gets a one-time pairing code and nothing more. Approve a code only if you recognise the name; approving gives that person control of this agent.">
+            description="Anyone else who messages the bot or a dedicated WhatsApp number gets a one-time pairing code and nothing more. Approve a code only if you recognise the name; approving gives that person control of this agent.">
             {(gateway?.pending ?? []).map((request) => (
               <div className="memory" key={request.code}>
                 <strong>{request.name} wants access</strong>
-                <small>Pairing code {request.code} · expires in {Math.max(1, Math.round(request.expires_in / 60))} min</small>
+                <small>{channelLabel(request.channel)} · pairing code {request.code} · expires in {Math.max(1, Math.round(request.expires_in / 60))} min</small>
                 <div className="memory-actions">
                   <button type="button" className="primary" disabled={gatewayBusy} onClick={() => void gatewayCall("gateway_approve_pairing", { code: request.code })}>Approve</button>
                   <button type="button" disabled={gatewayBusy} onClick={() => void gatewayCall("gateway_deny_pairing", { code: request.code })}>Deny</button>
@@ -3974,20 +4051,20 @@ export function App() {
             {(gateway?.allowed ?? []).map((person) => (
               <div className="memory" key={person.id}>
                 <strong>{person.name}</strong>
-                <small>Approved{gateway?.home_chat === person.id ? " · receives scheduled results" : ""}</small>
+                <small>{channelLabel(person.id.split(":")[0])} · approved{isHomeChat(gateway?.home_chat, person.id) ? " · receives scheduled results" : ""}</small>
                 <div className="memory-actions">
                   <button type="button" disabled={gatewayBusy} onClick={() => void gatewayCall("gateway_remove_user", { userId: person.id })}>Remove</button>
                 </div>
               </div>
             ))}
             {!gateway?.pending.length && !gateway?.allowed.length && (
-              <p className="settings-note">No one yet. Turn the gateway on, then send any message to your bot to get a pairing code.</p>
+              <p className="settings-note">No one yet. Turn the gateway on, then send any message to your bot to get a pairing code. In WhatsApp “Only me” mode you do not need one.</p>
             )}
           </SettingsCard>
 
           <SettingsCard title="Scheduled tasks"
             status={<StatusPill tone={gateway?.jobs.length ? "ok" : "off"}>{gateway?.jobs.length ?? 0}</StatusPill>}
-            description="Tasks that run on their own and send the result to your Telegram chat. They need the gateway on and one approved person.">
+            description="Tasks that run on their own and send the result to your home chat on Telegram or WhatsApp. They need the gateway on and one approved person, or WhatsApp in “Only me” mode.">
             {(gateway?.jobs ?? []).map((job) => (
               <div className="memory" key={job.id}>
                 <strong>{job.name}</strong>
@@ -4015,7 +4092,7 @@ export function App() {
           </SettingsCard>
 
           <SettingsCard title="Chat commands" description="Send these to the bot.">
-            <p className="settings-note">/status · /stop · /new · /approve · /deny · /jobs · /schedule daily 09:00 &lt;task&gt; · /unschedule &lt;id&gt; · /sethome · /whoami · /help</p>
+            <p className="settings-note">Works the same in Telegram and WhatsApp. /status · /stop · /new · /approve · /deny · /jobs · /schedule daily 09:00 &lt;task&gt; · /unschedule &lt;id&gt; · /sethome · /whoami · /help</p>
           </SettingsCard>
         </>}
 

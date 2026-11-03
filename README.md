@@ -43,6 +43,7 @@ Get the latest Windows build from
 | `POK-Agent-windows-x64-setup.exe` | You want a normal install with a Start menu entry (recommended). |
 | `POK-Agent-windows-x64.exe` | You want to run the app without installing it. |
 | `POK-Agent-windows-x64.zip` | You want a portable folder with the example configuration. |
+| `POK-Agent-whatsapp-windows-x64.exe` | Optional WhatsApp component. The app downloads it for you under Settings → Gateway; you only need this to place it by hand. |
 | `SHA256SUMS.txt` | You want to verify the downloads. |
 
 The builds are not code-signed yet, so Windows SmartScreen may say "Windows
@@ -137,27 +138,57 @@ in-process client reproduces Nano within a case or two (22 / 27, 9 / 11, 17 / 19
 1.0 s, because the questions run concurrently). See
 [docs/NEBIUS-HACKATHON.md](docs/NEBIUS-HACKATHON.md) for how the pieces fit and what was added.
 
-## Message it from your phone: the Telegram gateway
+## Message it from your phone: the Telegram and WhatsApp gateway
 
-POK-Agent can stay on in the system tray and take tasks from Telegram, and run scheduled tasks on
-its own. The work happens on your computer, in the same dashboard you use (approvals, activity
-cards and the agent view all work); the answer comes back to the chat.
+POK-Agent can stay on in the system tray and take tasks from Telegram and WhatsApp, and run
+scheduled tasks on its own. The work happens on your computer, in the same dashboard you use
+(approvals, activity cards and the agent view all work); the answer comes back to the chat.
+
+**Send pictures and files, not just text.** Take a photo, add a request such as "what is this? find
+where to buy it", and send it. The picture goes to the model as a PNG (JPEG, WebP, GIF and BMP are
+converted, phone rotation is applied, and large images are scaled to 1568 px), so any vision model
+can read it: Nebius, OpenAI, Anthropic, Gemini, OpenRouter, or a local model. Documents are saved in
+the gateway inbox and the agent may read them; an album sent together becomes one task. If the
+selected model cannot see images, the picture is kept as a file and the agent says so instead of the
+task failing. Voice notes and video are saved, but cannot be transcribed or watched yet. Files are
+downloaded only for people you approved, up to 20 MB each, and are deleted from the inbox after a
+week.
+
+### Telegram
 
 1. In Telegram, create a bot with `@BotFather` and copy its token.
 2. In POK-Agent open *Settings → Gateway*, paste the token, and turn the gateway on.
 3. Message your bot. It replies with a one-time pairing code; approve it under *People*.
 4. Send a task, for example "open the calendar and tell me what is on today".
 
+### WhatsApp
+
+WhatsApp has no bot API for personal accounts, so POK-Agent signs in as a **linked device**, the
+way WhatsApp Web does (the same approach as Hermes Agent and OpenClaw). **This is unofficial:
+WhatsApp's terms do not allow custom clients and an account can be suspended. A spare number is the
+safer choice.**
+
+1. In *Settings → Gateway → WhatsApp*, press *Install*. The client is a separate small program
+   (`pok-ai-whatsapp`, built from `sidecars/whatsapp`) downloaded from this version's release and
+   checked against `SHA256SUMS.txt`, so it exists only on computers that want it.
+2. Choose whose messages count. *Only me* uses your own number: write in WhatsApp's "Message
+   yourself" chat and nobody else is ever answered. *Other people* suits a dedicated number: approved
+   people can message it and strangers get a pairing code, like Telegram.
+3. Turn on *Listen on WhatsApp* and scan the QR code under WhatsApp → Settings → Linked devices →
+   Link a device. The session is kept in `<data dir>/whatsapp/session` (it holds keys: treat it like a
+   password; *Unlink this computer* deletes it).
+
 Safe by default: nobody is allowed until you approve their code on the computer, only private chats
-count, messages sent while the gateway was off are dropped instead of acted on late, and a task
-that needs permission waits for `/approve` or `/deny` (or a click on the PC). Whatever the
-dashboard's permission mode is, tasks that arrive from Telegram or a schedule always ask first, and
-they never get an automatic first look at whatever window is in front. The bot token is kept
-in Windows Credential Manager.
+count (never groups), messages sent while the gateway was off are dropped instead of acted on late,
+and a task that needs permission waits for `/approve` or `/deny` (or a click on the PC). Whatever the
+dashboard's permission mode is, tasks that arrive from a messaging app or a schedule always ask first,
+and they never get an automatic first look at whatever window is in front. The Telegram bot token is
+kept in Windows Credential Manager. The agent's replies in your WhatsApp self-chat start with
+"POK-Agent:" so they are never mistaken for a new request.
 
 **Always on.** Turn on *Start with Windows* (Settings → Gateway) and POK-Agent starts hidden in the
 system tray when you sign in, already listening. While the gateway is on, closing the window just
-hides it; the tray icon's tooltip says whether it is listening on Telegram, and its menu has *Open*
+hides it; the tray icon's tooltip says which channels it is listening on, and its menu has *Open*
 and *Quit*. Only one copy runs: starting it again brings the running one forward instead of starting
 a second poller on the same bot. The PC has to be awake and signed in, since a locked or sleeping
 PC cannot run desktop tasks (set Windows to stay awake while plugged in).
@@ -170,8 +201,10 @@ PC cannot run desktop tasks (set Windows to stay awake while plugged in).
 | `/jobs`, `/unschedule <id>`, `/sethome` | list, remove, choose where results go |
 
 The gateway lives in `crates/pok-ai-core/src/gateway/` (tested without a network against a fake
-Telegram API) and the host in `apps/desktop/src-tauri/src/gateway.rs`. Discord and WhatsApp can
-be added as further adapters behind the same dispatcher.
+Telegram API and a scripted WhatsApp component) and the host in
+`apps/desktop/src-tauri/src/gateway.rs`. Each messaging app is a `Channel` behind the same
+dispatcher, allowlist and scheduler; Discord can be added the same way. Try the picture path without
+any messaging app: `pok-ai run "what is in this picture?" --image photo.jpg`.
 
 ## Research: System 1 and System 2 for computer use
 
@@ -371,8 +404,8 @@ hosted gateways such as OpenRouter (which has free models) and OpenCode Zen.
   Windows procedures are compiled into sanitized, approved skills for future recall.
 - When the built-ins are insufficient, the agent can author a task-specific PowerShell, Python,
   or source-code helper inside the approved workspace, execute it, inspect output, and revise it.
-- Spoken replies (text-to-speech), Telegram and Discord gateways, and scheduled jobs are planned
-  but not built yet. Voice input (offline speech-to-text) is available.
+- Spoken replies (text-to-speech) and a Discord gateway are planned but not built yet. Voice input
+  (offline speech-to-text), the Telegram and WhatsApp gateway, and scheduled jobs are available.
 
 ## Quick start
 
@@ -425,7 +458,8 @@ git push origin main v0.2.0                 # the Release workflow does the rest
 
 The release contains `POK-Agent-windows-x64.exe` (standalone), `POK-Agent-windows-x64-setup.exe`
 (installer), `POK-Agent-windows-x64.zip` (portable: executable, example configuration, README,
-license, notice), and `SHA256SUMS.txt`. `scripts/package-release.ps1` builds these files, both in
+license, notice), `POK-Agent-whatsapp-windows-x64.exe` (the optional WhatsApp component), and
+`SHA256SUMS.txt`. `scripts/package-release.ps1` builds these files, both in
 the workflow and locally.
 
 A release can still be published from a Windows PC with GitHub CLI:

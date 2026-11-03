@@ -1,10 +1,18 @@
-//! Telegram Bot API client: long-poll updates in, text messages out.
+//! Telegram Bot API client and channel: long-poll updates in (text, pictures,
+//! documents, voice notes), text messages out.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
+use async_trait::async_trait;
+use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::{Value, json};
+use tokio_util::sync::CancellationToken;
 
+use super::{
+    Channel, Gateway, Inbound,
+    media::{Download, MediaKind, MediaSource},
+};
 use crate::error::{PokError, Result};
 
 /// Telegram rejects messages over 4096 characters; stay under it.
@@ -24,6 +32,43 @@ pub struct Message {
     pub from: Option<User>,
     #[serde(default)]
     pub text: Option<String>,
+    /// The words sent with a picture, document or video.
+    #[serde(default)]
+    pub caption: Option<String>,
+    /// The same picture at several sizes.
+    #[serde(default)]
+    pub photo: Vec<FileInfo>,
+    #[serde(default)]
+    pub document: Option<FileInfo>,
+    #[serde(default)]
+    pub voice: Option<FileInfo>,
+    #[serde(default)]
+    pub audio: Option<FileInfo>,
+    #[serde(default)]
+    pub video: Option<FileInfo>,
+    #[serde(default)]
+    pub video_note: Option<FileInfo>,
+    #[serde(default)]
+    pub animation: Option<FileInfo>,
+    #[serde(default)]
+    pub sticker: Option<FileInfo>,
+}
+
+/// The fields every Telegram file object shares (photo size, document,
+/// voice note, video, ...).
+#[derive(Debug, Clone, Deserialize)]
+pub struct FileInfo {
+    pub file_id: String,
+    #[serde(default)]
+    pub file_name: Option<String>,
+    #[serde(default)]
+    pub mime_type: Option<String>,
+    #[serde(default)]
+    pub file_size: Option<u64>,
+    #[serde(default)]
+    pub width: Option<u32>,
+    #[serde(default)]
+    pub height: Option<u32>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -65,6 +110,8 @@ pub struct TelegramClient {
     /// `https://api.telegram.org/bot<token>`; it holds the secret, so it is
     /// never printed and request errors are stripped of their URL.
     base: String,
+    /// `https://api.telegram.org/file/bot<token>`: where files are downloaded.
+    file_base: String,
 }
 
 impl TelegramClient {
@@ -83,9 +130,11 @@ impl TelegramClient {
             .connect_timeout(Duration::from_secs(15))
             .build()
             .map_err(|error| PokError::Provider(error.without_url().to_string()))?;
+        let root = api_root.trim_end_matches('/');
         Ok(Self {
             http,
-            base: format!("{}/bot{token}", api_root.trim_end_matches('/')),
+            base: format!("{root}/bot{token}"),
+            file_base: format!("{root}/file/bot{token}"),
         })
     }
 
@@ -156,43 +205,271 @@ impl TelegramClient {
             )
             .await;
     }
+
+    /// Download a file a user sent, refusing anything over `max_bytes`.
+    pub async fn download_file(&self, file_id: &str, max_bytes: u64) -> Result<Vec<u8>> {
+        let info = self
+            .call(
+                "getFile",
+                json!({"file_id": file_id}),
+                Duration::from_secs(20),
+            )
+            .await?;
+        let path = info
+            .get("file_path")
+            .and_then(Value::as_str)
+            .ok_or_else(|| PokError::Provider("Telegram sent no download path".into()))?;
+        if info
+            .get("file_size")
+            .and_then(Value::as_u64)
+            .is_some_and(|size| size > max_bytes)
+        {
+            return Err(PokError::Provider("the file is too large".into()));
+        }
+        let response = self
+            .http
+            .get(format!("{}/{path}", self.file_base))
+            .timeout(Duration::from_secs(120))
+            .send()
+            .await
+            .map_err(|error| PokError::Provider(format!("Telegram: {}", error.without_url())))?;
+        if !response.status().is_success() {
+            return Err(PokError::Provider(format!(
+                "Telegram file download failed (HTTP {})",
+                response.status()
+            )));
+        }
+        let mut bytes = Vec::new();
+        let mut stream = response.bytes_stream();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|error| {
+                PokError::Provider(format!("Telegram: {}", error.without_url()))
+            })?;
+            if bytes.len() as u64 + chunk.len() as u64 > max_bytes {
+                return Err(PokError::Provider("the file is too large".into()));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        Ok(bytes)
+    }
+}
+
+/// One attachment of a Telegram message.
+struct TelegramMedia {
+    client: TelegramClient,
+    kind: MediaKind,
+    file: FileInfo,
+}
+
+#[async_trait]
+impl MediaSource for TelegramMedia {
+    fn kind(&self) -> MediaKind {
+        self.kind
+    }
+
+    fn label(&self) -> String {
+        self.file.file_name.clone().unwrap_or_else(|| {
+            match self.kind {
+                MediaKind::Image => "a picture",
+                MediaKind::Document => "a file",
+                MediaKind::Audio => "a voice note",
+                MediaKind::Video => "a video",
+                MediaKind::Sticker => "a sticker",
+            }
+            .to_owned()
+        })
+    }
+
+    fn size_hint(&self) -> Option<u64> {
+        self.file.file_size
+    }
+
+    async fn fetch(&self, max_bytes: u64) -> Result<Download> {
+        let bytes = self
+            .client
+            .download_file(&self.file.file_id, max_bytes)
+            .await?;
+        Ok(Download {
+            kind: self.kind,
+            name: self.file.file_name.clone(),
+            mime: self.file.mime_type.clone(),
+            bytes,
+        })
+    }
+}
+
+impl Message {
+    /// The attachments of this message, one entry each. Telegram sends a
+    /// photo as several sizes; the largest one is used.
+    fn attachments(&self, client: &TelegramClient) -> Vec<Arc<dyn MediaSource>> {
+        let source = |kind, file: &FileInfo| -> Arc<dyn MediaSource> {
+            Arc::new(TelegramMedia {
+                client: client.clone(),
+                kind,
+                file: file.clone(),
+            })
+        };
+        let mut found = Vec::new();
+        if let Some(largest) = self.photo.iter().max_by_key(|size| {
+            u64::from(size.width.unwrap_or(0)) * u64::from(size.height.unwrap_or(0))
+                + size.file_size.unwrap_or(0)
+        }) {
+            found.push(source(MediaKind::Image, largest));
+        }
+        if let Some(document) = &self.document {
+            // A picture sent "as a file" keeps full quality; read it as a picture.
+            let kind = if document
+                .mime_type
+                .as_deref()
+                .is_some_and(|mime| mime.starts_with("image/"))
+            {
+                MediaKind::Image
+            } else {
+                MediaKind::Document
+            };
+            found.push(source(kind, document));
+        }
+        for (file, kind) in [
+            (&self.voice, MediaKind::Audio),
+            (&self.audio, MediaKind::Audio),
+            (&self.video, MediaKind::Video),
+            (&self.video_note, MediaKind::Video),
+            (&self.animation, MediaKind::Video),
+            (&self.sticker, MediaKind::Sticker),
+        ] {
+            if let Some(file) = file {
+                found.push(source(kind, file));
+            }
+        }
+        found
+    }
+}
+
+/// Telegram as a gateway channel.
+pub struct TelegramChannel {
+    client: TelegramClient,
+    poll_seconds: u64,
+}
+
+impl TelegramChannel {
+    pub fn new(client: TelegramClient, poll_seconds: u64) -> Self {
+        Self {
+            client,
+            poll_seconds: poll_seconds.clamp(0, 50),
+        }
+    }
+
+    /// One incoming update. Public so the behavior can be tested without a
+    /// network poll.
+    pub async fn handle_update(&self, gateway: &Arc<Gateway>, update: Update) {
+        let Some(message) = update.message else {
+            return;
+        };
+        // Groups and channels are never a command surface.
+        if message.chat.kind != "private" {
+            return;
+        }
+        let Some(user) = message.from.as_ref() else {
+            return;
+        };
+        if user.is_bot {
+            return;
+        }
+        let text = message
+            .text
+            .clone()
+            .or_else(|| message.caption.clone())
+            .unwrap_or_default();
+        let media = message.attachments(&self.client);
+        if text.trim().is_empty() && media.is_empty() {
+            return;
+        }
+        gateway
+            .handle_inbound(Inbound {
+                channel: "telegram",
+                chat: message.chat.id.to_string(),
+                user: user.id.to_string(),
+                name: user.display_name(),
+                text,
+                media,
+                trusted: false,
+            })
+            .await;
+    }
+
+    async fn poll_loop(&self, gateway: &Arc<Gateway>, cancel: &CancellationToken) {
+        // Skip whatever piled up while the gateway was off: acting on a
+        // stale command hours later is never what the sender meant.
+        let mut offset = loop {
+            let attempt = tokio::select! {
+                () = cancel.cancelled() => return,
+                result = self.client.get_updates(-1, 0) => result,
+            };
+            match attempt {
+                Ok(updates) => break updates.last().map_or(0, |update| update.update_id + 1),
+                Err(error) => {
+                    tracing::warn!("gateway cannot reach Telegram yet: {error}");
+                    tokio::select! {
+                        () = cancel.cancelled() => return,
+                        () = tokio::time::sleep(Duration::from_secs(5)) => {}
+                    }
+                }
+            }
+        };
+        let mut backoff = Duration::from_secs(2);
+        loop {
+            let polled = tokio::select! {
+                () = cancel.cancelled() => return,
+                result = self.client.get_updates(offset, self.poll_seconds) => result,
+            };
+            match polled {
+                Ok(updates) => {
+                    backoff = Duration::from_secs(2);
+                    for update in updates {
+                        offset = offset.max(update.update_id + 1);
+                        self.handle_update(gateway, update).await;
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!("gateway poll failed: {error}");
+                    tokio::select! {
+                        () = cancel.cancelled() => return,
+                        () = tokio::time::sleep(backoff) => {}
+                    }
+                    backoff = (backoff * 2).min(Duration::from_secs(30));
+                }
+            }
+        }
+    }
+}
+
+#[async_trait]
+impl Channel for TelegramChannel {
+    fn name(&self) -> &'static str {
+        "telegram"
+    }
+
+    async fn send_text(&self, chat: &str, text: &str) -> Result<()> {
+        let chat_id: i64 = chat
+            .parse()
+            .map_err(|_| PokError::Provider(format!("not a Telegram chat: {chat}")))?;
+        self.client.send_message(chat_id, text).await
+    }
+
+    async fn send_typing(&self, chat: &str) {
+        if let Ok(chat_id) = chat.parse() {
+            self.client.send_typing(chat_id).await;
+        }
+    }
+
+    async fn listen(self: Arc<Self>, gateway: Arc<Gateway>, cancel: CancellationToken) {
+        self.poll_loop(&gateway, &cancel).await;
+    }
 }
 
 /// Split `text` into chunks Telegram accepts, preferring line breaks.
 pub fn split_message(text: &str) -> Vec<String> {
-    let text = text.trim();
-    if text.is_empty() {
-        return vec!["(no output)".into()];
-    }
-    let mut parts = Vec::new();
-    let mut current = String::new();
-    for line in text.lines() {
-        // A single line longer than a message is cut on character bounds.
-        let mut line = line;
-        while line.chars().count() > MESSAGE_CHARS {
-            let cut = line
-                .char_indices()
-                .nth(MESSAGE_CHARS)
-                .map_or(line.len(), |(index, _)| index);
-            if !current.is_empty() {
-                parts.push(std::mem::take(&mut current));
-            }
-            parts.push(line[..cut].to_owned());
-            line = &line[cut..];
-        }
-        if current.chars().count() + line.chars().count() + 1 > MESSAGE_CHARS && !current.is_empty()
-        {
-            parts.push(std::mem::take(&mut current));
-        }
-        if !current.is_empty() {
-            current.push('\n');
-        }
-        current.push_str(line);
-    }
-    if !current.is_empty() {
-        parts.push(current);
-    }
-    parts
+    super::split_text(text, MESSAGE_CHARS)
 }
 
 #[cfg(test)]

@@ -69,11 +69,18 @@ touches one focused file. Child modules share their parent's imports
 Other core modules keep one file each: `brain.rs` (provider adapters),
 `decision.rs` (router contract and backends), `choice_model.rs` (System 1 as
 any provider's chat model, called in-process with two order-rotated votes),
-`gateway/` (the always-on Telegram gateway: `telegram.rs` Bot API client,
-`access.rs` default-deny allowlist with one-time pairing codes, `schedule.rs`
-scheduled jobs, `mod.rs` the dispatcher and the `GatewayHost` trait; the
-desktop app's `src-tauri/src/gateway.rs` is the host that runs messages through
-the dashboard), `router_training.rs` (training log), `policy.rs`, `coding.rs`, `memory.rs`, `grounding.rs`, `platform.rs`,
+`gateway/` (the always-on Telegram and WhatsApp gateway: `mod.rs` the
+dispatcher, the `Channel` trait and the `GatewayHost` trait, with per-chat
+batching so an album becomes one task; `telegram.rs` the Bot API client and
+channel; `whatsapp.rs` the channel for the linked-device sidecar and its
+JSON-lines protocol; `sidecar.rs` finding and checksum-verified installing of
+that sidecar; `media.rs` turning attachments into saved files and PNG for a
+vision model; `access.rs` the default-deny allowlist of `<channel>:<id>`
+addresses with one-time pairing codes; `schedule.rs` scheduled jobs; the
+desktop app's `src-tauri/src/gateway.rs` is the host that runs messages
+through the dashboard; the WhatsApp client itself is the separate crate
+`sidecars/whatsapp`, built with its own Rust 1.94 and lockfile because the
+unofficial library needs a newer compiler than the agent), `router_training.rs` (training log), `policy.rs`, `coding.rs`, `memory.rs`, `grounding.rs`, `platform.rs`,
 `agent_window.rs`, `browser.rs` (the managed browser and the DevTools plumbing
 it shares), `user_browser.rs` (the user's own signed-in browser, attached over
 its DevTools port, with System 2's confirmation gate and System 1's click

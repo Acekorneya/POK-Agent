@@ -203,6 +203,15 @@ enum Commands {
         continue_session: bool,
         #[arg(long, conflicts_with = "continue_session")]
         session: Option<Uuid>,
+        /// Show the model a picture (PNG, JPEG, WebP, GIF or BMP; repeatable).
+        /// It is scaled and converted exactly as pictures sent through the
+        /// messaging gateway are.
+        #[arg(long = "image")]
+        images: Vec<PathBuf>,
+        /// Let the agent read a file or folder, even outside the workspace
+        /// (repeatable).
+        #[arg(long = "file")]
+        files: Vec<PathBuf>,
     },
     Sessions {
         #[command(subcommand)]
@@ -546,6 +555,8 @@ async fn run_cli() -> anyhow::Result<()> {
             yes,
             continue_session,
             session: session_id,
+            images,
+            files,
         } => {
             let conversation_store = ConversationStore::open(&config.data_dir)?;
             conversation_store.import_legacy_diagnostics(&config.diagnostics_dir)?;
@@ -752,7 +763,22 @@ async fn run_cli() -> anyhow::Result<()> {
                 .with_initial_look(config.initial_look)
                 .with_standing_instructions(config.standing_instructions.as_deref())
                 .with_observer(console_observer);
-            let result = session.run(prompt).await?;
+            let images = images
+                .iter()
+                .map(|path| {
+                    let bytes = std::fs::read(path).map_err(|error| {
+                        anyhow::anyhow!("could not read {}: {error}", path.display())
+                    })?;
+                    pok_ai_core::gateway::media::image_to_png_base64(&bytes).map_err(|error| {
+                        anyhow::anyhow!("{} is not a usable picture: {error}", path.display())
+                    })
+                })
+                .collect::<anyhow::Result<Vec<_>>>()?;
+            let files = files
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect();
+            let result = session.run_with_attachments(prompt, images, files).await?;
             println!("{}", result.answer);
             session
                 .finish_background_work(std::time::Duration::from_secs(300))

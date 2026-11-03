@@ -290,6 +290,108 @@ describe("workspace presentation", () => {
     expect(screen.queryByRole("button", { name: "Allow once" })).toBeNull();
     expect(mock.invoke.mock.calls.some(c => c[0] === "resolve_approval")).toBe(false);
   });
+  it("runs a phone task with its picture and files, then sends the answer back", async () => {
+    const previous = mock.invoke.getMockImplementation()!;
+    mock.invoke.mockImplementation((name, args) => name === "run_prompt" ? Promise.resolve("It is a desk lamp.") : previous(name, args));
+    await renderApp();
+    const picture = "data:image/png;base64,iVBORw0KGgo=";
+    emit({ id: "t1", prompt: "what is this? find where to buy it", source: "whatsapp", who: "you", images: [picture], files: ["C:/data/inbox/t1/photo.jpg"] }, "gateway_task");
+    await waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("run_prompt", expect.objectContaining({
+      prompt: "what is this? find where to buy it", images: [picture], files: ["C:/data/inbox/t1/photo.jpg"],
+      // A message from outside never runs with more freedom than a person at the keyboard.
+      policyMode: "interactive", initialLook: "off",
+    })));
+    await waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("gateway_task_done", { id: "t1", ok: true, text: "It is a desk lamp." }));
+    // The chat shows where the request came from.
+    expect(screen.getAllByText(/^WhatsApp: what is this/).length).toBeGreaterThan(0);
+  });
+  it("answers a phone picture even when the model cannot see, keeping it as a file", async () => {
+    const previous = mock.invoke.getMockImplementation()!;
+    mock.invoke.mockImplementation((name, args) => name === "get_model_capabilities"
+      ? Promise.resolve({ id: "test-model", supported_parameters: [], reasoning_efforts: [], vision: false })
+      : name === "run_prompt" ? Promise.resolve("I cannot see it, but the file is saved.") : previous(name, args));
+    await renderApp();
+    await waitFor(() => expect(mock.invoke.mock.calls.some((call) => call[0] === "get_model_capabilities")).toBe(true));
+    emit({ id: "t2", prompt: "What is in this picture?", source: "telegram", who: "@sam", images: ["data:image/png;base64,AAAA"], files: ["C:/data/inbox/t2/photo.jpg"] }, "gateway_task");
+    await waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("run_prompt", expect.objectContaining({
+      // The picture is not sent to a model that cannot read it, but the file still is.
+      images: null, files: ["C:/data/inbox/t2/photo.jpg"],
+      prompt: expect.stringContaining("cannot see images"),
+    })));
+    // The sender must never be left waiting: the task is reported either way.
+    await waitFor(() => expect(mock.invoke).toHaveBeenCalledWith("gateway_task_done", expect.objectContaining({ id: "t2", ok: true })));
+  });
+  describe("gateway settings", () => {
+    const whatsapp = (over: Record<string, unknown> = {}) => ({
+      enabled: false, mode: "self_chat", installed: true, linked: false, state: "off", qr_svg: null, account: null, error: null, ...over,
+    });
+    const status = (over: Record<string, unknown> = {}) => ({
+      running: false, enabled: false, has_token: false, bot: null, error: null, busy: false, task: null, home_chat: null,
+      allowed: [], pending: [], jobs: [], whatsapp: whatsapp(), ...over,
+    });
+    async function openGateway(initial: Record<string, unknown>, extra: Record<string, (args: any) => unknown> = {}) {
+      const previous = mock.invoke.getMockImplementation()!;
+      let current = status(initial);
+      mock.invoke.mockImplementation((name, args) => {
+        if (name === "gateway_status") return Promise.resolve(current);
+        if (name === "get_autostart") return Promise.resolve(false);
+        if (extra[name]) { current = extra[name](args) as typeof current ?? current; return Promise.resolve(current); }
+        return previous(name, args);
+      });
+      await renderApp();
+      await userEvent.click(screen.getByRole("button", { name: "Settings", expanded: false }));
+      await userEvent.click(within(screen.getByRole("navigation", { name: "Settings sections" })).getByRole("button", { name: /^Gateway/ }));
+      return { set: (next: Record<string, unknown>) => { current = status(next); } };
+    }
+    it("shows the QR code to scan, then the linked number", async () => {
+      const { set } = await openGateway({ running: true, enabled: true, whatsapp: whatsapp({ enabled: true, state: "waiting_for_scan", qr_svg: "<svg xmlns='http://www.w3.org/2000/svg'><rect width='4' height='4'/></svg>" }) });
+      const qr = await screen.findByAltText("WhatsApp link QR code") as HTMLImageElement;
+      expect(qr.src).toContain("data:image/svg+xml");
+      expect(screen.getByText("Scan the code")).toBeTruthy();
+      expect(screen.getByText(/Linked devices, Link a device/)).toBeTruthy();
+      // Once the phone scans it, the code disappears and the account shows.
+      set({ running: true, enabled: true, whatsapp: whatsapp({ enabled: true, linked: true, state: "connected", account: "+15550199" }) });
+      emit("", "gateway_changed");
+      expect(await screen.findByText("Linked · +15550199")).toBeTruthy();
+      expect(screen.queryByAltText("WhatsApp link QR code")).toBeNull();
+      expect(screen.getByText(/Write in “Message yourself” to give the agent a task/)).toBeTruthy();
+      await userEvent.click(screen.getByRole("button", { name: "Unlink this computer" }));
+      expect(mock.invoke).toHaveBeenCalledWith("gateway_whatsapp_logout", {});
+    });
+    it("needs the component installed before WhatsApp can be switched on", async () => {
+      await openGateway({ whatsapp: whatsapp({ installed: false }) }, {
+        gateway_install_whatsapp: () => status({ whatsapp: whatsapp({ installed: true }) }),
+      });
+      const listen = await screen.findByRole("checkbox", { name: "Listen on WhatsApp" }) as HTMLInputElement;
+      expect(listen.disabled).toBe(true);
+      await userEvent.click(screen.getByRole("button", { name: "Install" }));
+      expect(mock.invoke).toHaveBeenCalledWith("gateway_install_whatsapp", {});
+      await waitFor(() => expect((screen.getByRole("checkbox", { name: "Listen on WhatsApp" }) as HTMLInputElement).disabled).toBe(false));
+    });
+    it("switches WhatsApp on with the chosen mode", async () => {
+      await openGateway({ whatsapp: whatsapp() }, {
+        gateway_set_whatsapp: (args: { enabled: boolean; mode: string }) => status({ running: true, enabled: true, whatsapp: whatsapp({ enabled: args.enabled, mode: args.mode, state: "connecting" }) }),
+      });
+      await userEvent.selectOptions(await screen.findByRole("combobox", { name: "WhatsApp mode" }), "bot");
+      expect(mock.invoke).toHaveBeenCalledWith("gateway_set_whatsapp", { enabled: false, mode: "bot" });
+      await userEvent.click(screen.getByRole("checkbox", { name: "Listen on WhatsApp" }));
+      expect(mock.invoke).toHaveBeenCalledWith("gateway_set_whatsapp", { enabled: true, mode: "bot" });
+      expect(await screen.findByText("Connecting…")).toBeTruthy();
+    });
+    it("names each person's channel and marks who gets scheduled results", async () => {
+      await openGateway({
+        running: true, enabled: true, has_token: true, home_chat: "whatsapp:15550100@s.whatsapp.net",
+        allowed: [{ id: "telegram:900", name: "@sam" }, { id: "whatsapp:15550100", name: "Sam (+15550100)" }],
+        pending: [{ code: "ABCD-2345", user_id: "whatsapp:15550142", chat_id: "whatsapp:15550142@s.whatsapp.net", channel: "whatsapp", name: "Alex (+15550142)", expires_in: 3000 }],
+      }, { gateway_remove_user: () => status({ allowed: [] }) });
+      expect(await screen.findByText(/WhatsApp · pairing code ABCD-2345/)).toBeTruthy();
+      expect(screen.getByText("Telegram · approved")).toBeTruthy();
+      expect(screen.getByText("WhatsApp · approved · receives scheduled results")).toBeTruthy();
+      const removes = screen.getAllByRole("button", { name: "Remove" });
+      await userEvent.click(removes[1]);
+      expect(mock.invoke).toHaveBeenCalledWith("gateway_remove_user", { userId: "whatsapp:15550100" });
+    });
+  });
   it("shows Tavily as the search when a key is saved, checks a new key, and runs a real search", async () => {
     const previous = mock.invoke.getMockImplementation()!;
     let status = { configured: "auto", effective: "duckduckgo", has_tavily_key: false };

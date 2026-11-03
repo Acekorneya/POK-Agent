@@ -18,17 +18,64 @@ const MAX_PENDING: usize = 8;
 /// Unambiguous characters only (no 0/O, 1/I/L).
 const CODE_ALPHABET: &[u8] = b"ABCDEFGHJKMNPQRSTUVWXYZ23456789";
 
+/// A person or chat on a channel, written `<channel>:<id>`, for example
+/// `telegram:900` or `whatsapp:15550100`.
+pub fn address(channel: &str, id: &str) -> String {
+    format!("{channel}:{id}")
+}
+
+/// Split `<channel>:<id>`; an address without a channel is returned whole.
+pub fn split_address(address: &str) -> (&str, &str) {
+    address.split_once(':').unwrap_or(("", address))
+}
+
+/// Files written before WhatsApp existed hold bare Telegram numbers.
+fn address_or_legacy_number<'de, D>(deserializer: D) -> std::result::Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Number(number) => Ok(address("telegram", &number.to_string())),
+        serde_json::Value::String(text) if text.contains(':') => Ok(text),
+        serde_json::Value::String(text) => Ok(address("telegram", &text)),
+        other => Err(D::Error::custom(format!("not an address: {other}"))),
+    }
+}
+
+fn optional_address<'de, D>(deserializer: D) -> std::result::Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Number(number) => Ok(Some(address("telegram", &number.to_string()))),
+        serde_json::Value::String(text) if text.contains(':') => Ok(Some(text)),
+        serde_json::Value::String(text) => Ok(Some(address("telegram", &text))),
+        _ => Ok(None),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AllowedUser {
-    pub id: i64,
+    /// `<channel>:<id>`.
+    #[serde(deserialize_with = "address_or_legacy_number")]
+    pub id: String,
     pub name: String,
+}
+
+impl AllowedUser {
+    pub fn channel(&self) -> &str {
+        split_address(&self.id).0
+    }
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct PendingPairing {
     pub code: String,
-    pub user_id: i64,
-    pub chat_id: i64,
+    pub user_id: String,
+    pub chat_id: String,
+    pub channel: String,
     pub name: String,
     /// Seconds until the code expires.
     pub expires_in: u64,
@@ -39,14 +86,14 @@ struct AccessFile {
     #[serde(default)]
     allowed: Vec<AllowedUser>,
     /// Where scheduled results go.
-    #[serde(default)]
-    home_chat: Option<i64>,
+    #[serde(default, deserialize_with = "optional_address")]
+    home_chat: Option<String>,
 }
 
 struct Pending {
     code: String,
-    user_id: i64,
-    chat_id: i64,
+    user_id: String,
+    chat_id: String,
     name: String,
     created: Instant,
 }
@@ -82,7 +129,7 @@ impl AccessControl {
         Ok(())
     }
 
-    pub fn is_allowed(&self, user_id: i64) -> bool {
+    pub fn is_allowed(&self, user_id: &str) -> bool {
         self.saved
             .lock()
             .allowed
@@ -94,19 +141,19 @@ impl AccessControl {
         self.saved.lock().allowed.clone()
     }
 
-    pub fn home_chat(&self) -> Option<i64> {
-        self.saved.lock().home_chat
+    pub fn home_chat(&self) -> Option<String> {
+        self.saved.lock().home_chat.clone()
     }
 
-    pub fn set_home_chat(&self, chat_id: i64) -> Result<()> {
+    pub fn set_home_chat(&self, chat: &str) -> Result<()> {
         let mut saved = self.saved.lock();
-        saved.home_chat = Some(chat_id);
+        saved.home_chat = Some(chat.to_owned());
         self.save(&saved)
     }
 
     /// A one-time code for an unknown sender, or `None` when too many are
     /// already open. Asking again returns the same open code.
-    pub fn request_pairing(&self, user_id: i64, chat_id: i64, name: &str) -> Option<String> {
+    pub fn request_pairing(&self, user_id: &str, chat_id: &str, name: &str) -> Option<String> {
         let mut pending = self.pending.lock();
         pending.retain(|entry| entry.created.elapsed() < PAIRING_TTL);
         if let Some(existing) = pending.iter().find(|entry| entry.user_id == user_id) {
@@ -118,8 +165,8 @@ impl AccessControl {
         let code = new_code();
         pending.push(Pending {
             code: code.clone(),
-            user_id,
-            chat_id,
+            user_id: user_id.to_owned(),
+            chat_id: chat_id.to_owned(),
             name: name.to_owned(),
             created: Instant::now(),
         });
@@ -133,14 +180,28 @@ impl AccessControl {
             .iter()
             .map(|entry| PendingPairing {
                 code: entry.code.clone(),
-                user_id: entry.user_id,
-                chat_id: entry.chat_id,
+                user_id: entry.user_id.clone(),
+                chat_id: entry.chat_id.clone(),
+                channel: split_address(&entry.user_id).0.to_owned(),
                 name: entry.name.clone(),
                 expires_in: PAIRING_TTL
                     .saturating_sub(entry.created.elapsed())
                     .as_secs(),
             })
             .collect()
+    }
+
+    /// The chat an open code was requested from, so the person can be told
+    /// they were approved.
+    pub fn pending_chat(&self, code: &str) -> Option<String> {
+        let wanted = normalize_code(code);
+        self.pending
+            .lock()
+            .iter()
+            .find(|entry| {
+                entry.created.elapsed() < PAIRING_TTL && normalize_code(&entry.code) == wanted
+            })
+            .map(|entry| entry.chat_id.clone())
     }
 
     /// Approve an open code (case and dash insensitive). The first person
@@ -181,7 +242,7 @@ impl AccessControl {
         pending.len() != before
     }
 
-    pub fn remove(&self, user_id: i64) -> Result<bool> {
+    pub fn remove(&self, user_id: &str) -> Result<bool> {
         let mut saved = self.saved.lock();
         let before = saved.allowed.len();
         saved.allowed.retain(|user| user.id != user_id);
@@ -228,20 +289,29 @@ mod tests {
     #[test]
     fn strangers_are_denied_until_the_owner_approves_their_code() {
         let (_dir, access) = store();
-        assert!(!access.is_allowed(11));
-        let code = access.request_pairing(11, 11, "@sam").unwrap();
+        assert!(!access.is_allowed("telegram:11"));
+        let code = access
+            .request_pairing("telegram:11", "telegram:11", "@sam")
+            .unwrap();
         assert_eq!(code.len(), 9);
-        assert_eq!(access.request_pairing(11, 11, "@sam"), Some(code.clone()));
-        assert!(!access.is_allowed(11), "a code alone grants nothing");
+        assert_eq!(
+            access.request_pairing("telegram:11", "telegram:11", "@sam"),
+            Some(code.clone())
+        );
+        assert!(
+            !access.is_allowed("telegram:11"),
+            "a code alone grants nothing"
+        );
         assert_eq!(access.pending().len(), 1);
+        assert_eq!(access.pending()[0].channel, "telegram");
 
         let lowercase_without_dash = code.replace('-', "").to_lowercase();
         let user = access.approve(&lowercase_without_dash).unwrap().unwrap();
-        assert_eq!(user.id, 11);
-        assert!(access.is_allowed(11));
+        assert_eq!(user.id, "telegram:11");
+        assert!(access.is_allowed("telegram:11"));
         assert_eq!(
-            access.home_chat(),
-            Some(11),
+            access.home_chat().as_deref(),
+            Some("telegram:11"),
             "the first person becomes home"
         );
         assert!(access.pending().is_empty());
@@ -252,30 +322,74 @@ mod tests {
     }
 
     #[test]
+    fn the_same_number_on_two_channels_is_two_different_people() {
+        let (_dir, access) = store();
+        let code = access
+            .request_pairing("whatsapp:15550100", "whatsapp:15550100", "Sam")
+            .unwrap();
+        access.approve(&code).unwrap();
+        assert!(access.is_allowed("whatsapp:15550100"));
+        assert!(
+            !access.is_allowed("telegram:15550100"),
+            "approval on one channel never carries to another"
+        );
+        assert_eq!(access.allowed()[0].channel(), "whatsapp");
+    }
+
+    #[test]
     fn the_allowlist_survives_a_restart_and_removal_revokes_it() {
         let (dir, access) = store();
-        let code = access.request_pairing(5, 50, "Sam").unwrap();
+        let code = access
+            .request_pairing("telegram:5", "telegram:50", "Sam")
+            .unwrap();
         access.approve(&code).unwrap();
         let reopened = AccessControl::open(&dir.path().join("gateway").join("access.json"));
-        assert!(reopened.is_allowed(5));
-        assert_eq!(reopened.home_chat(), Some(50));
-        assert!(reopened.remove(5).unwrap());
-        assert!(!reopened.is_allowed(5));
+        assert!(reopened.is_allowed("telegram:5"));
+        assert_eq!(reopened.home_chat().as_deref(), Some("telegram:50"));
+        assert!(reopened.remove("telegram:5").unwrap());
+        assert!(!reopened.is_allowed("telegram:5"));
         assert!(
-            !AccessControl::open(&dir.path().join("gateway").join("access.json")).is_allowed(5)
+            !AccessControl::open(&dir.path().join("gateway").join("access.json"))
+                .is_allowed("telegram:5")
         );
+    }
+
+    #[test]
+    fn an_access_file_from_before_whatsapp_keeps_its_telegram_people() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("access.json");
+        std::fs::write(
+            &path,
+            r#"{"allowed": [{"id": 900, "name": "Sam"}], "home_chat": 900}"#,
+        )
+        .unwrap();
+        let access = AccessControl::open(&path);
+        assert!(access.is_allowed("telegram:900"));
+        assert_eq!(access.home_chat().as_deref(), Some("telegram:900"));
+        // Saving rewrites it in the new form, and that form reads back.
+        access.set_home_chat("telegram:900").unwrap();
+        let written = std::fs::read_to_string(&path).unwrap();
+        assert!(written.contains("\"telegram:900\""), "{written}");
+        assert!(AccessControl::open(&path).is_allowed("telegram:900"));
     }
 
     #[test]
     fn denied_codes_and_a_flood_of_strangers_are_contained() {
         let (_dir, access) = store();
-        let code = access.request_pairing(1, 1, "a").unwrap();
+        let code = access
+            .request_pairing("telegram:1", "telegram:1", "a")
+            .unwrap();
         assert!(access.deny(&code));
         assert!(access.approve(&code).unwrap().is_none());
-        for id in 100..100 + MAX_PENDING as i64 {
-            assert!(access.request_pairing(id, id, "x").is_some());
+        for id in 100..100 + MAX_PENDING {
+            let key = format!("telegram:{id}");
+            assert!(access.request_pairing(&key, &key, "x").is_some());
         }
-        assert!(access.request_pairing(999, 999, "late").is_none());
+        assert!(
+            access
+                .request_pairing("telegram:999", "telegram:999", "late")
+                .is_none()
+        );
     }
 
     #[test]
@@ -283,7 +397,37 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("access.json");
         std::fs::write(&path, "{ not json").unwrap();
-        assert!(!AccessControl::open(&path).is_allowed(1));
+        assert!(!AccessControl::open(&path).is_allowed("telegram:1"));
+    }
+
+    #[test]
+    fn an_open_code_knows_which_chat_asked() {
+        let (_dir, access) = store();
+        let code = access
+            .request_pairing(
+                "whatsapp:15550100",
+                "whatsapp:15550100@s.whatsapp.net",
+                "Sam",
+            )
+            .unwrap();
+        assert_eq!(
+            access.pending_chat(&code.to_lowercase()).as_deref(),
+            Some("whatsapp:15550100@s.whatsapp.net")
+        );
+        assert!(access.pending_chat("NOPE-NOPE").is_none());
+        access.approve(&code).unwrap();
+        assert!(access.pending_chat(&code).is_none(), "gone once approved");
+    }
+
+    #[test]
+    fn addresses_split_into_channel_and_id() {
+        assert_eq!(address("whatsapp", "1555"), "whatsapp:1555");
+        assert_eq!(split_address("telegram:900"), ("telegram", "900"));
+        assert_eq!(
+            split_address("whatsapp:1555@s.whatsapp.net"),
+            ("whatsapp", "1555@s.whatsapp.net")
+        );
+        assert_eq!(split_address("bare"), ("", "bare"));
     }
 
     #[test]
