@@ -13,6 +13,10 @@ use uuid::Uuid;
 
 use crate::{PokError, Result};
 
+mod budget;
+use budget::*;
+pub(crate) use budget::{PLAYBOOK_SOURCE, inferred_fact_rejection};
+
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS memories (
     id TEXT PRIMARY KEY,
@@ -251,6 +255,10 @@ impl MemoryStore {
         // Stores written before same-task procedures were merged may hold
         // many copies of one skill; fold them into one.
         store.consolidate_procedures()?;
+        // The same for facts and learned skills: fold repeats, drop what was
+        // never durable, and keep the store inside its budgets.
+        let _ = store.consolidate_facts();
+        let _ = store.prune_learned_skills();
         Ok(Arc::new(store))
     }
 
@@ -277,7 +285,7 @@ impl MemoryStore {
     ) -> Result<MemorySaveOutcome> {
         let fingerprint = memory_fingerprint(text);
         let mut connection = self.connection.lock();
-        if approved {
+        if approved && provenance == MemoryWriteProvenance::ExplicitUser {
             connection.execute(
                 "DELETE FROM memory_tombstones WHERE fingerprint = ?1 AND item_type = 'fact'",
                 params![fingerprint],
@@ -310,6 +318,9 @@ impl MemoryStore {
                  version = version + 1 WHERE id = ?1",
                 params![id, now],
             )?;
+            if provenance != MemoryWriteProvenance::ExplicitUser {
+                enforce_fact_budgets(&mut connection)?;
+            }
             let record = load_memory_record(&connection, &id)?;
             return Ok(MemorySaveOutcome {
                 related_memory_id: Some(record.id),
@@ -318,27 +329,70 @@ impl MemoryStore {
                 local_similarity: Some(1.0),
             });
         }
+        if provenance == MemoryWriteProvenance::InferredCuration
+            && let Some(reason) = inferred_fact_rejection(source, text)
+        {
+            return Err(PokError::Tool(format!(
+                "this inferred fact was not saved: {reason}"
+            )));
+        }
         let related = related_memory_candidates(&connection, text, 16)?;
         let best = related
             .iter()
+            .filter(|record| !record.source.starts_with("skill:"))
             .map(|record| (record, memory_similarity(text, &record.text)))
             .max_by(|left, right| left.1.total_cmp(&right.1));
+        // The same fact worded differently is one fact: an inferred repeat
+        // reinforces what is stored; an explicit statement replaces the older
+        // wording, so a corrected fact never sits next to its old version.
+        let merge_at = match provenance {
+            MemoryWriteProvenance::ExplicitUser => EXPLICIT_FACT_MERGE_SIMILARITY,
+            _ => FACT_MERGE_SIMILARITY,
+        };
         if let Some((existing, similarity)) = best
-            && similarity >= 0.92
+            && similarity >= merge_at
             && protected_terms_match(text, &existing.text)
         {
             let now = Utc::now().to_rfc3339();
-            connection.execute(
-                "UPDATE memories SET updated_at = ?2,
-                 reinforcement_count = reinforcement_count + 1,
-                 version = version + 1 WHERE id = ?1",
-                params![existing.id.to_string(), now],
-            )?;
-            let record = load_memory_record(&connection, &existing.id.to_string())?;
+            let existing_id = existing.id.to_string();
+            let supersede = provenance == MemoryWriteProvenance::ExplicitUser
+                && canonical_memory_text(&existing.text) != canonical_memory_text(text);
+            if supersede {
+                let transaction = connection.transaction()?;
+                transaction.execute(
+                    "UPDATE memories SET text = ?2, fingerprint = ?3, approved = 1,
+                     provenance = 'explicit_user', updated_at = ?4,
+                     reinforcement_count = reinforcement_count + 1,
+                     version = version + 1, review_status = 'independent' WHERE id = ?1",
+                    params![existing_id, text.trim(), fingerprint, now],
+                )?;
+                transaction.execute(
+                    "DELETE FROM memories_fts WHERE id = ?1",
+                    params![existing_id],
+                )?;
+                transaction.execute(
+                    "INSERT INTO memories_fts(id, text) VALUES (?1, ?2)",
+                    params![existing_id, text.trim()],
+                )?;
+                transaction.commit()?;
+            } else {
+                connection.execute(
+                    "UPDATE memories SET updated_at = ?2,
+                     reinforcement_count = reinforcement_count + 1,
+                     version = version + 1 WHERE id = ?1",
+                    params![existing_id, now],
+                )?;
+            }
+            let record = load_memory_record(&connection, &existing_id)?;
+            enforce_fact_budgets(&mut connection)?;
             return Ok(MemorySaveOutcome {
                 related_memory_id: Some(record.id),
                 record,
-                disposition: "reinforced_local".into(),
+                disposition: if supersede {
+                    "updated_similar".into()
+                } else {
+                    "reinforced_local".into()
+                },
                 local_similarity: Some(similarity),
             });
         }
@@ -373,6 +427,16 @@ impl MemoryStore {
             params![record.id.to_string(), record.text],
         )?;
         transaction.commit()?;
+        if provenance != MemoryWriteProvenance::ExplicitUser {
+            enforce_fact_budgets(&mut connection)?;
+        }
+        // The budget may have dropped the new row itself (a draft that ranks
+        // below everything kept); say so rather than return a ghost.
+        if load_memory_record(&connection, &record.id.to_string()).is_err() {
+            return Err(PokError::Tool(
+                "this inferred fact was not kept: the memory budget holds stronger facts".into(),
+            ));
+        }
         Ok(MemorySaveOutcome {
             related_memory_id: record.related_memory_id,
             record,
@@ -443,7 +507,8 @@ impl MemoryStore {
 
     pub fn approve(&self, id: Uuid) -> Result<bool> {
         Ok(self.connection.lock().execute(
-            "UPDATE memories SET approved = 1 WHERE id = ?1 AND approved = 0",
+            "UPDATE memories SET approved = 1, provenance = 'user_approved'
+             WHERE id = ?1 AND approved = 0",
             params![id.to_string()],
         )? == 1)
     }
@@ -2190,7 +2255,9 @@ mod tests {
         let memory = MemoryStore::open(dir.path()).unwrap();
         memory.save("user", "fact 1", true).unwrap();
         memory.save("user", "fact 2", true).unwrap();
-        memory.save("user", "draft fact", false).unwrap();
+        memory
+            .save("user", "draft fact about a printer", false)
+            .unwrap();
         memory.save("project", "project fact", true).unwrap();
 
         let user_facts = memory.list_approved("user", 10).unwrap();

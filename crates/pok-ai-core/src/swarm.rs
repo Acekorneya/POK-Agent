@@ -49,7 +49,6 @@ use crate::{
     PokError, Result,
     brain::{Brain, BrainRequest, BrainStream, ModelInfo},
     config::{DecisionRouterConfig, UserBrowserConfig, WebConfig},
-    memory::MemoryWriteProvenance,
     policy::{Policy, PolicyMode, RiskClass},
     session::{AgentEvent, Session, SessionObserver},
     subagent::{git_output, git_status},
@@ -70,7 +69,7 @@ const LEAD_HALF_LIFE_SECONDS: f64 = 120.0;
 const RECRUIT_THRESHOLD: f64 = 0.55;
 const REPORT_CHARS: usize = 4_000;
 /// Memory source of the playbooks successful swarm runs leave behind.
-const PLAYBOOK_SOURCE: &str = "swarm_playbook";
+use crate::memory::PLAYBOOK_SOURCE;
 
 // ---------------------------------------------------------------------------
 // Who is a worker, and desktop turn-taking
@@ -859,16 +858,6 @@ impl TeamBoard {
             "leads": Self::leads_json(&state, self.now()),
         })
     }
-
-    fn productive_leads(&self) -> Vec<String> {
-        let state = self.state.lock();
-        state
-            .leads
-            .iter()
-            .filter(|lead| lead.recruited || !lead.followers.is_empty())
-            .map(|lead| crate::decision::bounded_text(&lead.topic, 120))
-            .collect()
-    }
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1586,7 +1575,7 @@ impl SwarmTool {
 
     /// Remember how a goal was split when the swarm succeeded, so similar
     /// goals are split as well next time.
-    fn save_playbook(parent: &ToolContext, goal: &str, results: &[Value], board: &TeamBoard) {
+    fn save_playbook(parent: &ToolContext, goal: &str, results: &[Value]) {
         let status = |result: &Value| {
             result
                 .get("status")
@@ -1597,42 +1586,35 @@ impl SwarmTool {
         if results.is_empty() || results.iter().any(|result| status(result) != "completed") {
             return;
         }
+        // How the work was split (roles and short titles), not what the
+        // agents found: findings belong to the task's answer and the session
+        // archive. A later run for the same kind of goal updates this entry.
         let parts = results
             .iter()
             .map(|result| {
                 format!(
-                    "{} agent \"{}\" ({})",
+                    "{} agent \"{}\"",
                     result
                         .get("role")
                         .and_then(Value::as_str)
                         .unwrap_or("research"),
-                    result.get("title").and_then(Value::as_str).unwrap_or(""),
                     crate::decision::bounded_text(
-                        result.get("task").and_then(Value::as_str).unwrap_or(""),
-                        120
+                        result.get("title").and_then(Value::as_str).unwrap_or(""),
+                        60
                     )
                 )
             })
             .collect::<Vec<_>>()
             .join("; ");
-        let leads = board.productive_leads();
         let text = format!(
-            "Swarm playbook: for a goal like \"{}\", {} agents worked in parallel and all completed: {}.{}",
-            crate::decision::bounded_text(goal, 200),
+            "Swarm playbook: for a goal like \"{}\", {} agents worked in parallel and all completed: {}.",
+            crate::decision::bounded_text(goal, 160),
             results.len(),
-            parts,
-            if leads.is_empty() {
-                String::new()
-            } else {
-                format!(" Leads that drew more effort: {}.", leads.join("; "))
-            }
+            crate::decision::bounded_text(&parts, 700),
         );
-        let _ = parent.memory.save_with_provenance(
-            PLAYBOOK_SOURCE,
-            &text,
-            parent.questions.is_none(),
-            MemoryWriteProvenance::InferredCuration,
-        );
+        let _ = parent
+            .memory
+            .save_playbook(&text, parent.questions.is_none());
     }
 }
 
@@ -1805,7 +1787,7 @@ impl Tool for SwarmTool {
                 )));
             }
         }
-        Self::save_playbook(parent, &args.goal, &results, &board);
+        Self::save_playbook(parent, &args.goal, &results);
         let completed = results
             .iter()
             .filter(|result| result.get("status").and_then(Value::as_str) == Some("completed"))

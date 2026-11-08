@@ -12,6 +12,10 @@ pub(super) struct CurationEnvelope {
 pub(super) struct CurationProposal {
     pub(super) source: String,
     pub(super) text: String,
+    /// The user said it themselves in this request ("I prefer ...",
+    /// "always ..."), so no one needs to confirm it.
+    #[serde(default)]
+    pub(super) stated: bool,
 }
 
 pub(super) fn workflow_step(name: &str, arguments: &Value, result: &Value) -> Option<Value> {
@@ -1491,7 +1495,7 @@ pub(super) async fn curate_turn(
         messages: vec![
             BrainMessage::text(
                 "system",
-                "You are a restricted durable-fact curator. You have no tools. Propose only stable user preferences or durable environment facts directly supported by the completed interaction and absent from RELATED MEMORIES. Never preserve recipients, message bodies, paths, coordinates, target numbers, transient values, secrets, or guesses. The harness learns verified procedures separately. Return JSON only: {\"proposals\":[{\"source\":\"user|environment\",\"text\":\"...\"}]}.",
+                "You are a restricted durable-fact curator. You have no tools. Most runs teach nothing worth keeping: return {\"proposals\":[]} unless a fact clearly qualifies. A qualifying fact is about the USER or THEIR OWN setup and will still be true and useful months from now: a preference, a standing convention for how they like work done, who or where they are, or how their own machine, accounts, or tools are set up. One short sentence, in plain words, no more than two proposals. Never propose what the task FOUND OUT: research results, prices, rates, taxes, shop or store details, how a website or web fetch behaved, links, comparisons, anything the answer already contains; that belongs in the answer, not in memory. Never propose anything already covered by RELATED MEMORIES, even reworded: if one of them says it, propose nothing. Never preserve recipients, message bodies, paths, coordinates, target numbers, transient values, secrets, or guesses. Set \"stated\": true only when the user literally said it in USER REQUEST. The harness learns verified procedures separately. Return JSON only: {\"proposals\":[{\"source\":\"user|environment\",\"text\":\"...\",\"stated\":false}]}.",
             ),
             BrainMessage::text(
                 "user",
@@ -1595,6 +1599,7 @@ pub(super) async fn verify_and_save_curated_memory(
     config: Option<&crate::config::DecisionRouterConfig>,
     source: &str,
     text: &str,
+    stated: bool,
     cancellation: &CancellationToken,
 ) -> Result<(
     Option<crate::memory::MemoryRecord>,
@@ -1602,11 +1607,13 @@ pub(super) async fn verify_and_save_curated_memory(
     Option<Uuid>,
     bool,
 )> {
+    // What the user said themselves needs no confirmation; a guess does.
+    let approved = stated && source == "user";
     let local_save = || {
         let outcome = memory.save_with_provenance(
             source,
             text,
-            false,
+            approved,
             MemoryWriteProvenance::InferredCuration,
         )?;
         Ok((
@@ -1705,7 +1712,7 @@ pub(super) async fn verify_and_save_curated_memory(
             let outcome = memory.save_with_provenance(
                 source,
                 text,
-                false,
+                approved,
                 MemoryWriteProvenance::InferredCuration,
             )?;
             Ok((
@@ -2036,7 +2043,7 @@ impl Session {
             let artifact = match result {
                 Ok(envelope) => {
                     let mut saved = Vec::new();
-                    for proposal in envelope.proposals.into_iter().take(4) {
+                    for proposal in envelope.proposals.into_iter().take(2) {
                         if proposal.text.trim().is_empty() {
                             continue;
                         }
@@ -2046,6 +2053,7 @@ impl Session {
                             decision_router_config.as_ref(),
                             &proposal.source,
                             &proposal.text,
+                            proposal.stated,
                             &cancellation,
                         )
                         .await;
@@ -2075,6 +2083,9 @@ impl Session {
                 &artifact_dir.join(format!("curation-{}.json", Uuid::new_v4())),
                 &serde_json::to_vec_pretty(&artifact).unwrap_or_default(),
             );
+            // Keep the store tidy between restarts too.
+            let _ = memory.consolidate_facts();
+            let _ = memory.prune_learned_skills();
         });
         let mut tasks = self.curation_tasks.lock();
         tasks.retain(|task| !task.is_finished());
