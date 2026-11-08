@@ -1039,3 +1039,93 @@ pub(super) fn open_document_warning(
         })
     })
 }
+
+/// Files the model tried to change with `edit_file` or `write_file` where no
+/// attempt in the visible conversation succeeded and the file on disk has not
+/// been modified since `started_at`, so a final answer that says it was
+/// changed is not true. Grounded in the filesystem, not the model's account.
+pub(super) fn unapplied_edit_targets(
+    messages: &[BrainMessage],
+    workspace: &std::path::Path,
+    started_at: std::time::SystemTime,
+) -> Vec<String> {
+    let mut calls: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    for message in messages
+        .iter()
+        .filter(|message| message.role == "assistant")
+    {
+        for call in &message.tool_calls {
+            let key = match call.name.as_str() {
+                "edit_file" => "filepath",
+                "write_file" => "path",
+                _ => continue,
+            };
+            if let Some(path) = call.arguments.get(key).and_then(Value::as_str) {
+                calls.insert(call.id.clone(), path.to_owned());
+            }
+        }
+    }
+    let mut outcomes: std::collections::BTreeMap<String, (u32, u32)> = Default::default();
+    for message in messages.iter().filter(|message| message.role == "tool") {
+        let Some(path) = message.tool_call_id.as_ref().and_then(|id| calls.get(id)) else {
+            continue;
+        };
+        let failed = message.content.iter().any(
+            |part| matches!(part, MessageContent::Text { text } if text.starts_with("{\"error\"")),
+        );
+        let entry = outcomes.entry(path.clone()).or_default();
+        if failed {
+            entry.1 += 1;
+        } else {
+            entry.0 += 1;
+        }
+    }
+    outcomes
+        .into_iter()
+        .filter(|(_, (_, failures))| *failures > 0)
+        .filter(|(path, _)| {
+            let full = if std::path::Path::new(path).is_absolute() {
+                std::path::PathBuf::from(path)
+            } else {
+                workspace.join(path)
+            };
+            std::fs::metadata(full)
+                .and_then(|metadata| metadata.modified())
+                .is_ok_and(|modified| modified < started_at)
+        })
+        .map(|(path, _)| path)
+        .collect()
+}
+
+/// The uncommitted changes (`git diff`) to the files the run edited, bounded,
+/// for the model to review before it finishes. `None` when the workspace is not a git
+/// repository, git is missing, or nothing changed.
+pub(super) fn workspace_diff_for_review(
+    workspace: &std::path::Path,
+    files: &[std::path::PathBuf],
+) -> Option<String> {
+    const LIMIT: usize = 6_000;
+    if files.is_empty() {
+        return None;
+    }
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workspace)
+        .args(["diff", "--no-color", "-U1", "--"])
+        .args(files)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if text.is_empty() {
+        return None;
+    }
+    if text.chars().count() > LIMIT {
+        let clipped = text.chars().take(LIMIT).collect::<String>();
+        Some(format!("{clipped}\n[diff truncated]"))
+    } else {
+        Some(text)
+    }
+}

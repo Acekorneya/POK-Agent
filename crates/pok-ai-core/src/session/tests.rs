@@ -9466,3 +9466,77 @@ fn compactable_history_at_minimum_matches_the_compaction_slice() {
     ];
     assert!(compressible_history_at_minimum(&summarized));
 }
+
+#[test]
+fn an_answer_about_a_file_whose_edits_all_failed_and_that_is_unchanged_is_caught() {
+    let temp = tempfile::tempdir().unwrap();
+    std::fs::write(temp.path().join("notes.txt"), "old").unwrap();
+    std::fs::write(temp.path().join("other.txt"), "old").unwrap();
+    let call = |id: &str, name: &str, key: &str, path: &str| BrainMessage {
+        role: "assistant".into(),
+        content: Vec::new(),
+        origin: MessageOrigin::Assistant,
+        tool_call_id: None,
+        tool_calls: vec![CompletedToolCall {
+            id: id.into(),
+            name: name.into(),
+            arguments: json!({key: path}),
+        }],
+    };
+    let result = |id: &str, text: &str| BrainMessage {
+        role: "tool".into(),
+        content: vec![MessageContent::Text { text: text.into() }],
+        origin: MessageOrigin::ToolResult,
+        tool_call_id: Some(id.into()),
+        tool_calls: Vec::new(),
+    };
+    let messages = vec![
+        call("1", "edit_file", "filepath", "notes.txt"),
+        result(
+            "1",
+            r#"{"error":"tool error: target_content must occur exactly once; found 0."}"#,
+        ),
+        call("2", "edit_file", "filepath", "other.txt"),
+        result("2", r#"{"error":"tool error: found 0."}"#),
+        call("3", "edit_file", "filepath", "other.txt"),
+        result("3", r#"{"path":"other.txt"}"#),
+    ];
+    // Both files predate the task (started a minute from now).
+    let later = std::time::SystemTime::now() + std::time::Duration::from_secs(60);
+    let found = unapplied_edit_targets(&messages, temp.path(), later);
+    // A file whose later attempt succeeded is not flagged when it really changed...
+    assert!(found.contains(&"notes.txt".to_owned()));
+    // ...but the filesystem decides: this one is untouched too, so it is flagged.
+    assert!(found.contains(&"other.txt".to_owned()));
+    // Modified during the task: the failed attempts no longer matter.
+    let earlier = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+    assert!(unapplied_edit_targets(&messages, temp.path(), earlier).is_empty());
+}
+
+#[test]
+fn the_review_diff_covers_only_the_files_the_run_edited() {
+    let temp = tempfile::tempdir().unwrap();
+    let git = |args: &[&str]| {
+        std::process::Command::new("git")
+            .arg("-C")
+            .arg(temp.path())
+            .args(args)
+            .output()
+            .unwrap()
+    };
+    git(&["init", "-q"]);
+    git(&["config", "user.email", "test@example.com"]);
+    git(&["config", "user.name", "Example"]);
+    std::fs::write(temp.path().join("edited.txt"), "one\n").unwrap();
+    std::fs::write(temp.path().join("other.txt"), "keep\n").unwrap();
+    git(&["add", "."]);
+    git(&["commit", "-q", "-m", "start"]);
+    std::fs::write(temp.path().join("edited.txt"), "two\n").unwrap();
+    std::fs::write(temp.path().join("other.txt"), "changed before the run\n").unwrap();
+    let diff = workspace_diff_for_review(temp.path(), &[temp.path().join("edited.txt")]).unwrap();
+    assert!(diff.contains("-one") && diff.contains("+two"), "{diff}");
+    assert!(!diff.contains("changed before the run"), "{diff}");
+    assert!(workspace_diff_for_review(temp.path(), &[]).is_none());
+    let not_a_repo = tempfile::tempdir().unwrap();
+    assert!(workspace_diff_for_review(not_a_repo.path(), &[not_a_repo.path().join("x")]).is_none());
+}

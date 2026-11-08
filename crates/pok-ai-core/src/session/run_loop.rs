@@ -163,8 +163,85 @@ impl Session {
                 )?;
             }
         }
-        let retrieval_intent = self.retrieval_intent(&prompt).await?;
+        // A coding task starts with the workspace described and the code it names
+        // in front of the model, so the first turns are not spent on ls/grep/cat.
+        // System 1 (when enabled) picks which of the found regions are worth it.
+        let mut precise_code_context = false;
         if self.active_tool_groups.contains("coding") {
+            if let Some(brief) = workspace_brief(&self.context.workspace) {
+                self.messages.push(BrainMessage::text_with_origin(
+                    "system",
+                    format!("<workspace_brief>\n{brief}\n</workspace_brief>"),
+                    MessageOrigin::RetrievedContext,
+                ));
+                self.log("workspace_brief_loaded", json!({"chars": brief.len()}))?;
+            }
+            let regions = code_candidates(&self.context.workspace, &prompt);
+            if !regions.is_empty() {
+                let candidates = regions
+                    .iter()
+                    .enumerate()
+                    .map(|(index, region)| DecisionCandidate {
+                        id: format!("code_{index}"),
+                        tool: "include_context".into(),
+                        arguments: json!({"path": region.path, "start": region.start, "end": region.end}),
+                        description: format!(
+                            "{}: {}",
+                            region.label(),
+                            truncate_chars(
+                                region.text.lines().find(|line| line.contains(&region.symbol)).unwrap_or_default().trim(),
+                                120
+                            )
+                        ),
+                        kind: DecisionCandidateKind::Context,
+                        local_score: region.score,
+                    })
+                    .collect::<Vec<_>>();
+                let routed = self.route_optional_context(&prompt, candidates).await?;
+                let mut chosen = routed
+                    .iter()
+                    .filter_map(|id| id.strip_prefix("code_")?.parse::<usize>().ok())
+                    .filter(|index| *index < regions.len())
+                    .take(3)
+                    .collect::<Vec<_>>();
+                let selected_by = if chosen.is_empty() { "local" } else { "router" };
+                if chosen.is_empty() {
+                    // No System 1 answer: the single best definition, which is
+                    // almost always what the request is about.
+                    chosen.extend(
+                        regions
+                            .iter()
+                            .position(|region| region.definition && !region.is_test),
+                    );
+                }
+                chosen.sort_unstable();
+                chosen.dedup();
+                if !chosen.is_empty() {
+                    precise_code_context = chosen
+                        .iter()
+                        .any(|index| regions[*index].definition && !regions[*index].is_test);
+                    let picked = chosen
+                        .iter()
+                        .map(|index| regions[*index].clone())
+                        .collect::<Vec<_>>();
+                    self.messages.push(BrainMessage::text_with_origin(
+                        "system",
+                        prefetched_code_block(&picked),
+                        MessageOrigin::RetrievedContext,
+                    ));
+                    self.log(
+                        "code_context_prefetched",
+                        json!({
+                            "selected_by": selected_by,
+                            "candidates": regions.len(),
+                            "regions": picked.iter().map(CodeRegion::label).collect::<Vec<_>>(),
+                        }),
+                    )?;
+                }
+            }
+        }
+        let retrieval_intent = self.retrieval_intent(&prompt).await?;
+        if self.active_tool_groups.contains("coding") && !precise_code_context {
             // Indexing walks and reads the workspace: off the async threads,
             // and cancellable, so Stop works while a large index builds.
             let index_task = {
@@ -616,6 +693,9 @@ impl Session {
         let mut artifact_changed = false;
         let mut observed_artifact_hashes = BTreeMap::<String, String>::new();
         let mut artifact_guard_fires = 0_u32;
+        let mut unapplied_edit_guard_fires = 0_u32;
+        let mut diff_review_fires = 0_u32;
+        let mut syntax_guard_fires = 0_u32;
         let mut accepted_completion_warnings = Vec::<CompletionWarning>::new();
         let mut soft_verification_budget: Option<(u32, u32, bool)> = None;
         let mut withhold_plan_next = false;
@@ -2007,10 +2087,59 @@ impl Session {
                 answer_emission_recovery_attempts =
                     answer_emission_recovery_attempts.saturating_add(1);
                 if answer_emission_recovery_attempts > 2 {
-                    return Err(PokError::Provider(
-                        "model produced reasoning but did not emit a visible final answer after two recovery attempts"
-                            .into(),
-                    ));
+                    // The model worked but never wrote a message. When it changed
+                    // something, report that from the harness's own records instead
+                    // of losing the whole run to an error.
+                    let evidence = self.context.artifact_evidence.lock().clone();
+                    if evidence.is_empty() {
+                        return Err(PokError::Provider(
+                            "model produced reasoning but did not emit a visible final answer after two recovery attempts"
+                                .into(),
+                        ));
+                    }
+                    let changed = authoritative_deliverables(&evidence)
+                        .iter()
+                        .map(|item| format!("- {}", item.path.display()))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    let final_answer = format!(
+                        "The model stopped without writing a final message, so this summary comes from POK-Agent's own records ({} tool calls). Files it created or changed:\n{changed}\nCheck them before relying on them; nothing here was confirmed by the model.",
+                        metrics.tool_calls
+                    );
+                    let warnings = vec![CompletionWarning {
+                        code: "no_final_message".into(),
+                        message: "the model produced no final message".into(),
+                        artifact_path: None,
+                    }];
+                    let deliverables = authoritative_deliverables(&evidence);
+                    self.emit(AgentEvent::RunCompleted {
+                        answer: final_answer.clone(),
+                        completion_status: CompletionStatus::CompletedWithWarnings,
+                        warnings: warnings.clone(),
+                        deliverables: deliverables.clone(),
+                    });
+                    self.log(
+                        "run_completed",
+                        json!({
+                            "answer": final_answer,
+                            "metrics": metrics,
+                            "completion_status": CompletionStatus::CompletedWithWarnings,
+                            "warnings": warnings,
+                            "deliverables": deliverables,
+                            "reason": "reasoning_only_without_answer",
+                        }),
+                    )?;
+                    self.terminal_logged = true;
+                    self.persist_conversation("completed")?;
+                    return Ok(RunSummary {
+                        session_id: self.id,
+                        answer: final_answer,
+                        metrics,
+                        artifact_dir: self.context.artifact_dir.clone(),
+                        completion_status: CompletionStatus::CompletedWithWarnings,
+                        warnings,
+                        deliverables,
+                    });
                 }
                 final_answer_only_active = true;
                 self.log(
@@ -2241,6 +2370,153 @@ impl Session {
                             && (!ui_evidence_since_artifact || !ui_matches_deliverable),
                     );
                 }
+                // The answer says a file was changed, but every attempt to change
+                // it failed and it is untouched on disk: send that back once.
+                // Before finishing a coding change, the model sees its own diff once and
+                // is asked to undo any hunk the task did not need.
+                if diff_review_fires < 1
+                    && !is_safety_refusal(&text)
+                    && artifact_evidence
+                        .iter()
+                        .any(|evidence| evidence.operation == "edited")
+                    && let Some(diff) = workspace_diff_for_review(
+                        &self.context.workspace,
+                        &artifact_evidence
+                            .iter()
+                            .filter(|evidence| evidence.operation == "edited")
+                            .map(|evidence| evidence.path.clone())
+                            .collect::<Vec<_>>(),
+                    )
+                {
+                    diff_review_fires += 1;
+                    self.messages.push(BrainMessage::text_with_origin(
+                        "user",
+                        format!(
+                            "<system-reminder>Before you finish, review your complete change set:\n```diff\n{diff}\n```\nEvery changed line must be needed for the request. If a hunk is unrelated (reformatting, renamed strings, style changes, wording you were not asked to touch) restore the original text with edit_file now. Check that other code relying on what you changed still works, then give your final answer, stating only what is true of this diff.</system-reminder>"
+                        ),
+                        MessageOrigin::SystemReminder,
+                    ));
+                    self.log("completion_diff_review", json!({"diff_chars": diff.len()}))?;
+                    continue;
+                }
+                // Files the run wrote or edited are checked once more now: a syntax
+                // error left behind is not a finished change.
+                let mut syntax_note = String::new();
+                if !is_safety_refusal(&text) {
+                    let changed = artifact_evidence
+                        .iter()
+                        .filter(|evidence| {
+                            matches!(
+                                evidence.operation.as_str(),
+                                "edited"
+                                    | "created"
+                                    | "rewritten"
+                                    | "command_created"
+                                    | "command_modified"
+                            )
+                        })
+                        .map(|evidence| evidence.path.clone())
+                        .collect::<BTreeSet<_>>()
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    let broken = crate::coding::syntax_errors_in(&changed).await;
+                    if !broken.is_empty() && syntax_guard_fires < 2 {
+                        syntax_guard_fires += 1;
+                        let listing = broken
+                            .iter()
+                            .map(|(path, report)| {
+                                format!(
+                                    "- {} ({}): {}",
+                                    path.display(),
+                                    report.checked_with,
+                                    report.summary()
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n");
+                        self.messages.push(BrainMessage::text_with_origin(
+                            "user",
+                            format!(
+                                "<system-reminder>Files you changed still have syntax errors:\n{listing}\nFix them with small exact edits (read_file the lines first), then finish.</system-reminder>"
+                            ),
+                            MessageOrigin::SystemReminder,
+                        ));
+                        self.log(
+                            "completion_syntax_errors_rejected",
+                            json!({"files": broken.iter().map(|(path, _)| path).collect::<Vec<_>>(), "attempt": syntax_guard_fires}),
+                        )?;
+                        continue;
+                    }
+                    if !broken.is_empty() {
+                        syntax_note = format!(
+                            "\n\nNote from POK-Agent: these files still have syntax errors: {}.",
+                            broken
+                                .iter()
+                                .map(|(path, _)| path.display().to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        );
+                        accepted_completion_warnings.extend(broken.iter().map(|(path, report)| {
+                            CompletionWarning {
+                                code: "syntax_errors_remain".into(),
+                                message: format!(
+                                    "{} has syntax errors: {}",
+                                    path.display(),
+                                    report.summary()
+                                ),
+                                artifact_path: Some(path.clone()),
+                            }
+                        }));
+                    }
+                }
+                let mut unapplied_note = String::new();
+                if !is_safety_refusal(&text) {
+                    let started_at = self.context.active_task.lock().started_at;
+                    let lowered = text.to_lowercase();
+                    let unapplied =
+                        unapplied_edit_targets(&self.messages, &self.context.workspace, started_at)
+                            .into_iter()
+                            .filter(|path| {
+                                std::path::Path::new(path)
+                                    .file_name()
+                                    .and_then(|name| name.to_str())
+                                    .is_some_and(|name| lowered.contains(&name.to_lowercase()))
+                            })
+                            .collect::<Vec<_>>();
+                    if !unapplied.is_empty() && unapplied_edit_guard_fires < 2 {
+                        unapplied_edit_guard_fires += 1;
+                        self.messages.push(BrainMessage::text_with_origin(
+                            "user",
+                            format!(
+                                "<system-reminder>Your answer mentions {} as changed, but every edit_file/write_file attempt on it failed and the file on disk has not been modified. It is unchanged. Redo the change with a small, exact target (read_file the region first) and check that the edit succeeded; do not report it as done until it has.</system-reminder>",
+                                unapplied.join(", ")
+                            ),
+                            MessageOrigin::SystemReminder,
+                        ));
+                        self.log(
+                            "completion_unapplied_edit_rejected",
+                            json!({"files": unapplied, "attempt": unapplied_edit_guard_fires}),
+                        )?;
+                        continue;
+                    }
+                    if !unapplied.is_empty() {
+                        // The model would not redo it: the answer still goes out, but
+                        // with the fact that it is wrong stated by the harness.
+                        unapplied_note = format!(
+                            "\n\nNote from POK-Agent: {} was NOT changed. Every attempt to edit it failed and the file on disk is unmodified, despite what is said above.",
+                            unapplied.join(", ")
+                        );
+                        accepted_completion_warnings.extend(unapplied.iter().map(|path| {
+                            CompletionWarning {
+                                code: "edit_not_applied".into(),
+                                message: format!(
+                                    "{path} was not changed: every edit attempt failed"
+                                ),
+                                artifact_path: None,
+                            }
+                        }));
+                    }
+                }
                 let ungrounded_live_answer = (requests_live_information(&root_request)
                     || requests_current_screen_observation(&root_request))
                     && !grounded_evidence_observed;
@@ -2365,7 +2641,7 @@ impl Session {
                 if buffer_candidate_text && !text.is_empty() {
                     self.emit(AgentEvent::TextDelta { text: text.clone() });
                 }
-                let final_answer = text;
+                let final_answer = format!("{text}{unapplied_note}{syntax_note}");
                 let jev_actions = metrics
                     .extras
                     .get("decision_router_actions")

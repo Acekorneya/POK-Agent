@@ -198,6 +198,26 @@ struct ManagerInner {
     root: PathBuf,
     shutdown: CancellationToken,
     event_sink: SyncMutex<Option<Arc<dyn CommandEventSink>>>,
+    /// The shell the model "keeps": working directory and environment changes
+    /// survive from one finished foreground command to the next.
+    shell: SyncMutex<ShellState>,
+}
+
+#[derive(Default)]
+struct ShellState {
+    cwd: Option<PathBuf>,
+    /// Variables the commands set or changed, relative to the app's own environment.
+    env: std::collections::BTreeMap<String, String>,
+}
+
+/// Variables the shell itself rewrites on every run; never carried over.
+fn volatile_env_name(name: &str) -> bool {
+    matches!(
+        name,
+        "_" | "PWD" | "OLDPWD" | "SHLVL" | "POK_STATE_FILE" | "POK_AI_AGENT"
+    ) || name.starts_with("__")
+        || name.starts_with("BASH_")
+        || name.eq_ignore_ascii_case("PSModulePath")
 }
 
 impl CommandManager {
@@ -209,8 +229,121 @@ impl CommandManager {
                 root: root.join("commands"),
                 shutdown: CancellationToken::new(),
                 event_sink: SyncMutex::new(None),
+                shell: SyncMutex::new(ShellState::default()),
             }),
         }
+    }
+
+    /// The directory the previous foreground command ended in, when it is
+    /// still there. Callers must keep it inside the authorized workspace.
+    pub fn shell_cwd(&self) -> Option<PathBuf> {
+        self.inner
+            .shell
+            .lock()
+            .cwd
+            .clone()
+            .filter(|path| path.is_dir())
+    }
+
+    /// Set an environment variable for this and every later command.
+    pub fn set_shell_env(&self, name: &str, value: &str) {
+        self.inner
+            .shell
+            .lock()
+            .env
+            .insert(name.to_owned(), value.to_owned());
+    }
+
+    /// The value a command would see for `name`: a persisted change first.
+    pub fn shell_env(&self, name: &str) -> Option<String> {
+        self.inner
+            .shell
+            .lock()
+            .env
+            .get(name)
+            .cloned()
+            .or_else(|| std::env::var(name).ok())
+    }
+
+    /// Read what a finished command left behind (its final directory and
+    /// environment) so the next command continues from there.
+    pub fn absorb_shell_state(&self, task_id: &str) {
+        let state_file = self.inner.root.join(format!("{task_id}.state"));
+        let Ok(text) = std::fs::read_to_string(&state_file) else {
+            return;
+        };
+        let cwd = PathBuf::from(text.trim_matches(['\u{feff}', '\r', '\n']).trim());
+        let env_raw =
+            std::fs::read(self.inner.root.join(format!("{task_id}.state.env"))).unwrap_or_default();
+        let _ = std::fs::remove_file(&state_file);
+        let _ = std::fs::remove_file(self.inner.root.join(format!("{task_id}.state.env")));
+        let mut shell = self.inner.shell.lock();
+        if cwd.is_dir() {
+            shell.cwd = Some(cwd);
+        }
+        for entry in String::from_utf8_lossy(&env_raw)
+            .split('\0')
+            .filter(|entry| !entry.is_empty())
+        {
+            let Some((name, value)) = entry.split_once('=') else {
+                continue;
+            };
+            if name.is_empty() || volatile_env_name(name) {
+                continue;
+            }
+            if std::env::var(name).ok().as_deref() == Some(value) {
+                // Back to the app's own value: stop carrying an old override.
+                shell.env.remove(name);
+            } else {
+                shell.env.insert(name.to_owned(), value.to_owned());
+            }
+        }
+    }
+
+    /// Create (once) a virtual environment for Python packages under `root` and
+    /// make every later command use it, so installs never touch the system
+    /// Python. Returns the environment's directory.
+    pub async fn activate_python_venv(&self, root: &Path) -> Result<PathBuf> {
+        let scripts = if cfg!(windows) { "Scripts" } else { "bin" };
+        if !root.join("pyvenv.cfg").is_file() {
+            if let Some(parent) = root.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            let attempts: &[(&str, &[&str])] = if cfg!(windows) {
+                &[("python", &[]), ("py", &["-3"])]
+            } else {
+                &[("python3", &[]), ("python", &[])]
+            };
+            let mut last = String::from("no Python interpreter found on PATH");
+            let mut created = false;
+            for (program, prefix) in attempts {
+                let mut command = Command::new(program);
+                command.args(*prefix).arg("-m").arg("venv").arg(root);
+                crate::process_window::hide_tokio(&mut command);
+                match command.output().await {
+                    Ok(output) if output.status.success() => {
+                        created = true;
+                        break;
+                    }
+                    Ok(output) => last = String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+                    Err(error) => last = error.to_string(),
+                }
+            }
+            if !created {
+                return Err(PokError::Tool(format!(
+                    "could not create an isolated Python environment: {last}"
+                )));
+            }
+        }
+        let bin = root.join(scripts);
+        let separator = if cfg!(windows) { ';' } else { ':' };
+        let current = self.shell_env("PATH").unwrap_or_default();
+        let bin_text = bin.display().to_string();
+        if !current.split(separator).any(|part| part == bin_text) {
+            self.set_shell_env("PATH", &format!("{bin_text}{separator}{current}"));
+        }
+        self.set_shell_env("VIRTUAL_ENV", &root.display().to_string());
+        Ok(root.to_path_buf())
     }
 
     pub fn set_event_sink(&self, sink: Arc<dyn CommandEventSink>) {
@@ -261,7 +394,12 @@ impl CommandManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true)
-            .env("POK_AI_AGENT", "1");
+            .env("POK_AI_AGENT", "1")
+            .env(
+                "POK_STATE_FILE",
+                self.inner.root.join(format!("{task_id}.state")),
+            )
+            .envs(self.inner.shell.lock().env.clone());
         let mut child = process.spawn()?;
         let pid = child.id();
         let stdout = child
@@ -331,6 +469,13 @@ impl CommandManager {
         let mut builder = pty_command(&command);
         builder.cwd(&cwd);
         builder.env("POK_AI_AGENT", "1");
+        builder.env(
+            "POK_STATE_FILE",
+            self.inner.root.join(format!("{task_id}.state")),
+        );
+        for (name, value) in self.inner.shell.lock().env.iter() {
+            builder.env(name, value);
+        }
         let child = pair
             .slave
             .spawn_command(builder)
@@ -747,10 +892,72 @@ async fn read_stream(
     }
 }
 
+/// PowerShell 7 (`pwsh`) when it is installed, otherwise Windows PowerShell
+/// 5.1. `path` is the PATH value, `program_files` the Program Files folder.
+#[allow(dead_code)]
+fn choose_powershell(
+    path: &str,
+    program_files: Option<&str>,
+    exists: impl Fn(&Path) -> bool,
+) -> PathBuf {
+    let on_path = path
+        .split(';')
+        .filter(|part| !part.trim().is_empty())
+        .map(|part| Path::new(part).join("pwsh.exe"));
+    let installed = program_files.into_iter().map(|folder| {
+        Path::new(folder)
+            .join("PowerShell")
+            .join("7")
+            .join("pwsh.exe")
+    });
+    on_path
+        .chain(installed)
+        .find(|candidate| exists(candidate))
+        .unwrap_or_else(|| PathBuf::from("powershell.exe"))
+}
+
+#[cfg(windows)]
+fn powershell_program() -> &'static PathBuf {
+    static PROGRAM: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    PROGRAM.get_or_init(|| {
+        choose_powershell(
+            &std::env::var("PATH").unwrap_or_default(),
+            std::env::var("ProgramFiles").ok().as_deref(),
+            |candidate| candidate.is_file(),
+        )
+    })
+}
+
+/// Which shell runs commands, for the tool description and diagnostics.
+pub fn shell_description() -> &'static str {
+    #[cfg(windows)]
+    {
+        if powershell_program()
+            .file_name()
+            .is_some_and(|name| name == "pwsh.exe")
+        {
+            "PowerShell 7"
+        } else {
+            "Windows PowerShell 5.1"
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        "bash"
+    }
+}
+
+/// Bash prelude that records the final directory and environment in the
+/// state file when the shell exits, whatever the command does.
+#[allow(dead_code)]
+fn bash_state_prelude() -> &'static str {
+    "[ -n \"$POK_STATE_FILE\" ] && trap 'pwd > \"$POK_STATE_FILE\" 2>/dev/null; env -0 > \"$POK_STATE_FILE.env\" 2>/dev/null' EXIT\n"
+}
+
 fn platform_command(command: &str) -> Command {
     #[cfg(windows)]
     {
-        let mut process = Command::new("powershell.exe");
+        let mut process = Command::new(powershell_program());
         process.args([
             "-NoLogo",
             "-NoProfile",
@@ -766,7 +973,8 @@ fn platform_command(command: &str) -> Command {
     #[cfg(not(windows))]
     {
         let mut process = Command::new("setsid");
-        process.args(["bash", "--noprofile", "--norc", "-c", command]);
+        let script = format!("{}{command}", bash_state_prelude());
+        process.args(["bash", "--noprofile", "--norc", "-c", &script]);
         process
     }
 }
@@ -774,7 +982,7 @@ fn platform_command(command: &str) -> Command {
 fn pty_command(command: &str) -> CommandBuilder {
     #[cfg(windows)]
     {
-        let mut builder = CommandBuilder::new("powershell.exe");
+        let mut builder = CommandBuilder::new(powershell_program());
         for arg in [
             "-NoLogo",
             "-NoProfile",
@@ -790,7 +998,8 @@ fn pty_command(command: &str) -> CommandBuilder {
     #[cfg(not(windows))]
     {
         let mut builder = CommandBuilder::new("bash");
-        for arg in ["--noprofile", "--norc", "-c", command] {
+        let script = format!("{}{command}", bash_state_prelude());
+        for arg in ["--noprofile", "--norc", "-c", script.as_str()] {
             builder.arg(arg);
         }
         builder
@@ -811,7 +1020,7 @@ fn pty_command(command: &str) -> CommandBuilder {
 #[allow(dead_code)]
 fn powershell_utf8_wrapper(command: &str) -> String {
     format!(
-        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; $global:LASTEXITCODE = 0; $ErrorActionPreference = 'Continue'; $pok_ok = $true; try {{ & {{ {command} }} }} catch {{ [Console]::Error.WriteLine(($_ | Out-String)); $pok_ok = $false }}; if (-not $pok_ok) {{ exit 1 }}; exit $global:LASTEXITCODE"
+        "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); $OutputEncoding = [Console]::OutputEncoding; $global:LASTEXITCODE = 0; $ErrorActionPreference = 'Continue'; $pok_ok = $true; try {{ & {{ {command} }} }} catch {{ [Console]::Error.WriteLine(($_ | Out-String)); $pok_ok = $false }}; if ($env:POK_STATE_FILE) {{ try {{ [IO.File]::WriteAllText($env:POK_STATE_FILE, (Get-Location).Path, [Text.UTF8Encoding]::new($false)); [IO.File]::WriteAllText($env:POK_STATE_FILE + '.env', (([Environment]::GetEnvironmentVariables().GetEnumerator() | ForEach-Object {{ $_.Key + '=' + $_.Value }}) -join [string][char]0), [Text.UTF8Encoding]::new($false)) }} catch {{ }} }}; if (-not $pok_ok) {{ exit 1 }}; exit $global:LASTEXITCODE"
     )
 }
 
@@ -973,6 +1182,110 @@ mod tests {
         assert!(done.output.contains("pty:hello"), "{}", done.output);
     }
 
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn the_shell_keeps_its_directory_and_exported_variables_between_commands() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = CommandManager::new(root.path().to_path_buf());
+        let run = |command: &'static str, cwd: PathBuf| {
+            let manager = manager.clone();
+            async move {
+                let started = manager
+                    .spawn(
+                        "call".into(),
+                        command.into(),
+                        cwd,
+                        Some(Duration::from_secs(5)),
+                        false,
+                    )
+                    .await
+                    .unwrap();
+                let done = manager
+                    .wait(&started.task_id, Duration::from_secs(5))
+                    .await
+                    .unwrap();
+                manager.absorb_shell_state(&done.task_id);
+                done
+            }
+        };
+        run(
+            "mkdir -p inner && cd inner && export POK_TEST_KEPT=kept-value && exit 3",
+            root.path().to_path_buf(),
+        )
+        .await;
+        let kept = manager.shell_cwd().expect("directory is kept");
+        assert!(kept.ends_with("inner"), "{kept:?}");
+        // The exit code of the user's command is untouched.
+        let second = run("echo \"$POK_TEST_KEPT in $(basename \"$PWD\")\"", kept).await;
+        assert_eq!(second.exit_code, Some(0));
+        assert!(
+            second.stdout.contains("kept-value in inner"),
+            "{}",
+            second.stdout
+        );
+        // Setting a variable back to the app's own value drops the override.
+        assert_eq!(
+            manager.shell_env("POK_TEST_KEPT").as_deref(),
+            Some("kept-value")
+        );
+        assert!(manager.shell_env("POK_STATE_FILE").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_python_environment_is_created_once_and_put_first_on_path() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = CommandManager::new(root.path().to_path_buf());
+        let venv = root.path().join("venv");
+        match manager.activate_python_venv(&venv).await {
+            Ok(path) => {
+                assert!(path.join("pyvenv.cfg").is_file());
+                let path_var = manager.shell_env("PATH").unwrap();
+                let bin = venv.join(if cfg!(windows) { "Scripts" } else { "bin" });
+                assert!(
+                    path_var.starts_with(&bin.display().to_string()),
+                    "{path_var}"
+                );
+                assert_eq!(
+                    manager.shell_env("VIRTUAL_ENV").as_deref(),
+                    Some(venv.display().to_string().as_str())
+                );
+                // Activating again does not stack the PATH entry.
+                manager.activate_python_venv(&venv).await.unwrap();
+                assert_eq!(
+                    manager
+                        .shell_env("PATH")
+                        .unwrap()
+                        .matches(&bin.display().to_string())
+                        .count(),
+                    1
+                );
+            }
+            // A machine without the venv module cannot run this check.
+            Err(error) => eprintln!("skipped: {error}"),
+        }
+    }
+
+    #[test]
+    fn powershell_7_is_preferred_when_installed_and_5_1_is_the_fallback() {
+        let found = |paths: &'static [&'static str]| {
+            move |candidate: &Path| paths.iter().any(|path| candidate == Path::new(path))
+        };
+        let with_pwsh = choose_powershell(
+            "C:\\Windows;C:\\Tools",
+            Some("C:\\Program Files"),
+            found(&["C:\\Tools/pwsh.exe"]),
+        );
+        assert_eq!(with_pwsh, Path::new("C:\\Tools").join("pwsh.exe"));
+        let installed = choose_powershell("C:\\Windows", Some("C:\\Program Files"), |candidate| {
+            candidate.ends_with("7/pwsh.exe") || candidate.ends_with("7\\pwsh.exe")
+        });
+        assert!(
+            installed.ends_with("pwsh.exe") && installed.to_string_lossy().contains("PowerShell")
+        );
+        let none = choose_powershell("C:\\Windows", None, |_| false);
+        assert_eq!(none, PathBuf::from("powershell.exe"));
+    }
+
     #[test]
     fn powershell_wrapper_keeps_native_stderr_and_exit_codes() {
         let script = powershell_utf8_wrapper("python probe.py 2>&1 | Select-Object -First 5");
@@ -986,5 +1299,80 @@ mod tests {
         assert!(script.contains("exit $global:LASTEXITCODE"));
         assert!(script.contains("catch"));
         assert!(!script.contains("powershell -Command"));
+        // The final directory and environment are recorded before exiting.
+        assert!(script.contains("POK_STATE_FILE"));
+        assert!(script.find("POK_STATE_FILE") < script.find("exit $global:LASTEXITCODE"));
+    }
+}
+
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn powershell_keeps_its_directory_and_variables_and_the_exit_code() {
+        let root = tempfile::tempdir().unwrap();
+        let manager = CommandManager::new(root.path().to_path_buf());
+        let started = manager
+            .spawn(
+                "call".into(),
+                "New-Item -ItemType Directory -Force inner | Out-Null; Set-Location inner; $env:POK_TEST_KEPT = 'kept-value'; exit 3"
+                    .into(),
+                root.path().to_path_buf(),
+                Some(Duration::from_secs(30)),
+                false,
+            )
+            .await
+            .unwrap();
+        let done = manager
+            .wait(&started.task_id, Duration::from_secs(30))
+            .await
+            .unwrap();
+        manager.absorb_shell_state(&done.task_id);
+        // `exit 3` inside the command skips the epilogue, so nothing is carried
+        // over; the exit code still comes through.
+        assert_eq!(done.exit_code, Some(3));
+        let started = manager
+            .spawn(
+                "call".into(),
+                "New-Item -ItemType Directory -Force inner | Out-Null; Set-Location inner; $env:POK_TEST_KEPT = 'kept-value'"
+                    .into(),
+                root.path().to_path_buf(),
+                Some(Duration::from_secs(30)),
+                false,
+            )
+            .await
+            .unwrap();
+        let done = manager
+            .wait(&started.task_id, Duration::from_secs(30))
+            .await
+            .unwrap();
+        manager.absorb_shell_state(&done.task_id);
+        assert_eq!(done.exit_code, Some(0), "{}", done.output);
+        let kept = manager.shell_cwd().expect("directory is kept");
+        assert!(kept.ends_with("inner"), "{kept:?}");
+        assert_eq!(
+            manager.shell_env("POK_TEST_KEPT").as_deref(),
+            Some("kept-value")
+        );
+        let next = manager
+            .spawn(
+                "call".into(),
+                "\"$env:POK_TEST_KEPT in $((Get-Item .).Name)\"".into(),
+                kept,
+                Some(Duration::from_secs(30)),
+                false,
+            )
+            .await
+            .unwrap();
+        let done = manager
+            .wait(&next.task_id, Duration::from_secs(30))
+            .await
+            .unwrap();
+        assert!(
+            done.stdout.contains("kept-value in inner"),
+            "{}",
+            done.stdout
+        );
     }
 }

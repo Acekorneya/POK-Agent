@@ -22,6 +22,11 @@ use crate::{
 };
 
 const MAX_FILE_BYTES: u64 = 2 * 1024 * 1024;
+
+mod diagnostics;
+mod patch;
+
+pub(crate) use diagnostics::syntax_errors_in;
 pub fn register_coding_tools(registry: &mut crate::tool::ToolRegistry) {
     registry.register(ReadFileTool);
     registry.register(SourceOutlineTool);
@@ -29,6 +34,7 @@ pub fn register_coding_tools(registry: &mut crate::tool::ToolRegistry) {
     registry.register(GrepSearchTool);
     registry.register(WriteFileTool);
     registry.register(EditFileTool);
+    registry.register(patch::ApplyPatchTool);
     registry.register(UndoEditTool);
     registry.register(InspectArtifactTool);
     registry.register(RunCommandTool);
@@ -107,9 +113,14 @@ impl Tool for WriteFileTool {
             .artifact_evidence
             .lock()
             .push(inspect_artifact_path(&path, operation)?);
-        Ok(
-            json!({"path": path, "sha256": sha256, "operation": operation, "undo_record": undo_path}),
-        )
+        let diagnostics = diagnostics::check_file(&path).await;
+        Ok(json!({
+            "path": path,
+            "sha256": sha256,
+            "operation": operation,
+            "undo_record": undo_path,
+            "diagnostics": diagnostics::report_value(diagnostics.as_ref()),
+        }))
     }
 }
 
@@ -533,6 +544,131 @@ struct EditArgs {
     filepath: PathBuf,
     target_content: String,
     replacement_content: String,
+    /// Replace every occurrence instead of requiring exactly one (renames).
+    #[serde(default)]
+    replace_all: bool,
+}
+
+/// A single edit may replace at most this many lines: bigger rewrites by weak
+/// models retype code they were not asked to change.
+const MAX_EDIT_TARGET_LINES: usize = 30;
+
+/// Match and write in the file's own line-ending style: a CRLF file edited
+/// with `\n` text (what models send) still matches and keeps its CRLF.
+fn in_file_line_endings(file: &str, text: &str) -> String {
+    let unix = text.replace("\r\n", "\n");
+    if file.contains("\r\n") {
+        unix.replace('\n', "\r\n")
+    } else {
+        unix
+    }
+}
+
+/// When the exact text is not in the file, find the one block of lines that
+/// matches it ignoring leading and trailing whitespace on each line (and
+/// quotes the model escaped). Returns the byte range in `file` of that block,
+/// or `None` when there is no match or more than one.
+fn tolerant_match(file: &str, target: &str) -> Option<(usize, usize)> {
+    let target = target.replace("\\\"", "\"");
+    let wanted = target.lines().map(str::trim).collect::<Vec<_>>();
+    let wanted = {
+        let start = wanted.iter().position(|line| !line.is_empty())?;
+        let end = wanted.iter().rposition(|line| !line.is_empty())?;
+        wanted[start..=end].to_vec()
+    };
+    let mut offsets = Vec::new();
+    let mut position = 0;
+    for line in file.split_inclusive('\n') {
+        offsets.push((position, position + line.len()));
+        position += line.len();
+    }
+    let lines = file
+        .split_inclusive('\n')
+        .map(str::trim)
+        .collect::<Vec<_>>();
+    let mut found = None;
+    for start in 0..lines.len().saturating_sub(wanted.len() - 1) {
+        if lines[start..start + wanted.len()] == wanted[..] {
+            if found.is_some() {
+                return None;
+            }
+            let last = start + wanted.len() - 1;
+            // The block without the final line break, so the replacement
+            // slots in between the same neighbours.
+            let end = file[..offsets[last].1].trim_end_matches(['\r', '\n']).len();
+            found = Some((offsets[start].0, end));
+        }
+    }
+    found
+}
+
+/// What an edit changed, bounded: the first changed line and the removed and
+/// added lines between the unchanged start and end of the file. The model
+/// sees at once if it rewrote more than it meant to.
+fn change_summary(before: &str, after: &str) -> Value {
+    let (old, new): (Vec<&str>, Vec<&str>) = (before.lines().collect(), after.lines().collect());
+    let prefix = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take_while(|(a, b)| a == b)
+        .count();
+    let clip = |lines: &[&str]| {
+        lines
+            .iter()
+            .take(30)
+            .map(|line| line.chars().take(160).collect::<String>())
+            .collect::<Vec<_>>()
+    };
+    let removed = &old[prefix..old.len() - suffix];
+    let added = &new[prefix..new.len() - suffix];
+    json!({
+        "first_changed_line": prefix + 1,
+        "removed_line_count": removed.len(),
+        "added_line_count": added.len(),
+        "removed": clip(removed),
+        "added": clip(added),
+    })
+}
+
+/// Where the edit text's first meaningful line appears, to help the model
+/// correct a target that did not match.
+fn nearest_line_hint(file: &str, target: &str) -> String {
+    let first = target
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .unwrap_or_default();
+    if first.is_empty() {
+        return String::new();
+    }
+    let lines = file.lines().collect::<Vec<_>>();
+    let matches = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, line)| line.trim() == first)
+        .map(|(index, _)| index)
+        .take(5)
+        .collect::<Vec<_>>();
+    let Some(&at) = matches.first() else {
+        return " The first line of target_content does not appear in the file; read_file the region again.".into();
+    };
+    // What the file really says there, so the next attempt can copy it.
+    let actual = lines[at..lines.len().min(at + 5)]
+        .iter()
+        .map(|line| line.chars().take(160).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        " The first line of target_content appears at line {}; the lines after it differ (the file may have changed since you read it). The file currently has, from line {}:\n{actual}",
+        matches
+            .iter()
+            .map(|index| (index + 1).to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        at + 1
+    )
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -549,7 +685,7 @@ impl Tool for EditFileTool {
         "edit_file"
     }
     fn description(&self) -> &'static str {
-        "Atomically replace one exact, uniquely matching text block and record undo state."
+        "Atomically replace one exact, uniquely matching text block (or every occurrence with replace_all) and record undo state. Line endings of the file (CRLF or LF) are matched and kept, so send plain newlines. If the text is not found the error points at the nearest matching line."
     }
     fn input_schema(&self) -> Value {
         schema::<EditArgs>()
@@ -567,15 +703,81 @@ impl Tool for EditFileTool {
         if args.target_content.is_empty() {
             return Err(PokError::Tool("target_content cannot be empty".into()));
         }
-        let path = context.resolve_workspace_path(args.filepath)?;
-        let before = std::fs::read_to_string(&path)?;
-        let count = before.match_indices(&args.target_content).count();
-        if count != 1 {
+        let target_lines = args.target_content.lines().count();
+        if target_lines > MAX_EDIT_TARGET_LINES {
             return Err(PokError::Tool(format!(
-                "target_content must occur exactly once; found {count}"
+                "target_content is {target_lines} lines; one edit may cover at most {MAX_EDIT_TARGET_LINES}. Make several small edits, each with only the lines that change plus one unchanged line above for position. Do not retype whole functions or files."
             )));
         }
-        let after = before.replacen(&args.target_content, &args.replacement_content, 1);
+        let path = context.resolve_workspace_path(args.filepath)?;
+        let before = std::fs::read_to_string(&path)?;
+        let target = in_file_line_endings(&before, &args.target_content);
+        let replacement = in_file_line_endings(&before, &args.replacement_content);
+        let count = before.match_indices(&target).count();
+        // No exact match: accept the one block that matches ignoring
+        // per-line whitespace and escaped quotes.
+        if count == 0
+            && let Some((start, end)) = tolerant_match(&before, &args.target_content)
+        {
+            // The model escaped quotes in the target; it did the same in the
+            // replacement, unless the file itself really contains `\"`.
+            let replacement =
+                if args.target_content.contains("\\\"") && !before[start..end].contains("\\\"") {
+                    replacement.replace("\\\"", "\"")
+                } else {
+                    replacement
+                };
+            let after = format!(
+                "{}{}{}",
+                &before[..start],
+                replacement.trim_end_matches(['\r', '\n']),
+                &before[end..]
+            );
+            atomic_write(&path, after.as_bytes())?;
+            let record = UndoRecord {
+                path: path.clone(),
+                before,
+                after_hash: hash_text(&after),
+            };
+            let undo_path = write_undo_record(context, &record)?;
+            if let Some(owned) = context.session_files.lock().get_mut(&path) {
+                owned.sha256 = record.after_hash.clone();
+            }
+            context
+                .artifact_evidence
+                .lock()
+                .push(inspect_artifact_path(&path, "edited")?);
+            let diagnostics = diagnostics::check_file(&path).await;
+            return Ok(json!({
+                "path": path,
+                "undo_record": undo_path,
+                "new_sha256": record.after_hash,
+                "change": change_summary(&record.before, &after),
+                "occurrences_replaced": 1,
+                "match": "ignored per-line whitespace; check `change` is what you intended",
+                "diagnostics": diagnostics::report_value(diagnostics.as_ref()),
+            }));
+        }
+        if count == 0 || (count > 1 && !args.replace_all) {
+            let long = args.target_content.lines().count() > 12;
+            let hint = if count == 0 {
+                let base = nearest_line_hint(&before, &args.target_content);
+                if long {
+                    format!(
+                        "{base} target_content is {} lines long: send only the few lines you change (plus one unchanged line above for position), not the whole function or docstring.",
+                        args.target_content.lines().count()
+                    )
+                } else {
+                    base
+                }
+            } else {
+                " Add surrounding lines to make it unique, or set replace_all to change every occurrence.".into()
+            };
+            return Err(PokError::Tool(format!(
+                "target_content must occur exactly once; found {count}.{hint}"
+            )));
+        }
+        let after = before.replace(&target, &replacement);
         atomic_write(&path, after.as_bytes())?;
         let record = UndoRecord {
             path: path.clone(),
@@ -590,7 +792,15 @@ impl Tool for EditFileTool {
             .artifact_evidence
             .lock()
             .push(inspect_artifact_path(&path, "edited")?);
-        Ok(json!({"path": path, "undo_record": undo_path, "new_sha256": record.after_hash}))
+        let diagnostics = diagnostics::check_file(&path).await;
+        Ok(json!({
+            "path": path,
+            "undo_record": undo_path,
+            "new_sha256": record.after_hash,
+            "change": change_summary(&record.before, &after),
+            "occurrences_replaced": count,
+            "diagnostics": diagnostics::report_value(diagnostics.as_ref()),
+        }))
     }
 }
 
@@ -1319,8 +1529,10 @@ impl Tool for UndoEditTool {
 #[derive(Debug, Deserialize, JsonSchema)]
 struct CommandArgs {
     command: String,
-    #[serde(default = "dot")]
-    cwd: PathBuf,
+    /// Where to run it. Leave out to continue from where the previous command
+    /// left the shell (its working directory and environment are kept).
+    #[serde(default)]
+    cwd: Option<PathBuf>,
     #[serde(default)]
     timeout_seconds: Option<u64>,
     #[serde(default)]
@@ -1336,7 +1548,7 @@ impl Tool for RunCommandTool {
         "run_command"
     }
     fn description(&self) -> &'static str {
-        "Run a complete shell command with live output and safe process-tree ownership. Fast commands finish inline; after 30 seconds a still-running foreground command is returned as a background task without restarting it. Set background=true to return immediately. Use manage_command to poll, read, wait, kill, or send stdin. timeout_seconds is an optional hard execution limit; 0 means unlimited. On Windows submit the PowerShell body directly (Windows PowerShell 5.1): its Set-Content/Out-File -Encoding UTF8 write a byte-order mark that breaks JSON, settings, and CSV readers, so write text files with [IO.File]::WriteAllText($path, $text, [Text.UTF8Encoding]::new($false)). PTY requests must run in background."
+        "Run a complete shell command with live output and safe process-tree ownership. The shell is kept between calls: the working directory the last command ended in and the variables it exported carry over, so `cd sub` in one call applies to the next (pass cwd to override). Fast commands finish inline; after 30 seconds a still-running foreground command is returned as a background task without restarting it. Set background=true to return immediately. Use manage_command to poll, read, wait, kill, or send stdin. timeout_seconds is an optional hard execution limit; 0 means unlimited. pip installs go into an isolated virtual environment for the workspace (never the system Python) that later commands use automatically. On Windows submit the PowerShell body directly (PowerShell 7 when installed, otherwise Windows PowerShell 5.1, whose Set-Content/Out-File -Encoding UTF8 write a byte-order mark that breaks JSON, settings, and CSV readers, so write text files with [IO.File]::WriteAllText($path, $text, [Text.UTF8Encoding]::new($false))). PTY requests must run in background."
     }
     fn input_schema(&self) -> Value {
         schema::<CommandArgs>()
@@ -1360,7 +1572,7 @@ impl Tool for RunCommandTool {
     fn target_path(&self, args: &Value) -> Option<PathBuf> {
         serde_json::from_value::<CommandArgs>(args.clone())
             .ok()
-            .map(|a| a.cwd)
+            .and_then(|a| a.cwd)
     }
     async fn execute(&self, args: Value, context: &ToolContext) -> Result<Value> {
         let args: CommandArgs = serde_json::from_value(args)?;
@@ -1370,7 +1582,26 @@ impl Tool for RunCommandTool {
                     .into(),
             ));
         }
-        let cwd = context.resolve_workspace_path(args.cwd)?;
+        // No cwd given: continue where the last command left the shell, as long
+        // as that is still inside the authorized workspace.
+        let cwd = match args.cwd.clone() {
+            Some(explicit) => context.resolve_workspace_path(explicit)?,
+            None => context
+                .command_manager
+                .shell_cwd()
+                .and_then(|kept| context.resolve_workspace_path(kept).ok())
+                .map_or_else(|| context.resolve_workspace_path(dot()), Ok)?,
+        };
+        // Python packages go into an isolated environment for this workspace,
+        // never the system interpreter; later commands use it automatically.
+        let mut isolated_env = None;
+        if command_installs_python_packages(&args.command)
+            && context.command_manager.shell_env("VIRTUAL_ENV").is_none()
+        {
+            let key = hash_text(&context.workspace.display().to_string());
+            let root = context.data_dir.join("venvs").join(&key[..12]);
+            isolated_env = Some(context.command_manager.activate_python_venv(&root).await?);
+        }
         let mut before_files = workspace_file_snapshot(&cwd);
         for candidate in command_artifact_candidates(&args.command, "", "") {
             let candidate = if candidate.is_absolute() {
@@ -1420,6 +1651,11 @@ impl Tool for RunCommandTool {
             }
         };
         let terminal = snapshot.status != crate::commands::CommandStatus::Running;
+        if terminal {
+            context
+                .command_manager
+                .absorb_shell_state(&snapshot.task_id);
+        }
         let is_success = snapshot.status == crate::commands::CommandStatus::Completed
             && snapshot.exit_code == Some(0);
         let stdout_text = snapshot.stdout.clone();
@@ -1489,6 +1725,18 @@ impl Tool for RunCommandTool {
         value["failure_kind"] = json!(failure_kind);
         value["failure_summary"] = json!(failure_summary);
         value["artifacts"] = json!(artifacts);
+        if let Some(env) = &isolated_env {
+            value["isolated_python_env"] = json!({
+                "path": env,
+                "note": "Python packages are installed into this isolated environment, not the system Python. It is active for the following commands (python, pip, pytest resolve to it)."
+            });
+        }
+        if terminal {
+            value["shell"] = json!({
+                "cwd": context.command_manager.shell_cwd(),
+                "note": "the next command starts here unless you pass cwd; exported variables are kept",
+            });
+        }
         let timed_out = value.get("status").and_then(Value::as_str) == Some("timed_out");
         if (!terminal || timed_out) && automates_application(&args.command) {
             value["hint"] = json!(
@@ -1497,6 +1745,46 @@ impl Tool for RunCommandTool {
         }
         Ok(value)
     }
+}
+
+/// Whether a command installs Python packages with pip (not into a target
+/// directory or an environment the command itself creates).
+fn command_installs_python_packages(command: &str) -> bool {
+    let lowered = command.to_ascii_lowercase();
+    if lowered.contains("--target")
+        || lowered.contains("-m venv")
+        || lowered.contains("virtualenv")
+        || lowered.contains("--dry-run")
+    {
+        return false;
+    }
+    // Look at each command in a pipeline or `&&` chain by its first word, so
+    // `echo pip install` is not an install.
+    lowered
+        .split(['&', ';', '|', '\n'])
+        .map(|segment| segment.split_whitespace().collect::<Vec<_>>())
+        .any(|words| {
+            let Some(first) = words.first() else {
+                return false;
+            };
+            let program = first
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(first)
+                .trim_end_matches(".exe");
+            let installs_after = |rest: &[&str]| rest.first() == Some(&"install");
+            match program {
+                "pip" | "pip3" => installs_after(&words[1..]),
+                _ if program.starts_with("python") || program == "py" => words
+                    .iter()
+                    .position(|word| *word == "-m")
+                    .and_then(|at| words.get(at + 1..))
+                    .is_some_and(|rest| {
+                        matches!(rest.first(), Some(&"pip" | &"pip3")) && installs_after(&rest[1..])
+                    }),
+                _ => false,
+            }
+        })
 }
 
 /// Whether a command scripts another application through COM automation,
@@ -1835,6 +2123,8 @@ fn command_is_os_critical(command: &str) -> bool {
         .replace("hkey_local_machine", "hklm")
         .replace("hkey_classes_root", "hkcr");
     const OS_CRITICAL_MARKERS: &[&str] = &[
+        // Overrides the OS package manager's protection of the system Python.
+        "--break-system-packages",
         "format-volume",
         "format.com",
         "diskpart",
@@ -2372,10 +2662,108 @@ mod tests {
         );
     }
 
-    #[test]
-    fn exact_edit_requires_one_match() {
-        let text = "one\ntwo\ntwo\n";
-        assert_eq!(text.match_indices("two").count(), 2);
+    #[tokio::test]
+    async fn edit_file_matches_crlf_files_supports_replace_all_and_hints_on_a_miss() {
+        let temp = tempfile::tempdir().unwrap();
+        let platform = crate::platform::MockDesktop::new(
+            crate::builtins::tests::scroll_observation(&[], "edit"),
+        );
+        let context = crate::builtins::tests::mock_input_context(platform, &temp);
+        let mut registry = crate::tool::ToolRegistry::new();
+        register_coding_tools(&mut registry);
+        let file = temp.path().join("notes.txt");
+        std::fs::write(&file, "alpha\r\n  beta\r\nbeta tail\r\n").unwrap();
+        // Plain-newline text matches a CRLF file and the CRLF endings stay; the
+        // result shows exactly what changed.
+        let result = registry
+            .call(
+                "edit_file",
+                json!({"filepath": file, "target_content": "alpha\n  beta", "replacement_content": "one\n  two"}),
+                &context,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "one\r\n  two\r\nbeta tail\r\n"
+        );
+        assert_eq!(result["change"]["first_changed_line"], 1);
+        assert_eq!(result["change"]["added_line_count"], 2);
+        assert_eq!(result["change"]["removed"][1], "  beta");
+        // Several matches need replace_all, and say so.
+        std::fs::write(&file, "x one\nx two\n").unwrap();
+        let many = registry
+            .call(
+                "edit_file",
+                json!({"filepath": file, "target_content": "x ", "replacement_content": "y "}),
+                &context,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            many.contains("found 2") && many.contains("replace_all"),
+            "{many}"
+        );
+        registry
+            .call(
+                "edit_file",
+                json!({"filepath": file, "target_content": "x ", "replacement_content": "y ", "replace_all": true}),
+                &context,
+            )
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "y one\ny two\n");
+        // Indentation and escaped quotes that differ still find the one block.
+        std::fs::write(
+            &file,
+            "def f():\n    \"\"\"Doc.\"\"\"\n    x = 1\n    return x\n",
+        )
+        .unwrap();
+        let loose = registry
+            .call(
+                "edit_file",
+                json!({"filepath": file, "target_content": "  \\\"\\\"\\\"Doc.\\\"\\\"\\\"\nx = 1", "replacement_content": "    \\\"\\\"\\\"Doc.\\\"\\\"\\\"\n    x = 2"}),
+                &context,
+            )
+            .await
+            .unwrap();
+        assert!(loose["match"].is_string());
+        // (the replacement's quotes were unescaped too: see the file below)
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "def f():\n    \"\"\"Doc.\"\"\"\n    x = 2\n    return x\n"
+        );
+        std::fs::write(&file, "y one\ny two\n").unwrap();
+        // A target that is a whole function is refused with a way forward.
+        let big = (0..40)
+            .map(|n| format!("l{n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let refused = registry
+            .call(
+                "edit_file",
+                json!({"filepath": file, "target_content": big, "replacement_content": "x"}),
+                &context,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("at most 30"), "{refused}");
+        // A near miss points at the line where the block starts.
+        let miss = registry
+            .call(
+                "edit_file",
+                json!({"filepath": file, "target_content": "y two\nmissing", "replacement_content": "z"}),
+                &context,
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            miss.contains("found 0") && miss.contains("line 2"),
+            "{miss}"
+        );
     }
 
     #[test]
@@ -2394,6 +2782,27 @@ mod tests {
         let catalog = registry.compact_catalog(&active);
         assert!(catalog.contains("run_command [system; inactive]"));
         assert!(catalog.contains("read_file [coding; active]"));
+    }
+
+    #[test]
+    fn only_real_pip_installs_are_moved_into_an_isolated_environment() {
+        for yes in [
+            "pip install requests",
+            "python3 -m pip install -e .",
+            "cd app && pip3 install -r requirements.txt",
+            "py -3 -m pip install pytest",
+        ] {
+            assert!(command_installs_python_packages(yes), "{yes}");
+        }
+        for no in [
+            "pip list",
+            "pip install --target ./vendor requests",
+            "python -m venv .venv && .venv/bin/pip install x",
+            "echo pip install",
+            "npm install",
+        ] {
+            assert!(!command_installs_python_packages(no), "{no}");
+        }
     }
 
     #[test]
@@ -2419,6 +2828,9 @@ mod tests {
             "Start-Process 'H:\\NZB_Complete\\Disclosure.Day.2026.mkv'"
         ));
         assert!(!command_is_os_critical("python -m pip install requests"));
+        assert!(command_is_os_critical(
+            "python3 -m pip install --break-system-packages pytest"
+        ));
         assert!(!command_is_os_critical("shutdown.exe /s /t 0"));
     }
 }

@@ -49,6 +49,7 @@ use crate::{
     },
 };
 
+mod code_context;
 mod context_window;
 mod continuity;
 mod curation;
@@ -64,6 +65,7 @@ mod run_loop;
 mod skill_replay;
 mod tool_results;
 
+use code_context::*;
 use context_window::*;
 use continuity::*;
 use curation::*;

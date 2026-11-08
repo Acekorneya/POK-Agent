@@ -224,7 +224,7 @@ fn screenshot() -> Screenshot {
     }
 }
 
-fn scroll_observation(lines: &[(&str, i32)], png_marker: &str) -> Observation {
+pub(crate) fn scroll_observation(lines: &[(&str, i32)], png_marker: &str) -> Observation {
     let screenshot = Screenshot {
         png_base64: png_marker.into(),
         ..screenshot()
