@@ -58,8 +58,8 @@ pub fn build_targets(
         return Vec::new();
     };
     let window_area = area(&window.bounds).max(1);
-    let mut targets = observation
-        .ui_elements
+    let elements = adopt_overlay_labels(&observation.ui_elements);
+    let mut targets = elements
         .iter()
         .filter(|element| valid_uia(element, &window.bounds, window_area))
         .map(|element| InteractionTarget {
@@ -532,6 +532,56 @@ pub fn merge_ocr_lines(blocks: &[OcrBlock]) -> Vec<OcrBlock> {
     lines
 }
 
+/// Icon rails (server lists, toolbars) often expose each icon as an unnamed
+/// small `group` and its name as a separate `text` that starts inside the icon
+/// and extends past it. Such a group is the clickable control and the text is
+/// its label: return the elements with those groups named and made clickable.
+fn adopt_overlay_labels(elements: &[UiElement]) -> Vec<UiElement> {
+    let mut adopted: Vec<Rect> = Vec::new();
+    let mut result = elements.to_vec();
+    for group in result.iter_mut().filter(|element| {
+        element.control_type.eq_ignore_ascii_case("group")
+            && element.name.trim().is_empty()
+            && !element.offscreen
+            && element.enabled
+            && (16..=72).contains(&element.bounds.width)
+            && (16..=72).contains(&element.bounds.height)
+    }) {
+        let bounds = group.bounds.clone();
+        let label = elements
+            .iter()
+            .filter(|text| {
+                text.control_type.eq_ignore_ascii_case("text")
+                    && !text.offscreen
+                    && !text.name.trim().is_empty()
+                    && text.bounds.width > bounds.width
+                    && text.bounds.x >= bounds.x
+                    && text.bounds.x < bounds.x + bounds.width as i32
+                    && text.bounds.y >= bounds.y
+                    && text.bounds.y < bounds.y + bounds.height as i32
+            })
+            .map(|text| text.name.trim())
+            .max_by_key(|name| name.len());
+        let Some(label) = label else { continue };
+        if adopted.iter().any(|seen| {
+            seen.x == bounds.x
+                && seen.y == bounds.y
+                && seen.width == bounds.width
+                && seen.height == bounds.height
+        }) {
+            continue;
+        }
+        group.name = label.to_owned();
+        group.control_type = "button".into();
+        group.clickable_point = Some((
+            bounds.x + bounds.width as i32 / 2,
+            bounds.y + bounds.height as i32 / 2,
+        ));
+        adopted.push(bounds);
+    }
+    result
+}
+
 fn valid_uia(element: &UiElement, window: &Rect, window_area: u64) -> bool {
     if element.password
         || element.offscreen
@@ -808,6 +858,59 @@ mod tests {
         for kind in ["group", "text", "pane", "item", "header"] {
             assert!(!interactive_type(kind), "{kind}");
         }
+    }
+
+    #[test]
+    fn unnamed_icon_groups_take_the_overlay_label_that_starts_inside_them() {
+        let mut observation = observation();
+        observation.ocr.clear();
+        let element = |name: &str, kind: &str, x: i32, y: i32, width: u32, height: u32| UiElement {
+            name: name.into(),
+            control_type: kind.into(),
+            automation_id: None,
+            value: None,
+            bounds: Rect {
+                x,
+                y,
+                width,
+                height,
+            },
+            enabled: true,
+            password: false,
+            offscreen: false,
+            keyboard_focusable: false,
+            clickable_point: None,
+            selected: None,
+            focused: false,
+            desktop_shell: false,
+        };
+        observation.ui_elements = vec![
+            element("", "group", 20, 100, 41, 41),
+            element("", "group", 20, 148, 41, 41),
+            element("Example Guild", "text", 39, 99, 108, 22),
+            element("Example Guild, Voice call active", "text", 39, 116, 222, 23),
+            element("Other Guild", "text", 39, 164, 90, 23),
+            // A wide group is a container, not an icon.
+            element("", "group", 0, 300, 400, 60),
+            element("Caption", "text", 10, 310, 200, 20),
+        ];
+        let targets = build_targets(&observation, 120, 0.1, 0.6, "guild");
+        let guild = targets
+            .iter()
+            .find(|target| target.name == "Example Guild, Voice call active")
+            .expect("first icon takes the longest label");
+        assert!(guild.actionable);
+        assert_eq!(guild.click_point, Some((40, 120)));
+        assert!(
+            targets
+                .iter()
+                .any(|target| target.name == "Other Guild" && target.actionable)
+        );
+        assert!(
+            !targets
+                .iter()
+                .any(|target| target.name == "Caption" && target.actionable)
+        );
     }
 
     #[test]

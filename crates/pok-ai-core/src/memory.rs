@@ -909,6 +909,41 @@ impl MemoryStore {
             let record = self.merge_into_procedure(&id, &procedure)?;
             return Ok((record, false));
         }
+        // A differently worded request for the same kind of work in the same
+        // application ("send a DM to X" after "send a DM to Y") is the same
+        // skill: merge instead of adding a narrow copy.
+        let near_duplicate = if procedure.kind == ProcedureKind::Workflow {
+            let mut statement = connection.prepare(
+                "SELECT id, applications, title, summary FROM procedures
+                 WHERE kind = ?1 AND enabled = 1 ORDER BY success_count DESC",
+            )?;
+            let candidates = statement
+                .query_map(params![procedure.kind.as_str()], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            let new_text = format!("{} {}", procedure.title, procedure.summary);
+            candidates
+                .into_iter()
+                .find(|(_, existing_apps, title, summary)| {
+                    same_skill_applications(existing_apps, &applications)
+                        && skill_text_overlap(&new_text, &format!("{title} {summary}"))
+                            >= SKILL_NEAR_DUPLICATE_SAVE_OVERLAP
+                })
+                .map(|(id, ..)| id)
+        } else {
+            None
+        };
+        if let Some(id) = near_duplicate {
+            drop(connection);
+            let record = self.merge_into_procedure(&id, &procedure)?;
+            return Ok((record, false));
+        }
 
         let id = Uuid::new_v4();
         let now = Utc::now();
@@ -1168,6 +1203,57 @@ impl MemoryStore {
         Ok(skills)
     }
 
+    /// Skills for an application the conversation is about even when the latest
+    /// message never names it ("we are not watching the stream again" after a
+    /// Discord conversation). A skill qualifies when one of its application
+    /// names appears in `context` or `prompt`; it is scored by how many of the
+    /// conversation's meaningful terms its text covers, so a broad skill that
+    /// lists everything done in the app beats narrow one-request skills.
+    pub fn skills_for_conversation(
+        &self,
+        prompt: &str,
+        context: &str,
+        limit: usize,
+    ) -> Result<Vec<(f64, ProcedureRecord)>> {
+        let haystack = format!("{prompt} {context}").to_lowercase();
+        let words = haystack
+            .split(|character: char| !character.is_alphanumeric())
+            .collect::<std::collections::HashSet<_>>();
+        let terms = meaningful_terms(&format!("{prompt} {context}"));
+        let mut skills = self
+            .list_procedures(Some(ProcedureKind::Workflow), 200)?
+            .into_iter()
+            .filter(|skill| skill.enabled)
+            .filter(|skill| {
+                skill.applications.iter().any(|application| {
+                    let stem = application
+                        .to_lowercase()
+                        .trim_end_matches(".exe")
+                        .to_owned();
+                    stem.len() >= 4 && words.contains(stem.as_str())
+                })
+            })
+            .filter_map(|skill| {
+                let candidate =
+                    format!("{} {} {}", skill.title, skill.summary, skill.task_signature);
+                let candidate_terms = meaningful_terms(&candidate);
+                let matched = terms
+                    .iter()
+                    .filter(|term| candidate_terms.contains(term))
+                    .count();
+                (matched >= 3).then(|| ((matched as f64 / 8.0).min(0.9), skill))
+            })
+            .collect::<Vec<_>>();
+        skills.sort_by(|left, right| {
+            right
+                .0
+                .total_cmp(&left.0)
+                .then_with(|| right.1.success_count.cmp(&left.1.success_count))
+        });
+        skills.truncate(limit);
+        Ok(skills)
+    }
+
     /// Merge learned procedures for the same task (same kind, task signature,
     /// and applications) into the most successful one, adding up their
     /// success and retrieval counts and removing the copies and their skill
@@ -1177,7 +1263,8 @@ impl MemoryStore {
         let mut connection = self.connection.lock();
         let rows = {
             let mut statement = connection.prepare(
-                "SELECT id, kind, task_signature, applications, success_count, retrieval_count
+                "SELECT id, kind, task_signature, applications, success_count, retrieval_count,
+                 title || ' ' || summary
                  FROM procedures ORDER BY success_count DESC, retrieval_count DESC, created_at ASC",
             )?;
             statement
@@ -1191,26 +1278,49 @@ impl MemoryStore {
                         ),
                         row.get::<_, i64>(4)?,
                         row.get::<_, i64>(5)?,
+                        row.get::<_, String>(6)?,
                     ))
                 })?
                 .collect::<std::result::Result<Vec<_>, _>>()?
         };
         // Keepers per task, strongest first; a copy joins the first keeper
         // whose applications overlap its own.
-        let mut keepers: std::collections::HashMap<(String, String), Vec<(String, String)>> =
+        type Keeper = (String, String, String);
+        let mut keepers: std::collections::HashMap<(String, String), Vec<Keeper>> =
             std::collections::HashMap::new();
+        // Workflow skills for the same application whose descriptions overlap
+        // are one skill learned under different request wording. A skill the
+        // user wrote that has not run yet is never folded into another.
+        let mut similar_keepers: Vec<Keeper> = Vec::new();
         let mut removed = Vec::new();
         let transaction = connection.transaction()?;
-        for (id, (kind, signature, applications), successes, retrievals) in rows {
+        for (id, (kind, signature, applications), successes, retrievals, text) in rows {
+            let is_workflow = kind == ProcedureKind::Workflow.as_str();
             let group = keepers.entry((kind, signature)).or_default();
-            match group
+            let same_task = group
                 .iter()
-                .find(|(_, kept_applications)| {
+                .find(|(_, kept_applications, _)| {
                     same_skill_applications(kept_applications, &applications)
                 })
-                .map(|(kept, _)| kept.clone())
-            {
-                None => group.push((id, applications)),
+                .map(|(kept, ..)| kept.clone());
+            let similar = if same_task.is_none() && is_workflow && successes > 0 {
+                similar_keepers
+                    .iter()
+                    .find(|(_, kept_applications, kept_text)| {
+                        same_skill_applications(kept_applications, &applications)
+                            && skill_text_overlap(kept_text, &text) >= SKILL_NEAR_DUPLICATE_OVERLAP
+                    })
+                    .map(|(kept, ..)| kept.clone())
+            } else {
+                None
+            };
+            match same_task.or(similar) {
+                None => {
+                    if is_workflow {
+                        similar_keepers.push((id.clone(), applications.clone(), text.clone()));
+                    }
+                    group.push((id, applications, text));
+                }
                 Some(kept) => {
                     transaction.execute(
                         "UPDATE procedures SET success_count = success_count + ?2,
@@ -1797,6 +1907,24 @@ fn meaningful_terms(text: &str) -> Vec<String> {
     terms
 }
 
+/// How much two skills' descriptions (title and summary, not the request words
+/// in the signature) say the same thing: shared meaningful terms over all.
+fn skill_text_overlap(left: &str, right: &str) -> f64 {
+    let (left, right) = (meaningful_terms(left), meaningful_terms(right));
+    if left.is_empty() || right.is_empty() {
+        return 0.0;
+    }
+    let shared = left.iter().filter(|term| right.contains(term)).count();
+    shared as f64 / (left.len() + right.len() - shared) as f64
+}
+
+/// Two skills for the same application whose descriptions overlap this much
+/// are one skill learned twice. At save time the bar is high (a wrong merge
+/// would hide a different task); the startup housekeeping that folds verified
+/// copies together uses the lower one.
+const SKILL_NEAR_DUPLICATE_SAVE_OVERLAP: f64 = 0.75;
+const SKILL_NEAR_DUPLICATE_OVERLAP: f64 = 0.5;
+
 fn deterministic_relevance(query_terms: &[String], candidate: &str) -> Option<f64> {
     if query_terms.is_empty() {
         return None;
@@ -2220,6 +2348,123 @@ mod tests {
             fingerprint: fingerprint.into(),
             verified_successes: 1,
         }
+    }
+
+    #[test]
+    fn a_broad_app_skill_is_found_from_the_conversation_when_the_message_never_names_the_app() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory = MemoryStore::open(dir.path()).unwrap();
+        let mut narrow = procedure("reply to alice", "fp-narrow", ProcedureKind::Workflow);
+        narrow.applications = vec!["chatapp.exe".into()];
+        narrow.title = "Reply to Alice".into();
+        narrow.summary = "Open the direct message with Alice and send a reply.".into();
+        let mut broad = procedure("chat app operations", "fp-broad", ProcedureKind::Workflow);
+        broad.applications = vec!["chatapp.exe".into()];
+        broad.title = "Chat app navigation and operations".into();
+        broad.summary =
+            "Switch servers from the left rail, join or rejoin voice channels, watch a member's live stream, open direct messages."
+                .into();
+        let mut other = procedure("sheet totals", "fp-other", ProcedureKind::Workflow);
+        other.applications = vec!["sheets.exe".into()];
+        other.summary = "Join voice channel stream totals".into();
+        for skill in [narrow, broad, other] {
+            memory.save_or_reinforce_procedure(skill).unwrap();
+        }
+        let prompt = "Example Person kicked me out again and we are not watching the stream again";
+        let context = "join the voice channel in chatapp and watch the stream, rejoin voice";
+        let found = memory.skills_for_conversation(prompt, context, 3).unwrap();
+        assert_eq!(found[0].1.title, "Chat app navigation and operations");
+        assert!(
+            found
+                .iter()
+                .all(|(_, skill)| skill.applications[0] == "chatapp.exe")
+        );
+        // No application named anywhere: nothing is offered.
+        assert!(
+            memory
+                .skills_for_conversation(prompt, "watch the stream", 3)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn differently_worded_requests_for_the_same_app_work_merge_into_one_skill() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory = MemoryStore::open(dir.path()).unwrap();
+        let mut first = procedure("message bob", "fp-1", ProcedureKind::Workflow);
+        first.title = "Send a direct message to a user in ChatApp".into();
+        first.summary = "Find the user in the member list and send a direct message.".into();
+        let mut second = procedure("message carol hello", "fp-2", ProcedureKind::Workflow);
+        second.title = "Send a direct message to a user on ChatApp".into();
+        second.summary = "Find the user in the member list and send them a direct message.".into();
+        let mut unrelated = procedure("join call", "fp-3", ProcedureKind::Workflow);
+        unrelated.title = "Join a voice channel".into();
+        unrelated.summary = "Enter the server then join its voice channel.".into();
+        let (a, created_a) = memory.save_or_reinforce_procedure(first).unwrap();
+        let (b, created_b) = memory.save_or_reinforce_procedure(second).unwrap();
+        let (_, created_c) = memory.save_or_reinforce_procedure(unrelated).unwrap();
+        assert!(created_a && !created_b && created_c);
+        assert_eq!(a.id, b.id);
+        assert_eq!(
+            memory
+                .list_procedures(Some(ProcedureKind::Workflow), 10)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
+
+    #[test]
+    fn consolidation_folds_near_duplicates_but_keeps_an_unrun_user_skill() {
+        let dir = tempfile::tempdir().unwrap();
+        let memory = MemoryStore::open(dir.path()).unwrap();
+        let connection = memory.connection.lock();
+        let insert = |id: &str, signature: &str, title: &str, summary: &str, successes: i64| {
+            connection
+                .execute(
+                    "INSERT INTO procedures(id, kind, task_signature, title, summary, applications, steps,
+                     command_template, evidence, fingerprint, success_count, retrieval_count,
+                     failure_count, enabled, created_at, updated_at)
+                     VALUES (?1, 'workflow', ?2, ?3, ?4, '[\"example.exe\"]', '[]', NULL, 'e', ?1, ?5, 0, 0, 1,
+                     '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+                    params![id, signature, title, summary, successes],
+                )
+                .unwrap();
+        };
+        let (ida, idb, idc) = (
+            Uuid::new_v4().to_string(),
+            Uuid::new_v4().to_string(),
+            Uuid::new_v4().to_string(),
+        );
+        insert(
+            &ida,
+            "alpha",
+            "Send a direct message to a user",
+            "Find the user and send a direct message.",
+            3,
+        );
+        insert(
+            &idb,
+            "beta",
+            "Send a direct message to a member",
+            "Find the member and send them a direct message.",
+            1,
+        );
+        insert(
+            &idc,
+            "gamma",
+            "Send a direct message to a person",
+            "Find the person and send a direct message.",
+            0,
+        );
+        drop(connection);
+        assert_eq!(memory.consolidate_procedures().unwrap(), 1);
+        let left = memory
+            .list_procedures(Some(ProcedureKind::Workflow), 10)
+            .unwrap();
+        assert_eq!(left.len(), 2);
+        assert!(left.iter().any(|skill| skill.success_count == 0));
     }
 
     #[test]

@@ -703,7 +703,7 @@ pub fn tool_group(name: &str) -> &'static str {
     }
     match name {
         "get_current_time" | "update_task_plan" | "discover_tools" | "fast_actions"
-        | "run_agents" | "team_post" | "team_read" => "control",
+        | "run_agents" | "team_post" | "team_read" | "standing_orders" => "control",
         "observe_desktop"
         | "capture_screen"
         | "inspect_screen_region"

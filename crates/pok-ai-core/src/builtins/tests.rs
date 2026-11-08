@@ -957,7 +957,7 @@ fn pattern_fixture(source: TargetSource) -> Observation {
 }
 
 #[tokio::test]
-async fn clicking_a_voice_channel_needs_a_request_to_join() {
+async fn clicking_a_voice_channel_asks_the_user_unless_a_join_was_requested() {
     let mut observation = scroll_observation(&[], "discord");
     let window = observation.target.as_ref().unwrap().bounds.clone();
     let mut channel = selection_target("Lounge (voice channel), 3 users", false, false);
@@ -968,7 +968,8 @@ async fn clicking_a_voice_channel_needs_a_request_to_join() {
     observation.targets = vec![channel];
     let platform = crate::platform::MockDesktop::new(observation.clone());
     let temp = tempfile::tempdir().unwrap();
-    let context = mock_input_context(platform.clone(), &temp);
+    let mut context = mock_input_context(platform.clone(), &temp);
+    context.approvals = crate::policy::deny_approvals();
     context.active_task.lock().root_request = "who is in the voice channels".into();
     let click = InputAction::Click {
         x: window.x + 90,
@@ -984,10 +985,11 @@ async fn clicking_a_voice_channel_needs_a_request_to_join() {
     .await
     .unwrap_err()
     .to_string();
-    assert!(denied.contains("voice or video call"), "{denied}");
+    assert!(denied.contains("declined joining the call"), "{denied}");
     assert!(platform.actions().is_empty());
-    // Asked to join: the click goes ahead.
-    context.active_task.lock().root_request = "join the Lounge voice channel".into();
+    // The user agrees when asked: the click goes ahead and the consent lasts
+    // for the conversation, whatever a later request says.
+    context.approvals = std::sync::Arc::new(crate::policy::AllowApprovals);
     let _ = execute_input(
         click,
         observation,

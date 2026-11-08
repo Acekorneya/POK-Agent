@@ -510,3 +510,87 @@ pub(super) fn prepare_user_questions(items: Vec<AskUserQuestionItem>) -> Result<
         })
         .collect()
 }
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub(super) struct StandingOrdersArgs {
+    /// "add", "list", or "remove".
+    pub(super) action: String,
+    /// For add: the instruction exactly as the user means it to be kept up, in
+    /// the user's terms ("answer every unread message in the chat app").
+    #[serde(default)]
+    pub(super) text: Option<String>,
+    /// For add: how often, in minutes, the desktop app should re-run it (5 or more, default 10).
+    #[serde(default)]
+    pub(super) every_minutes: Option<u32>,
+    /// For remove: the order's id.
+    #[serde(default)]
+    pub(super) id: Option<String>,
+}
+
+/// Words that show the user asked for something to be kept up, not done once.
+const STANDING_REQUEST_WORDS: &[&str] = &[
+    "always",
+    "keep ",
+    "monitor",
+    "whenever",
+    "every time",
+    "from now on",
+    "continuously",
+    "stay ",
+    "standing",
+    "watch for",
+    "all the time",
+    "until i say",
+];
+
+pub(super) struct StandingOrdersTool;
+
+#[async_trait]
+impl Tool for StandingOrdersTool {
+    fn name(&self) -> &'static str {
+        "standing_orders"
+    }
+
+    fn description(&self) -> &'static str {
+        "Keep an instruction alive across runs. When the user asks for something to be done always, continuously, or whenever it comes up (\"always answer unread messages\", \"stay in the voice channel\", \"monitor the DM\"), add it as a standing order: it is shown to you at the start of every run and the app re-runs it on a timer. Only add one the user asked for; remove one only when they cancel it. Actions: add, list, remove."
+    }
+
+    fn input_schema(&self) -> Value {
+        schema::<StandingOrdersArgs>()
+    }
+
+    fn risk(&self) -> RiskClass {
+        RiskClass::WorkspaceWrite
+    }
+
+    async fn execute(&self, args: Value, context: &ToolContext) -> Result<Value> {
+        let args: StandingOrdersArgs = serde_json::from_value(args)?;
+        let store = crate::standing_orders::StandingOrders::open(
+            &context.data_dir.join("standing-orders.json"),
+        );
+        match args.action.as_str() {
+            "list" => Ok(json!({"orders": store.list()})),
+            "add" => {
+                let request = context.active_task.lock().root_request.to_lowercase();
+                if !STANDING_REQUEST_WORDS
+                    .iter()
+                    .any(|word| request.contains(word))
+                {
+                    return Err(PokError::Tool(
+                        "the user did not ask for this to be kept up; do it now, or ask whether it should be a standing order".into(),
+                    ));
+                }
+                let (order, created) =
+                    store.add(args.text.as_deref().unwrap_or_default(), args.every_minutes)?;
+                Ok(json!({"order": order, "created": created}))
+            }
+            "remove" => {
+                let id = args.id.unwrap_or_default();
+                Ok(json!({"removed": store.remove(&id)?, "id": id}))
+            }
+            other => Err(PokError::Tool(format!(
+                "unknown standing_orders action {other:?}; use add, list, or remove"
+            ))),
+        }
+    }
+}

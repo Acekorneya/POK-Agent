@@ -63,11 +63,15 @@ touches one focused file. Child modules share their parent's imports
 | `action_batch.rs` | `execute_action_batch` |
 | `browser_navigation.rs` | Managed-browser navigation and page readiness |
 | `fast_actions_tool.rs` | The `fast_actions` tool and its plan-tree argument types |
-| `planning.rs` | Tool discovery, task plan, clock, questions to the user |
+| `planning.rs` | Tool discovery, task plan, clock, questions to the user, the `standing_orders` tool |
 | `memory_tools.rs` | Facts, memory and session-context search, skills |
 | `tests.rs` | Tool tests |
 
-Other core modules keep one file each: `brain.rs` (provider adapters),
+Other core modules keep one file each: `standing_orders.rs` (instructions the user
+wants kept up across runs: stored in `<data_dir>/standing-orders.json`, shown to
+the model at the start of every run, re-run on a timer by the desktop app's
+`spawn_standing_order_timer`, and merged when the same instruction is repeated),
+`brain.rs` (provider adapters),
 `decision.rs` (router contract and backends), `choice_model.rs` (System 1 as
 any provider's chat model, called in-process with two order-rotated votes),
 `gateway/` (the always-on Telegram and WhatsApp gateway: `mod.rs` the

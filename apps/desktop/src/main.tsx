@@ -3117,6 +3117,11 @@ export function App() {
     });
     
     const unlistenGatewayTask = listen<RemoteTask>("gateway_task", ({ payload }) => { void runRef.current(payload); });
+    // A standing order ("always answer unread messages") whose timer ran out.
+    // It only starts when the agent is idle; a busy agent skips this round.
+    const unlistenStandingOrder = listen<{ id: string; prompt: string }>("standing_order_due", ({ payload }) => {
+      void runRef.current({ id: `standing-${payload.id}-${Date.now()}`, prompt: payload.prompt, source: "schedule", who: "Standing order" });
+    });
     // A permission answered from Telegram closes the dialog on the PC as well.
     const unlistenApprovalResolved = listen<string>("approval_resolved", ({ payload }) => {
       if (activeApproval.current?.id === payload) {
@@ -3166,6 +3171,7 @@ export function App() {
 
     return () => {
       void unlistenGatewayTask.then((fn) => fn());
+      void unlistenStandingOrder.then((fn) => fn());
       void unlistenGatewayNew.then((fn) => fn());
       void unlistenApprovalResolved.then((fn) => fn());
       void unlistenApprovalExpired.then((fn) => fn());

@@ -76,12 +76,32 @@ pub fn is_call_control(label: &str) -> bool {
     CALL_PHRASES.iter().any(|phrase| label.contains(phrase))
 }
 
-/// Whether the user's request asks to join or place a call.
+/// Approval-cache key set once any user message in the conversation asked to
+/// join, watch, or place a call; follow-ups ("kicked me out, go back in") then
+/// keep that consent instead of being blocked for lacking the keyword.
+pub const CALL_CONSENT_KEY: &str = "conversation:calls_authorized";
+
+/// Whether the user's request asks to join, watch, or place a call.
 pub fn request_allows_calls(request: &str) -> bool {
     request
         .to_lowercase()
         .split(|character: char| !character.is_alphanumeric())
-        .any(|word| matches!(word, "join" | "call" | "dial" | "meeting" | "videocall"))
+        .any(|word| {
+            matches!(
+                word,
+                "join"
+                    | "rejoin"
+                    | "joining"
+                    | "call"
+                    | "dial"
+                    | "meeting"
+                    | "videocall"
+                    | "stream"
+                    | "watch"
+                    | "watching"
+                    | "huddle"
+            )
+        })
 }
 
 impl Policy {
@@ -358,6 +378,10 @@ mod tests {
             "who is in the Example Guild voice channels"
         ));
         assert!(!request_allows_calls("recall what we discussed"));
+        assert!(request_allows_calls(
+            "Example User kicked me out and we are not watching the stream again"
+        ));
+        assert!(request_allows_calls("rejoin the lounge"));
     }
 
     #[test]

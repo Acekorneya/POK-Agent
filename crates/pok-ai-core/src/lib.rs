@@ -32,6 +32,7 @@ pub mod router_training;
 pub mod secrets;
 pub mod session;
 pub mod session_archive;
+pub mod standing_orders;
 pub mod subagent;
 pub mod swarm;
 pub mod tool;

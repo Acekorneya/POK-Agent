@@ -681,13 +681,36 @@ pub(super) async fn execute_input(
         if let Some(label) = clicked.get("label").and_then(Value::as_str)
             && crate::policy::is_call_control(label)
             && !crate::policy::request_allows_calls(&context.active_task.lock().root_request)
+            && !context
+                .approval_cache
+                .lock()
+                .contains(crate::policy::CALL_CONSENT_KEY)
         {
-            return Err(PokError::PolicyDenied {
-                tool: "simulate_input".into(),
-                reason: format!(
-                    "{label:?} joins or starts a voice or video call, which the user did not ask for; read who is in it from the visible channel list instead"
-                ),
-            });
+            // Not a hard block: the request text may predate this step in a long
+            // task, so ask the user once. "Allow for session" covers the rest.
+            let reason = format!(
+                "{label:?} joins or starts a voice or video call, which connects your microphone or camera. Allow it only if you want to be in the call."
+            );
+            let decision = context
+                .approvals
+                .approve(
+                    "simulate_input",
+                    &json!({"control": label, "kind": "join_call"}),
+                    &reason,
+                )
+                .await?;
+            if !crate::tool::apply_approval_decision(
+                decision,
+                Some(crate::policy::CALL_CONSENT_KEY),
+                &context.approval_cache,
+            ) {
+                return Err(PokError::PolicyDenied {
+                    tool: "simulate_input".into(),
+                    reason: format!(
+                        "the user declined joining the call ({label:?}). Do not retry it; read who is in it from the visible channel list instead."
+                    ),
+                });
+            }
         }
     }
     let before = observation.clone();

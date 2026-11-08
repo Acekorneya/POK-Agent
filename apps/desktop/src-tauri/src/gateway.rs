@@ -677,6 +677,38 @@ async fn stop(app: &tauri::AppHandle) {
     refresh_tray(app);
 }
 
+/// Re-run the user's standing orders ("always answer unread messages") on
+/// their timers. Each minute the first due order is sent to the dashboard as a
+/// `standing_order_due` event; the dashboard runs it in the live conversation
+/// when the agent is idle, and otherwise skips this round.
+pub fn spawn_standing_order_timer(app: &tauri::AppHandle) {
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+            let directory = app.state::<AppRuntime>().config.lock().data_dir.clone();
+            let store = pok_ai_core::standing_orders::StandingOrders::open(
+                &directory.join("standing-orders.json"),
+            );
+            let Some(order) = store.due(chrono::Utc::now()) else {
+                continue;
+            };
+            if store.mark_run(&order.id, chrono::Utc::now()).is_ok() {
+                let _ = app.emit(
+                    "standing_order_due",
+                    serde_json::json!({
+                        "id": order.id,
+                        "prompt": format!(
+                            "Standing order check: {}\nDo it now. If nothing needs doing right now, say so in one short line.",
+                            order.text
+                        ),
+                    }),
+                );
+            }
+        }
+    });
+}
+
 /// Start the gateway at launch when it was left on.
 pub fn autostart(app: &tauri::AppHandle) {
     let app = app.clone();

@@ -66,6 +66,7 @@ pub(crate) use input::observation_id_for;
 pub fn register_desktop_tools(registry: &mut ToolRegistry) {
     registry.register(CurrentTimeTool);
     registry.register(UpdateTaskPlanTool);
+    registry.register(StandingOrdersTool);
     registry.register(DiscoverToolsTool);
     registry.register(FastActionsTool);
     registry.register(RememberFactTool);

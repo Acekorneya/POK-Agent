@@ -51,6 +51,9 @@ impl Session {
             )?;
             self.emit_task_state();
         } else {
+            if crate::policy::request_allows_calls(&prompt) {
+                self.cache_approval(crate::policy::CALL_CONSENT_KEY);
+            }
             *self.context.task_hint.lock() = prompt.clone();
             *self.context.active_task.lock() = ActiveTaskState {
                 root_request: prompt.clone(),
@@ -474,6 +477,74 @@ impl Session {
                     }),
                 )?;
             }
+        }
+        // A follow-up often never names the app ("we are not watching the stream
+        // again"): also offer a skill for an application the recent conversation
+        // was about, scored against the conversation rather than the last line.
+        if auto_loaded_skill_ids.len() < 2 {
+            let conversation = self
+                .messages
+                .iter()
+                .rev()
+                .filter(|message| matches!(message.role.as_str(), "user" | "assistant"))
+                .filter(|message| !matches!(message.origin, MessageOrigin::RetrievedContext))
+                .take(6)
+                .flat_map(|message| message.content.iter())
+                .filter_map(|content| match content {
+                    MessageContent::Text { text } => Some(truncate_chars(text, 400)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let loaded = auto_loaded_skill_ids
+                .iter()
+                .map(|(id, _)| *id)
+                .collect::<Vec<_>>();
+            if let Some((relevance, candidate)) = self
+                .context
+                .memory
+                .skills_for_conversation(&prompt, &conversation, 3)?
+                .into_iter()
+                .find(|(_, skill)| !loaded.contains(&skill.id))
+            {
+                let (skill, markdown) = self.context.memory.load_skill(candidate.id)?;
+                auto_loaded_skill_ids.push((skill.id, skill.success_count == 0));
+                self.messages.push(BrainMessage::text_with_origin(
+                    "system",
+                    format!(
+                        "<loaded_skill id=\"{}\" verification=\"{}\" successes=\"{}\">\n{}\n</loaded_skill>\nTreat this as reusable guidance only. Re-observe current state and apply all current safety and verification rules.",
+                        skill.id,
+                        if skill.success_count == 0 { "user_requested_unverified" } else { "verified" },
+                        skill.success_count,
+                        markdown
+                    ),
+                    MessageOrigin::RetrievedContext,
+                ));
+                self.log(
+                    "skill_auto_loaded",
+                    json!({
+                        "id": skill.id,
+                        "title": skill.title,
+                        "success_count": skill.success_count,
+                        "relevance": relevance,
+                        "selected_by": "conversation",
+                    }),
+                )?;
+            }
+        }
+        // Instructions the user wants kept up apply to every run, not just the
+        // one that created them.
+        if let Some(block) = crate::standing_orders::StandingOrders::open(
+            &self.context.data_dir.join("standing-orders.json"),
+        )
+        .prompt_block()
+        {
+            self.messages.push(BrainMessage::text_with_origin(
+                "system",
+                block,
+                MessageOrigin::RetrievedContext,
+            ));
+            self.log("standing_orders_loaded", json!({}))?;
         }
         if let Some((block, diagnostic)) = generated_tool_guidance(&self.context, &prompt) {
             self.messages.push(BrainMessage::text_with_origin(

@@ -4345,6 +4345,7 @@ pub fn run() {
             voice::register_saved_hotkey(app.handle());
             gateway::install_tray(app)?;
             gateway::autostart(app.handle());
+            gateway::spawn_standing_order_timer(app.handle());
             gateway::place_window_at_launch(app, background);
             Ok(())
         })
